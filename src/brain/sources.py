@@ -11,6 +11,32 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+_LANGUAGE_MAP: dict[str, str] = {
+    "english": "en",
+    "en": "en",
+    "portuguese": "pt",
+    "português": "pt",
+    "portugues": "pt",
+    "pt": "pt",
+    "spanish": "es",
+    "español": "es",
+    "espanol": "es",
+    "es": "es",
+}
+
+
+def normalize_language(raw: Any | None) -> str:
+    """Map a curated language label to an ISO 639-1 code (en/pt/es)."""
+    if raw is None:
+        return "en"
+    key = str(raw).strip().lower()
+    if key in _LANGUAGE_MAP:
+        return _LANGUAGE_MAP[key]
+    prefix = key.split("-", 1)[0].split("_", 1)[0].split(" ", 1)[0].split("/", 1)[0]
+    if prefix in _LANGUAGE_MAP:
+        return _LANGUAGE_MAP[prefix]
+    return "en"
+
 SOURCE_NAME_SMT = "Social Media Today"
 
 _FALLBACK_SMT: dict[str, Any] = {
@@ -48,9 +74,7 @@ def _registry() -> dict[str, dict[str, Any]]:
                 "name": name,
                 "rss_url": entry["rss_url"],
                 "hub_url": entry.get("hub_url"),
-                "language": (entry.get("language") or "English").lower()[:2]
-                if entry.get("language")
-                else "en",
+                "language": normalize_language(entry.get("language")),
                 "raw": entry,
             }
     registry.setdefault(SOURCE_NAME_SMT, dict(_FALLBACK_SMT))

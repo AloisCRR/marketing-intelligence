@@ -51,7 +51,22 @@ def _published_at(entry: Any, fallback: datetime) -> datetime:
         return fallback
 
 
-def parse_feed(xml: bytes | str, source: str = DEFAULT_SOURCE) -> list[NormalizedDocument]:
+def _registry_language(source: str) -> str:
+    """Look up the registry language for `source`; defaults to 'en'."""
+    try:
+        from brain.sources import get_source
+
+        lang = get_source(source).get("language") or "en"
+        return str(lang).strip().lower() or "en"
+    except Exception:
+        return "en"
+
+
+def parse_feed(
+    xml: bytes | str,
+    source: str = DEFAULT_SOURCE,
+    language: str | None = None,
+) -> list[NormalizedDocument]:
     """Parse RSS/Atom bytes into normalized documents.
 
     Malformed items (missing title/link, unparseable structure) are skipped
@@ -63,6 +78,7 @@ def parse_feed(xml: bytes | str, source: str = DEFAULT_SOURCE) -> list[Normalize
     if feed.bozo and not feed.entries:
         raise ValueError(f"Unparseable feed: {feed.bozo_exception!r}")
     retrieved_at = datetime.now(timezone.utc)
+    resolved_language = language or _registry_language(source)
     docs: list[NormalizedDocument] = []
     for entry in feed.entries:
         try:
@@ -88,6 +104,7 @@ def parse_feed(xml: bytes | str, source: str = DEFAULT_SOURCE) -> list[Normalize
                     author=author,
                     published_at=_published_at(entry, retrieved_at),
                     retrieved_at=retrieved_at,
+                    language=resolved_language,
                 )
             )
         except Exception:

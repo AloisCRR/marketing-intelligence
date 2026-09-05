@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Professional Jeweller</title>
+    <link>https://www.professionaljeweller.com/</link>
+    <description>UK jewellery industry news</description>
+    <language>en-gb</language>
+    <!-- Item 1: happy path, author present, RFC-822 date, URL with query+fragment -->
+    <item>
+      <title>Vicenzaoro September Kicks Off With Record Exhibitor Numbers</title>
+      <link>https://www.professionaljeweller.com/vicenzaoro-september-kicks-off-today/102341/?utm_source=feed&amp;utm_medium=rss#comments</link>
+      <dc:creator>Sarah Jordan</dc:creator>
+      <pubDate>Thu, 04 Sep 2026 08:00:00 +0100</pubDate>
+      <description><![CDATA[<p>Vicenzaoro September opens today with <strong>record exhibitor numbers</strong> as buyers return to the Italian show in force.</p>]]></description>
+      <guid isPermaLink="false">pj-102341</guid>
+    </item>
+    <!-- Item 2: missing author, date with non-UTC offset -->
+    <item>
+      <title>Independent Retailers Report Strong August Lab-Grown Sales</title>
+      <link>https://www.professionaljeweller.com/independent-retailers-report-strong-august-lab-grown-sales/102330/</link>
+      <pubDate>Wed, 03 Sep 2026 14:45:00 +0100</pubDate>
+      <description><![CDATA[<p>Independent jewellers report a strong August for <em>lab-grown diamond</em> bridal as average selling prices stabilise.</p>]]></description>
+      <guid isPermaLink="false">pj-102330</guid>
+    </item>
+    <!-- Item 3: edge-case date (ISO-8601, no timezone), content:encoded body -->
+    <item>
+      <title>Gold Price Rally Reshapes Autumn Buying Plans</title>
+      <link>https://www.professionaljeweller.com/gold-price-rally-reshapes-autumn-buying-plans/102318/</link>
+      <dc:creator>Alan McCann</dc:creator>
+      <pubDate>2026-09-02T09:00:00</pubDate>
+      <content:encoded><![CDATA[<p>The sustained gold price rally is reshaping <em>autumn buying plans</em>, with retailers leaning into 9ct lines.</p><p>Suppliers say made-to-order is cushioning margin pressure.</p>]]></content:encoded>
+      <guid isPermaLink="false">pj-102318</guid>
+    </item>
+  </channel>
+</rss>

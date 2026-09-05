@@ -45,3 +45,34 @@ VALUES (
   true
 )
 ON CONFLICT (name) DO NOTHING;
+
+-- Seed: remaining V1 RSS sources (Ticket 02).
+INSERT INTO sources (name, rss_url, hub_url, language, enabled)
+VALUES (
+  'MarTech',
+  'https://martech.org/feed/',
+  'https://martech.org/',
+  'en',
+  true
+)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO sources (name, rss_url, hub_url, language, enabled)
+VALUES (
+  'Professional Jeweller',
+  'https://www.professionaljeweller.com/feed/',
+  'https://www.professionaljeweller.com/',
+  'en',
+  true
+)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO sources (name, rss_url, hub_url, language, enabled)
+VALUES (
+  'InfoMoney',
+  'https://www.infomoney.com.br/feed',
+  'https://www.infomoney.com.br/',
+  'pt',
+  true
+)
+ON CONFLICT (name) DO NOTHING;

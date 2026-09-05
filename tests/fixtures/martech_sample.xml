@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>MarTech</title>
+    <link>https://martech.org/</link>
+    <description>Marketing technology news and insights</description>
+    <language>en-us</language>
+    <!-- Item 1: happy path, author present, RFC-822 date, URL with query+fragment -->
+    <item>
+      <title>Marketing Without Signals: How to Perform When the Data Disappears</title>
+      <link>https://martech.org/marketing-without-signals-how-to-perform-when-the-data-disappears/612044/?utm_source=feed&amp;utm_medium=rss#comments</link>
+      <dc:creator>Kim Davis</dc:creator>
+      <pubDate>Thu, 04 Sep 2026 13:00:00 +0000</pubDate>
+      <description><![CDATA[<p>Signal loss is forcing marketers to rebuild <strong>measurement foundations</strong> around first-party data and incrementality testing.</p>]]></description>
+      <guid isPermaLink="false">martech-612044</guid>
+    </item>
+    <!-- Item 2: missing author, date with non-UTC offset -->
+    <item>
+      <title>Identity Resolution Vendors Compared: 2026 Buyer's Guide</title>
+      <link>https://martech.org/identity-resolution-vendors-compared-2026-buyers-guide/611980/</link>
+      <pubDate>Wed, 03 Sep 2026 10:30:00 -0400</pubDate>
+      <description><![CDATA[<p>We compare leading identity resolution vendors on match rates, governance, and <em>retail media</em> readiness.</p>]]></description>
+      <guid isPermaLink="false">martech-611980</guid>
+    </item>
+    <!-- Item 3: edge-case date (ISO-8601, no timezone), content:encoded body -->
+    <item>
+      <title>AI Agents Move From Pilots to Marketing Workflows</title>
+      <link>https://martech.org/ai-agents-move-from-pilots-to-marketing-workflows/611955/</link>
+      <dc:creator>Constantine von Hoffman</dc:creator>
+      <pubDate>2026-09-02T16:20:00</pubDate>
+      <content:encoded><![CDATA[<p>AI agents are graduating from experiments to <em>owned workflows</em> in campaign ops, with guardrails becoming the differentiator.</p><p>Here is what early adopters learned about review loops and cost control.</p>]]></content:encoded>
+      <guid isPermaLink="false">martech-611955</guid>
+    </item>
+  </channel>
+</rss>

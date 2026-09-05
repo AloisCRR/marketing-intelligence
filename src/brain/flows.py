@@ -22,9 +22,13 @@ def fetch_task(url: str) -> bytes:
 
 
 @task
-def parse_task(xml: bytes, source: str = "Social Media Today") -> list[NormalizedDocument]:
+def parse_task(
+    xml: bytes,
+    source: str = "Social Media Today",
+    language: str | None = None,
+) -> list[NormalizedDocument]:
     """Normalize raw feed bytes into documents."""
-    return parse_feed(xml, source=source)
+    return parse_feed(xml, source=source, language=language)
 
 
 @task
@@ -50,10 +54,36 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     except Exception as exc:
         return {"inserted": 0, "skipped": 0, "error": f"fetch failed: {exc}"}
     try:
-        docs = parse_task(xml, str(source.get("name", source_name)))
+        docs = parse_task(xml, str(source.get("name", source_name)), str(source.get("language") or "en"))
     except Exception as exc:
         return {"inserted": 0, "skipped": 0, "error": f"parse failed: {exc}"}
     try:
         return upsert_task(docs)
     except Exception as exc:
         return {"inserted": 0, "skipped": 0, "error": f"persist failed: {exc}"}
+
+
+@flow
+def ingest_sources_flow(source_names: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Ingest multiple sources; one failure never blocks the others.
+
+    Returns a per-source mapping of {inserted, skipped[, error]}.
+    Defaults to every registry source when `source_names` is None.
+    """
+    from brain.sources import list_sources
+
+    names = (
+        list(source_names)
+        if source_names is not None
+        else [str(entry["name"]) for entry in list_sources()]
+    )
+    results: dict[str, dict[str, Any]] = {}
+    for name in names:
+        results[name] = ingest_source_flow(source_name=name)
+    return results
+
+
+@flow
+def ingest_all_sources_flow() -> dict[str, dict[str, Any]]:
+    """Ingest every registry source; per-source {inserted, skipped[, error]}."""
+    return ingest_sources_flow()
