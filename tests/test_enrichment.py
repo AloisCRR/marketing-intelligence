@@ -89,7 +89,7 @@ def test_clean_to_markdown_strips_tags_preserves_paragraphs() -> None:
     md = clean_to_markdown(html, THIN_URL)
     assert "<" not in md and ">" not in md
     assert "First & paragraph." in md
-    assert "Second bold one." in md
+    assert "Second" in md and "bold" in md and "one." in md  # <b> may stay **bold**
     assert "\n\n" in md  # paragraph breaks preserved
 
 
@@ -501,3 +501,106 @@ def test_impersonation_failure_falls_back_to_stdlib(
     assert "Full article body" in markdown  # legacy attempt outcome is final
     assert len(fake.calls) == 1
     assert len(stdlib_calls) == 1
+
+
+# --- clean_to_markdown: trafilatura extraction -----------------------------------
+
+
+BOILERPLATE_HTML = (
+    "<html><head><title>Noisy Page</title>"
+    "<style>.nav{color:red}.ad{display:block}</style>"
+    "<script>window.NREUM||(NREUM={});var personalization={track:function(){}};</script>"
+    "</head><body>"
+    "<nav><ul><li>Home</li><li>Sections</li><li>Subscribe</li></ul></nav>"
+    '<div class="ad">Sponsored: buy now, limited offer!</div>'
+    '<aside class="related"><h2>Related stories</h2><ul>'
+    "<li>Story one about platforms and engagement trends</li>"
+    "<li>Story two about creators and monetization moves</li>"
+    "<li>Story three about advertising budgets shifting</li>"
+    "<li>Story four about video formats gaining share</li>"
+    "<li>Story five about messaging apps adding payments</li>"
+    "<li>Story six about social commerce checkout flows</li>"
+    "<li>Story seven about analytics dashboards launching</li>"
+    "<li>Story eight about brand safety measurement</li>"
+    "</ul></aside>"
+    '<div class="newsletter">Sign up for our daily newsletter with marketing news.</div>'
+    '<div class="cookie">We use cookies to personalize content and ads.</div>'
+    '<section class="comments"><h2>Reader comments</h2>'
+    "<p>Commenter one: great analysis of the platform shift this quarter.</p>"
+    "<p>Commenter two: our team saw the same engagement pattern last month.</p>"
+    "<p>Commenter three: would love a follow-up on measurement methodology.</p>"
+    "<p>Commenter four: sharing this with our strategy group today.</p>"
+    "<p>Commenter five: the payments angle deserves its own deep dive.</p>"
+    "</section>"
+    '<aside class="most-read"><h2>Most read</h2><ul>'
+    "<li>Most read story about algorithm changes rolling out</li>"
+    "<li>Most read story about ad platform pricing updates</li>"
+    "<li>Most read story about influencer campaign results</li>"
+    "<li>Most read story about short-form video benchmarks</li>"
+    "<li>Most read story about retail media network growth</li>"
+    "<li>Most read story about cookie deprecation timelines</li>"
+    "</ul></aside>"
+    '<div class="tags">Tagged: platforms, engagement, advertising, video, messaging</div>'
+    "<article><h1>Real Story</h1>"
+    "<p>First article paragraph with substance.</p>"
+    '<p>Second paragraph linking to <a href="https://example.com/more">more context</a>.</p>'
+    "<p>" + "Sustained reporting body sentence. " * 30 + "</p>"
+    "</article>"
+    "<footer>Copyright 2026. Privacy policy. Terms of service.</footer>"
+    '<script>personalization.track("pageview");</script>'
+    "</body></html>"
+)
+
+
+def test_cleaner_strips_script_and_style_contents() -> None:
+    from brain import enrich
+
+    markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
+    for cruft in ("NREUM", "personalization", "color:red", "function(", "track("):
+        assert cruft not in markdown
+    assert "<script" not in markdown and "<style" not in markdown
+
+
+def test_cleaner_keeps_paragraphs_and_links_as_markdown() -> None:
+    from brain import enrich
+
+    markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
+    assert "First article paragraph with substance." in markdown
+    assert "[more context](https://example.com/more)" in markdown
+    assert "\n\n" in markdown  # paragraph breaks preserved
+
+
+def test_cleaner_boilerplate_much_shorter_than_regex_path() -> None:
+    from brain import enrich
+
+    markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
+    legacy = enrich._regex_to_markdown(BOILERPLATE_HTML)
+    assert "NREUM" in legacy  # premise: regex path keeps the cruft
+    assert len(markdown) < len(legacy) / 2
+
+
+def test_cleaner_falls_back_to_regex_when_trafilatura_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    class _NoneExtractor:
+        @staticmethod
+        def extract(*args: Any, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(enrich, "_trafilatura", _NoneExtractor)
+    assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == enrich._regex_to_markdown(
+        BOILERPLATE_HTML
+    )
+
+
+def test_cleaner_falls_back_to_regex_when_trafilatura_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    monkeypatch.setattr(enrich, "_trafilatura", None)
+    assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == enrich._regex_to_markdown(
+        BOILERPLATE_HTML
+    )

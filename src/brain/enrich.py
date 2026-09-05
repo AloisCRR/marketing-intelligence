@@ -69,6 +69,11 @@ try:  # preferred primary backend: TLS + browser impersonation (optional dep)
 except Exception:  # pragma: no cover - graceful stdlib fallback below
     _curl_cffi_requests = None  # type: ignore[assignment]
 
+try:  # preferred article extractor (optional dep, deterministic, no LLM)
+    import trafilatura as _trafilatura
+except Exception:  # pragma: no cover - regex fallback below
+    _trafilatura = None  # type: ignore[assignment]
+
 #: Jina-reader-style zero-ops fallback endpoint: GET <base><article-url>.
 FALLBACK_READER_BASE = "https://r.jina.ai/"
 
@@ -171,21 +176,49 @@ def _anchor_to_markdown(match: re.Match[str]) -> str:
     return label
 
 
-def clean_to_markdown(html_or_text: str, url: str = "") -> str:
-    """Deterministically convert article HTML (or plain text) to Markdown.
+def _regex_to_markdown(html_or_text: str) -> str:
+    """Legacy regex HTML-to-Markdown path (fallback when trafilatura yields nothing).
 
     Block elements become paragraph breaks, anchors become `[label](href)`,
     remaining tags are stripped and entities unescaped. Paragraphs are
-    preserved (joined with blank lines); `url` is accepted for signature
-    symmetry with fetch-stage callers and future relative-link resolution.
+    preserved (joined with blank lines).
     """
-    _ = url
     text = _ANCHOR_RE.sub(_anchor_to_markdown, html_or_text or "")
     text = _BLOCK_RE.sub("\n", text)
     text = _TAG_RE.sub(" ", text)
     text = _html.unescape(text)
     paragraphs = [_WS_RE.sub(" ", block.strip()) for block in text.split("\n") if block.strip()]
     return "\n\n".join(paragraphs)
+
+
+def clean_to_markdown(html_or_text: str, url: str = "") -> str:
+    """Convert article HTML (or plain text) to clean Markdown.
+
+    HTML input goes through trafilatura's deterministic article extractor
+    (Markdown output, links kept, dedupe on, precision favored; scripts,
+    styles, and boilerplate dropped — no LLM features). When trafilatura is
+    unavailable or yields nothing usable (stubs, lock pages, non-HTML
+    input), the legacy regex path runs instead, so cleaning never
+    hard-fails. `url` feeds trafilatura's dedupe/canonical hints and is
+    otherwise accepted for signature symmetry with fetch-stage callers.
+    """
+    source = html_or_text or ""
+    if _trafilatura is not None and "<" in source and ">" in source:
+        try:
+            extracted = _trafilatura.extract(
+                source,
+                output_format="markdown",
+                include_links=True,
+                deduplicate=True,
+                favor_precision=True,
+                include_comments=False,
+                url=url or None,
+            )
+        except Exception:
+            extracted = None
+        if extracted and extracted.strip():
+            return extracted.strip()
+    return _regex_to_markdown(source)
 
 
 #: HTTP statuses whose error bodies may carry bot-challenge evidence.
