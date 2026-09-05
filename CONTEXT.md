@@ -6,8 +6,13 @@
 - **Document / Article**: one normalized retrieved item (title, content, URLs, timestamps, language, hash). The durable evidence unit.
 - **Story / Event**: the underlying development multiple documents may cover. V1: column reserved (`story_id`, nullable) but unused — no clustering yet.
 - **Topic / Entity**: thematic and named-entity annotations. V1: deferred (no LLM enrichment).
-- **Ingestion Run**: one scheduled/manual execution per source, independently rerunnable. Partial failure is explicit.
+- **Ingestion Run**: one execution of `ingest_source_flow` for one source, independently rerunnable. Partial failure is explicit.
+  _Avoid_: Flow Run (Prefect implementation term for the same execution), batch run
+- **Ingestion Stage**: one fetch / parse / upsert step inside an Ingestion Run, implemented as a Prefect task.
+  _Avoid_: Task Run (Prefect implementation term for the same step)
 - **Weekly Context**: a prepared evidence bundle for a caller-given date range (`period`, `important_articles` with provenance). V1: no velocity, no emerging-topics (no history yet).
+- **Service Adapter**: the single validated interface (`brain.service`, `MAX_LIMIT=100`, `InvalidRequest`) behind both caller surfaces; stdlib-only, no HTTP/MCP imports.
+- **API / MCP**: two thin, parity-guaranteed surfaces over the service adapter — HTTP (`GET /search`, `POST /weekly-context`, 422 on `InvalidRequest`) and MCP (2 tools, same payloads by construction).
 
 ## V1 cuts (agreed)
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.flows import ingest_all_sources_flow, ingest_source_flow, ingest_sources_flow
+from brain.flows import ingest_source_flow, ingest_sources_flow
 from brain.ingest import parse_feed, upsert_documents
 from brain.normalize import NormalizedDocument
 from brain.sources import get_source
@@ -252,7 +252,7 @@ def test_multi_source_flow_records_failure_without_blocking_others(
     assert "error" in results[PJ] and results[PJ]["error"]
 
 
-def test_ingest_all_sources_flow_covers_v1_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
     from brain.sources import V1_SOURCES
 
@@ -268,7 +268,7 @@ def test_ingest_all_sources_flow_covers_v1_scope(monkeypatch: pytest.MonkeyPatch
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = ingest_all_sources_flow()
+    results = ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
     for name in V1_SOURCES:
         assert results[name] == {"inserted": 3, "skipped": 0}
