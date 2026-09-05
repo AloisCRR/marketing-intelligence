@@ -21,9 +21,7 @@ mcp = FastMCP("trend-intelligence-brain")
 
 
 @mcp.tool()
-def search_articles(
-    keyword: str, limit: int = DEFAULT_SEARCH_LIMIT
-) -> list[dict[str, Any]]:
+def search_articles(keyword: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[dict[str, Any]]:
     """Search ingested articles by keyword, newest first (7-key provenance dicts)."""
     return service.search_articles(keyword, limit=limit)
 
@@ -36,9 +34,7 @@ def get_weekly_context(
     limit: int = DEFAULT_WEEKLY_LIMIT,
 ) -> dict[str, Any]:
     """Weekly evidence bundle for [from_date, to_date] (ISO dates)."""
-    return service.get_weekly_context(
-        from_date, to_date, sources=sources, limit=limit
-    )
+    return service.get_weekly_context(from_date, to_date, sources=sources, limit=limit)
 
 
 if __name__ == "__main__":

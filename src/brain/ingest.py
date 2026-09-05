@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
@@ -102,7 +102,7 @@ def parse_feed_with_report(
     feed = feedparser.parse(payload)
     if feed.bozo and not feed.entries:
         raise ValueError(f"Unparseable feed: {feed.bozo_exception!r}")
-    retrieved_at = datetime.now(timezone.utc)
+    retrieved_at = datetime.now(UTC)
     resolved_language = language or _registry_language(source)
     report = ParseReport()
     for index, entry in enumerate(feed.entries):
@@ -157,9 +157,7 @@ def parse_feed(
     return parse_feed_with_report(xml, source=source, language=language).documents
 
 
-def upsert_documents(
-    docs: list[NormalizedDocument], conn: Any | None = None
-) -> tuple[int, int]:
+def upsert_documents(docs: list[NormalizedDocument], conn: Any | None = None) -> tuple[int, int]:
     """Persist documents idempotently. Returns (inserted, skipped).
 
     When `conn` is None a connection is opened via `brain.db.get_connection`

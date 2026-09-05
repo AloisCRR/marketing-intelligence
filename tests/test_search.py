@@ -22,7 +22,7 @@ import brain.search as search_module  # noqa: E402
 
 
 def _dt_utc(*args: int) -> _dt.datetime:
-    return _dt.datetime(*args, tzinfo=_dt.timezone.utc)
+    return _dt.datetime(*args, tzinfo=_dt.UTC)
 
 
 ROWS = [

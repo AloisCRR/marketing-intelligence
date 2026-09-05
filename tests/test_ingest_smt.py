@@ -71,10 +71,7 @@ def test_normalized_contract_fields() -> None:
 def test_missing_author_is_nullable() -> None:
     docs = _parse_fixture()
     by_title = {d.title: d for d in docs}
-    assert (
-        by_title["Instagram Tests Reels Templates for Collaborative Posts"].author
-        is None
-    )
+    assert by_title["Instagram Tests Reels Templates for Collaborative Posts"].author is None
     # ...while present authors survive normalization.
     assert (
         by_title["TikTok Adds Voice Notes and Image Carousels in Comments"].author
@@ -113,8 +110,7 @@ def test_canonical_url_strips_query_fragment_and_lowercases_host() -> None:
     # Canonical URL of the first fixture item drops its tracking query/fragment.
     docs = _parse_fixture()
     assert (
-        docs[0].canonical_url
-        == "https://www.socialmediatoday.com/news/"
+        docs[0].canonical_url == "https://www.socialmediatoday.com/news/"
         "tiktok-adds-voice-notes-and-image-carousels-in-comments/829640/"
     )
 
@@ -137,9 +133,7 @@ class _FakeCursor:
             self.rowcount = 1
             return self
         url, content_hash = params[1], params[-1]
-        if url in self._store or content_hash in {
-            p[-1] for p in self._store.values()
-        }:
+        if url in self._store or content_hash in {p[-1] for p in self._store.values()}:
             self.rowcount = 0  # conflict -> DO NOTHING
         else:
             self._store[url] = params
@@ -219,9 +213,7 @@ def test_flow_importable_and_returns_counts(
     assert callable(ingest_source_flow)
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: FIXTURE.read_bytes())
     conn = FakeConnection()
-    monkeypatch.setattr(
-        flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn)
-    )
+    monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = ingest_source_flow(source_name="Social Media Today")
     assert result["inserted"] == 3
     assert result["skipped"] == 0

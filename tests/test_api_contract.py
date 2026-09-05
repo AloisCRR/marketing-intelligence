@@ -58,7 +58,9 @@ WEEKLY_PAYLOAD = {
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setattr(service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD)
+    monkeypatch.setattr(
+        service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
+    )
     monkeypatch.setattr(
         service,
         "get_weekly_context",
@@ -75,10 +77,12 @@ def test_search_returns_service_payload(client: TestClient) -> None:
 
 def test_search_forwards_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
+
     def fake(keyword: str, limit: int = 20, conn: object = None) -> list:
         seen["keyword"] = keyword
         seen["limit"] = limit
         return SEARCH_PAYLOAD
+
     monkeypatch.setattr(service, "search_articles", fake)
     resp = TestClient(app).get("/search", params={"q": "TikTok", "limit": 5})
     assert resp.status_code == 200
@@ -105,11 +109,13 @@ def test_weekly_returns_service_payload(client: TestClient) -> None:
 
 def test_weekly_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
+
     def fake(from_date: object, to_date: object, **kw: object) -> dict:
         seen.update(kw)
         seen["from_date"] = from_date
         seen["to_date"] = to_date
         return WEEKLY_PAYLOAD
+
     monkeypatch.setattr(service, "get_weekly_context", fake)
     resp = TestClient(app).post(
         "/weekly-context",
@@ -127,17 +133,26 @@ def test_weekly_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_weekly_validation_maps_to_422() -> None:
     live = TestClient(app)
-    assert live.post(
-        "/weekly-context", json={"from_date": "not-a-date", "to_date": "2026-09-13"}
-    ).status_code == 422
-    assert live.post(
-        "/weekly-context",
-        json={"from_date": "2026-09-07", "to_date": "2026-09-13", "sources": ["Nope"]},
-    ).status_code == 422
-    assert live.post(
-        "/weekly-context",
-        json={"from_date": "2026-09-07", "to_date": "2026-09-13", "limit": 101},
-    ).status_code == 422
+    assert (
+        live.post(
+            "/weekly-context", json={"from_date": "not-a-date", "to_date": "2026-09-13"}
+        ).status_code
+        == 422
+    )
+    assert (
+        live.post(
+            "/weekly-context",
+            json={"from_date": "2026-09-07", "to_date": "2026-09-13", "sources": ["Nope"]},
+        ).status_code
+        == 422
+    )
+    assert (
+        live.post(
+            "/weekly-context",
+            json={"from_date": "2026-09-07", "to_date": "2026-09-13", "limit": 101},
+        ).status_code
+        == 422
+    )
 
 
 def test_openapi_docs_demoable(client: TestClient) -> None:

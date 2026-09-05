@@ -118,9 +118,7 @@ def _coerce_bound(value: date | datetime | str, *, label: str) -> date | datetim
         try:
             return datetime.fromisoformat(text)
         except ValueError:
-            raise InvalidRequest(
-                f"{label} must be an ISO date/datetime, got {value!r}"
-            ) from None
+            raise InvalidRequest(f"{label} must be an ISO date/datetime, got {value!r}") from None
     raise InvalidRequest(
         f"{label} must be a date, datetime, or ISO string, got {type(value).__name__}"
     )
@@ -155,9 +153,7 @@ def get_weekly_context(
     names = _validate_sources(sources)
     bound = _validate_limit(limit, default=DEFAULT_WEEKLY_LIMIT)
     try:
-        return _weekly.get_weekly_context(
-            start, end, sources=names, limit=bound, conn=conn
-        )
+        return _weekly.get_weekly_context(start, end, sources=names, limit=bound, conn=conn)
     except InvalidRequest:
         raise
     except (ValueError, TypeError) as exc:

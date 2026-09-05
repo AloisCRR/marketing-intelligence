@@ -37,6 +37,7 @@ def normalize_language(raw: Any | None) -> str:
         return _LANGUAGE_MAP[prefix]
     return "en"
 
+
 SOURCE_NAME_SMT = "Social Media Today"
 
 V1_SOURCES: tuple[str, ...] = (

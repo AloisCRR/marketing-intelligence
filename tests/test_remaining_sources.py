@@ -84,10 +84,14 @@ def test_fixture_parses_to_documents(name: str) -> None:
 def test_martech_contract_details() -> None:
     docs = {d.title: d for d in parse_feed(FIXTURE_FILES[MARTECH].read_bytes(), source=MARTECH)}
     # HTML stripped to visible text.
-    assert "measurement foundations" in docs[
-        "Marketing Without Signals: How to Perform When the Data Disappears"
-    ].content
-    assert "<" not in docs["Marketing Without Signals: How to Perform When the Data Disappears"].content
+    assert (
+        "measurement foundations"
+        in docs["Marketing Without Signals: How to Perform When the Data Disappears"].content
+    )
+    assert (
+        "<"
+        not in docs["Marketing Without Signals: How to Perform When the Data Disappears"].content
+    )
     # Missing author stays nullable; present author survives.
     assert docs["Identity Resolution Vendors Compared: 2026 Buyer's Guide"].author is None
     assert (
@@ -126,22 +130,24 @@ def test_infomoney_docs_are_portuguese() -> None:
     for doc in docs:
         assert doc.language == "pt"
     # Portuguese content survives normalization.
-    assert "endividamento do varejo" in by_title[
-        "Casas Bahia em crise: quem mais no varejo enfrenta pressão de dívida?"
-    ].content
+    assert (
+        "endividamento do varejo"
+        in by_title["Casas Bahia em crise: quem mais no varejo enfrenta pressão de dívida?"].content
+    )
     assert by_title["Ibovespa fecha em alta com bancos e Petrobras no radar"].author is None
-    assert by_title[
-        "Casas Bahia em crise: quem mais no varejo enfrenta pressão de dívida?"
-    ].author == "Mariana Ribeiro"
+    assert (
+        by_title["Casas Bahia em crise: quem mais no varejo enfrenta pressão de dívida?"].author
+        == "Mariana Ribeiro"
+    )
     assert by_title[
         "Casas Bahia em crise: quem mais no varejo enfrenta pressão de dívida?"
     ].canonical_url == (
         "https://www.infomoney.com.br/business/"
         "casas-bahia-em-crise-quem-mais-no-varejo-enfrenta-pressao-de-divida/987101/"
     )
-    assert by_title["Juros, consumo e luxo: o que muda para as joalherias em 2026"].published_at.isoformat() == (
-        "2026-09-02T20:15:00+00:00"
-    )
+    assert by_title[
+        "Juros, consumo e luxo: o que muda para as joalherias em 2026"
+    ].published_at.isoformat() == ("2026-09-02T20:15:00+00:00")
 
 
 # --- dedupe / idempotency ----------------------------------------------------
@@ -228,8 +234,9 @@ def test_multi_source_flow_records_failure_without_blocking_others(
 ) -> None:
     import brain.flows as flows
 
-    by_url = {src["rss_url"]: name for name, src in
-              ((n, get_source(n)) for n in (MARTECH, PJ, INFOMONEY))}
+    by_url = {
+        src["rss_url"]: name for name, src in ((n, get_source(n)) for n in (MARTECH, PJ, INFOMONEY))
+    }
     failing_url = get_source(PJ)["rss_url"]
 
     def fake_fetch(url: str, timeout: int = 30) -> bytes:
@@ -278,7 +285,6 @@ def test_extra_registry_sources_ingestible_by_explicit_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import brain.flows as flows
-
     from brain.flows import ingest_sources_flow
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()

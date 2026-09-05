@@ -15,6 +15,7 @@ UNIQUE(url) + UNIQUE(canonical_url) + UNIQUE(content_hash) semantics.
 from __future__ import annotations
 
 import dataclasses
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -42,14 +43,14 @@ V1_FIXTURES = {
 
 
 def _doc(source: str, url: str, title: str, content: str) -> NormalizedDocument:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     return make_document(
         source=source,
         url=url,
         title=title,
         content=content,
-        published_at=datetime(2026, 9, 4, 12, 0, 0, tzinfo=timezone.utc),
+        published_at=datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC),
     )
 
 
@@ -144,7 +145,9 @@ def test_identical_content_new_path_dedupes_on_hash() -> None:
     docs = parse_feed(V1_FIXTURES["MarTech"].read_bytes(), source="MarTech")
     conn = FakeConnection()
     upsert_documents(docs, conn=conn)
-    clone = _doc("MarTech", "https://martech.org/totally-different-path/999/", docs[0].title, docs[0].content)
+    clone = _doc(
+        "MarTech", "https://martech.org/totally-different-path/999/", docs[0].title, docs[0].content
+    )
     assert upsert_documents([clone], conn=conn) == (0, 1)
     assert len(conn.store) == 3
 
@@ -227,11 +230,16 @@ def test_published_vs_retrieved_distinct_and_tz_aware(name: str) -> None:
 
 
 def test_known_fixture_timestamps() -> None:
-    smt = {d.title: d for d in parse_feed(V1_FIXTURES["Social Media Today"].read_bytes(), source="Social Media Today")}
+    smt = {
+        d.title: d
+        for d in parse_feed(
+            V1_FIXTURES["Social Media Today"].read_bytes(), source="Social Media Today"
+        )
+    }
     # Non-UTC offset preserved.
-    assert smt["Instagram Tests Reels Templates for Collaborative Posts"].published_at.isoformat() == (
-        "2026-09-03T09:15:00-05:00"
-    )
+    assert smt[
+        "Instagram Tests Reels Templates for Collaborative Posts"
+    ].published_at.isoformat() == ("2026-09-03T09:15:00-05:00")
     # Naive input assumed UTC.
     assert smt["LinkedIn Reports Record Video Engagement Among Gen Z"].published_at.isoformat() == (
         "2026-09-02T18:45:00+00:00"

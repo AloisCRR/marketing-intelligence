@@ -50,7 +50,7 @@ def _to_iso_tz_aware(value: Any) -> Any:
         return None
     if isinstance(value, _dt.datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=_dt.timezone.utc)
+            value = value.replace(tzinfo=_dt.UTC)
         return value.isoformat()
     if isinstance(value, str):
         try:
@@ -58,7 +58,7 @@ def _to_iso_tz_aware(value: Any) -> Any:
         except ValueError:
             return value
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+            parsed = parsed.replace(tzinfo=_dt.UTC)
             return parsed.isoformat()
         return value
     return value
@@ -101,9 +101,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def search_articles(
-    keyword: str, limit: int = 20, conn: Any | None = None
-) -> list[dict[str, Any]]:
+def search_articles(keyword: str, limit: int = 20, conn: Any | None = None) -> list[dict[str, Any]]:
     """Search ingested articles by keyword, newest first.
 
     Args:

@@ -1,4 +1,4 @@
-.PHONY: dev test lint mcp db-up migrate ingest help
+.PHONY: dev test lint fmt mcp db-up migrate ingest help
 
 help:
 	@echo "dev      - FastAPI + /docs on :8123 (reload)"
@@ -20,6 +20,12 @@ test:
 
 lint:
 	uv run --frozen mypy src
+	uv run --frozen ruff check src tests
+	uv run --frozen ruff format --check src tests
+
+fmt:
+	uv run --frozen ruff check --fix src tests
+	uv run --frozen ruff format src tests
 
 db-up:
 	docker compose up -d db

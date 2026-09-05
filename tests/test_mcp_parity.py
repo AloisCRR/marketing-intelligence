@@ -67,7 +67,9 @@ WEEKLY_PAYLOAD = {
 
 @pytest.fixture()
 def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD)
+    monkeypatch.setattr(
+        service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
+    )
     monkeypatch.setattr(
         service, "get_weekly_context", lambda from_date, to_date, **kw: WEEKLY_PAYLOAD
     )
@@ -106,9 +108,7 @@ def test_weekly_api_equals_mcp_tool(stubbed_service: None) -> None:
         MCP_SERVER.get_weekly_context(from_date="2026-09-07", to_date="2026-09-13")
         == WEEKLY_PAYLOAD
     )
-    out = asyncio.run(
-        MCP_SERVER.mcp.call_tool("get_weekly_context", dict(body, limit=50))
-    )
+    out = asyncio.run(MCP_SERVER.mcp.call_tool("get_weekly_context", dict(body, limit=50)))
     assert _unwrap_call_tool(out) == WEEKLY_PAYLOAD
     assert api_payload == _unwrap_call_tool(out)
 

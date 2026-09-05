@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 import pytest
 
@@ -32,7 +32,7 @@ from brain.service import (  # noqa: E402
 
 
 def _utc(*args: int) -> datetime:
-    return datetime(*args, tzinfo=timezone.utc)
+    return datetime(*args, tzinfo=_dt.UTC)
 
 
 # --- fakes -------------------------------------------------------------------
@@ -250,15 +250,11 @@ def test_weekly_panama_day_boundaries() -> None:
 
 def test_weekly_string_bounds_coerced_like_dates() -> None:
     from_str = get_weekly_context("2026-09-07", "2026-09-13", conn=_WeeklyConnection())
-    from_dates = get_weekly_context(
-        date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConnection()
-    )
+    from_dates = get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConnection())
     assert from_str["period"] == from_dates["period"]
     assert from_str["important_articles"] == from_dates["important_articles"]
     # Datetime strings stay exact instants.
-    ctx = get_weekly_context(
-        "2026-09-07T09:00:00", "2026-09-08T09:00:00", conn=_WeeklyConnection()
-    )
+    ctx = get_weekly_context("2026-09-07T09:00:00", "2026-09-08T09:00:00", conn=_WeeklyConnection())
     assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
 
 
@@ -268,8 +264,8 @@ def test_weekly_naive_datetime_assumed_panama() -> None:
     )
     assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
     ctx2 = get_weekly_context(
-        datetime(2026, 9, 7, 14, 0, tzinfo=timezone.utc),
-        datetime(2026, 9, 8, 14, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 7, 14, 0, tzinfo=_dt.UTC),
+        datetime(2026, 9, 8, 14, 0, tzinfo=_dt.UTC),
         conn=_WeeklyConnection(),
     )
     assert ctx2["period"]["from"] == "2026-09-07T09:00:00-05:00"
@@ -278,20 +274,26 @@ def test_weekly_naive_datetime_assumed_panama() -> None:
 def test_weekly_unknown_source_rejected() -> None:
     with pytest.raises(InvalidRequest):
         get_weekly_context(
-            date(2026, 9, 7), date(2026, 9, 13),
-            sources=["No Such Source"], conn=_WeeklyConnection(),
+            date(2026, 9, 7),
+            date(2026, 9, 13),
+            sources=["No Such Source"],
+            conn=_WeeklyConnection(),
         )
     with pytest.raises(InvalidRequest):
         get_weekly_context(
-            date(2026, 9, 7), date(2026, 9, 13),
-            sources="MarTech", conn=_WeeklyConnection(),  # type: ignore[arg-type]
+            date(2026, 9, 7),
+            date(2026, 9, 13),
+            sources="MarTech",
+            conn=_WeeklyConnection(),  # type: ignore[arg-type]
         )
 
 
 def test_weekly_explicit_known_source_passes_through() -> None:
     ctx = get_weekly_context(
-        date(2026, 9, 7), date(2026, 9, 13),
-        sources=["MarTech"], conn=_WeeklyConnection(),
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        sources=["MarTech"],
+        conn=_WeeklyConnection(),
     )
     assert [a["title"] for a in ctx["important_articles"]] == ["Signal Loss Rebuild"]
 
@@ -307,12 +309,8 @@ def test_weekly_bad_bounds_and_limits_rejected() -> None:
     with pytest.raises(InvalidRequest):
         get_weekly_context(123, date(2026, 9, 7), conn=conn)  # type: ignore[arg-type]
     with pytest.raises(InvalidRequest):
-        get_weekly_context(
-            date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=0
-        )
+        get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=0)
     with pytest.raises(InvalidRequest):
-        get_weekly_context(
-            date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=MAX_LIMIT + 1
-        )
+        get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=MAX_LIMIT + 1)
     assert DEFAULT_WEEKLY_LIMIT == 50
     assert MAX_LIMIT == 100

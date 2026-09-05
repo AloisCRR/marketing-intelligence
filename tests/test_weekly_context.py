@@ -16,7 +16,7 @@ Semantic-interface tests with fake-DB connections (no live Postgres):
 from __future__ import annotations
 
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _utc(*args: int) -> datetime:
-    return datetime(*args, tzinfo=timezone.utc)
+    return datetime(*args, tzinfo=UTC)
 
 
 # --- fakes -------------------------------------------------------------------
@@ -52,11 +52,7 @@ class _WeeklyCursor:
         self.last_params = params
         assert params is not None
         start, end, names, limit = params
-        kept = [
-            r
-            for r in self._rows
-            if r[4] >= start and r[4] < end and r[3] in set(names)
-        ]
+        kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         kept.sort(key=lambda r: r[4], reverse=True)
         self._result = kept[: int(limit)]
         return self
@@ -343,8 +339,8 @@ def test_naive_datetime_assumed_panama_not_server_local(
 def test_aware_datetime_converted_to_panama() -> None:
     conn = _WeeklyConnection([])
     ctx = get_weekly_context(
-        datetime(2026, 9, 7, 14, 0, tzinfo=timezone.utc),
-        datetime(2026, 9, 8, 14, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 7, 14, 0, tzinfo=UTC),
+        datetime(2026, 9, 8, 14, 0, tzinfo=UTC),
         conn=conn,
     )
     assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
@@ -504,11 +500,31 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
 
 CORPUS: dict[str, tuple[str, int, str]] = {
     # source -> (fixture file, expected doc count, first-doc content_hash)
-    "Social Media Today": ("smt_sample.xml", 3, "7484d54e4cbd34f24aea82439aa7e26d95903a5ba3059f2871326091c67ed225"),
-    "MarTech": ("martech_sample.xml", 3, "f60c0333d4d33b297c2547be39a8b9cb1794b1629119c9d21559ddc6fea3aced"),
-    "Professional Jeweller": ("pj_sample.xml", 3, "3eed2ccf4d9d9a86cfa7f17f666f0ee52c419ddf7a4255c5926d8526db311fe8"),
-    "InfoMoney": ("infomoney_sample.xml", 3, "8e86c8a3ef6e5f185bf4d6a2f8fa9e3c6744fd861c53fac67169f3a45a9a2ff2"),
-    "Test Source": ("messy_sample.xml", 3, "d355a76d64482a4bd00a03d50ed93e4d8f0517931798e32223db8f4138553ce2"),
+    "Social Media Today": (
+        "smt_sample.xml",
+        3,
+        "7484d54e4cbd34f24aea82439aa7e26d95903a5ba3059f2871326091c67ed225",
+    ),
+    "MarTech": (
+        "martech_sample.xml",
+        3,
+        "f60c0333d4d33b297c2547be39a8b9cb1794b1629119c9d21559ddc6fea3aced",
+    ),
+    "Professional Jeweller": (
+        "pj_sample.xml",
+        3,
+        "3eed2ccf4d9d9a86cfa7f17f666f0ee52c419ddf7a4255c5926d8526db311fe8",
+    ),
+    "InfoMoney": (
+        "infomoney_sample.xml",
+        3,
+        "8e86c8a3ef6e5f185bf4d6a2f8fa9e3c6744fd861c53fac67169f3a45a9a2ff2",
+    ),
+    "Test Source": (
+        "messy_sample.xml",
+        3,
+        "d355a76d64482a4bd00a03d50ed93e4d8f0517931798e32223db8f4138553ce2",
+    ),
 }
 
 

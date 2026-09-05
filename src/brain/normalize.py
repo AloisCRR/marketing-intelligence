@@ -10,7 +10,7 @@ import hashlib
 import html as _html
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_LANGUAGE = "en"
@@ -64,7 +64,7 @@ def content_hash_for(title: str, content: str) -> str:
 def coerce_tz_aware(value: datetime) -> datetime:
     """Ensure tz-awareness; naive inputs are assumed UTC (never dropped)."""
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
     return value
 
 
@@ -82,7 +82,7 @@ def make_document(
     """Build a NormalizedDocument, deriving canonical URL and content hash."""
     clean_title = normalize_text(title)
     clean_content = content if "<" not in content else strip_html(content)
-    retrieved = coerce_tz_aware(retrieved_at or datetime.now(timezone.utc))
+    retrieved = coerce_tz_aware(retrieved_at or datetime.now(UTC))
     return NormalizedDocument(
         source=source,
         url=url,

@@ -13,7 +13,7 @@ None a connection is opened via ``brain.db.get_connection``.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from brain.db import get_connection
@@ -46,7 +46,7 @@ def record_ingestion_run(
     conn: Any | None = None,
 ) -> None:
     """Persist one ingestion result as a run row. Closes only owned conns."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owns_connection = False
     if conn is None:
         conn = get_connection()

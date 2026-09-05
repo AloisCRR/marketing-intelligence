@@ -6,7 +6,7 @@ Tasks delegate to module-global functions so tests can substitute fakes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from prefect import flow, get_run_logger, task
@@ -57,9 +57,7 @@ def parse_task(
 def upsert_task(docs: list[NormalizedDocument]) -> dict[str, int]:
     """Persist documents idempotently; returns {inserted, skipped}."""
     inserted, skipped = upsert_documents(docs)
-    get_run_logger().info(
-        "upsert docs=%d inserted=%d skipped=%d", len(docs), inserted, skipped
-    )
+    get_run_logger().info("upsert docs=%d inserted=%d skipped=%d", len(docs), inserted, skipped)
     return {"inserted": inserted, "skipped": skipped}
 
 
@@ -77,7 +75,7 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     raises, so DB-free unit tests keep passing without Postgres.
     """
     logger = get_run_logger()
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
 
     def _finish(result: dict[str, Any], skipped_reasons: list[str] | None = None) -> dict[str, Any]:
         try:
@@ -85,7 +83,7 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
                 source_name,
                 result,
                 started_at=started_at,
-                finished_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(UTC),
                 skipped_reasons=skipped_reasons,
             )
         except Exception:
@@ -108,9 +106,9 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     except Exception as exc:
         return _finish({"inserted": 0, "skipped": 0, "error": f"parse failed: {exc}"})
     try:
-        result = upsert_task.with_options(
-            task_run_name=f"upsert-{source_label}-{len(docs)}-docs"
-        )(docs)
+        result = upsert_task.with_options(task_run_name=f"upsert-{source_label}-{len(docs)}-docs")(
+            docs
+        )
     except Exception as exc:
         return _finish({"inserted": 0, "skipped": 0, "error": f"persist failed: {exc}"})
     try:
@@ -131,7 +129,9 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
 
 
 @flow(flow_run_name="ingest-batch")
-def ingest_sources_flow(source_names: list[str] | None = None) -> dict[str, dict[str, Any]]:
+def ingest_sources_flow(
+    source_names: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Ingest multiple sources; one failure never blocks the others.
 
     Returns a per-source mapping of {inserted, skipped[, error]}.
@@ -140,11 +140,11 @@ def ingest_sources_flow(source_names: list[str] | None = None) -> dict[str, dict
     """
     logger = get_run_logger()
     names = list(source_names) if source_names is not None else list(V1_SOURCES)
-    batch_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    batch_ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     results: dict[str, dict[str, Any]] = {}
     for name in names:
-        results[name] = ingest_source_flow.with_options(
-            flow_run_name=f"ingest-{name}-{batch_ts}"
-        )(source_name=name)
+        results[name] = ingest_source_flow.with_options(flow_run_name=f"ingest-{name}-{batch_ts}")(
+            source_name=name
+        )
     logger.info("ingest-batch sources=%d result=%s", len(names), results)
     return results

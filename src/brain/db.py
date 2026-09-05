@@ -8,7 +8,6 @@ Other lanes depend on two callables:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import psycopg
 from psycopg import Connection
@@ -28,7 +27,7 @@ def _migration_files() -> list[Path]:
     return sorted(MIGRATIONS_DIR.glob("*.sql"))
 
 
-def apply_migrations(conn: Optional[Connection] = None) -> None:
+def apply_migrations(conn: Connection | None = None) -> None:
     """Execute migrations/*.sql in order. Idempotent — safe to rerun.
 
     Opens (and closes) its own connection when none is supplied; when a

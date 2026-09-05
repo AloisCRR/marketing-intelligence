@@ -20,7 +20,7 @@ lanes can fill them without breaking callers.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -54,16 +54,14 @@ def _coerce_bound(value: date | datetime, *, is_end: bool) -> datetime:
     if isinstance(value, date):
         start = datetime(value.year, value.month, value.day, tzinfo=PANAMA_TZ)
         return start + timedelta(days=1) if is_end else start
-    raise TypeError(
-        f"period bounds must be date or datetime, got {type(value).__name__}"
-    )
+    raise TypeError(f"period bounds must be date or datetime, got {type(value).__name__}")
 
 
 def _iso_tz_aware(value: Any) -> Any:
     """Normalise a published_at value to an isoformat tz-aware string."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         return value.isoformat()
     return value
 
@@ -92,7 +90,9 @@ def get_weekly_context(
     start = _coerce_bound(from_date, is_end=False)
     end = _coerce_bound(to_date, is_end=True)
     if start > end:
-        raise ValueError(f"empty period: from_date {start.isoformat()} is after to_date {end.isoformat()}")
+        raise ValueError(
+            f"empty period: from_date {start.isoformat()} is after to_date {end.isoformat()}"
+        )
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError(f"limit must be a positive int, got {limit!r}")
     names = list(sources) if sources is not None else list(V1_SOURCES)
