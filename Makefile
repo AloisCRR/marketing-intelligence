@@ -28,4 +28,4 @@ migrate:
 	PYTHONPATH=src uv run --frozen python -c "from brain.db import apply_migrations; apply_migrations()"
 
 ingest:
-	PREFECT_API_URL="" PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=true PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_source_flow; print(ingest_source_flow('$(or $(SOURCE),Social Media Today)'))"
+	PREFECT_API_URL="" PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=true PREFECT_UI_URL="" PREFECT_UI_API_URL="" PREFECT_API_AUTH_STRING="" PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_source_flow; print(ingest_source_flow('$(or $(SOURCE),Social Media Today)'))"
