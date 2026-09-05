@@ -39,6 +39,13 @@ def normalize_language(raw: Any | None) -> str:
 
 SOURCE_NAME_SMT = "Social Media Today"
 
+V1_SOURCES: tuple[str, ...] = (
+    SOURCE_NAME_SMT,
+    "MarTech",
+    "Professional Jeweller",
+    "InfoMoney",
+)
+
 _FALLBACK_SMT: dict[str, Any] = {
     "name": SOURCE_NAME_SMT,
     "rss_url": "https://www.socialmediatoday.com/feeds/news/",
@@ -92,3 +99,12 @@ def get_source(name: str) -> dict[str, Any]:
         return dict(_registry()[name])
     except KeyError:
         raise KeyError(f"Unknown source: {name!r}") from None
+
+
+def list_v1_sources() -> list[dict[str, Any]]:
+    """Return registry entries for the V1 scope, in V1 order.
+
+    Extra registry entries (e.g. JCK Online, Swarovski PR Newswire) stay
+    ingestible by explicit name; they are simply outside V1 defaults.
+    """
+    return [get_source(name) for name in V1_SOURCES]

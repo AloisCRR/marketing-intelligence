@@ -252,17 +252,15 @@ def test_multi_source_flow_records_failure_without_blocking_others(
     assert "error" in results[PJ] and results[PJ]["error"]
 
 
-def test_ingest_all_sources_flow_covers_all_four(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_all_sources_flow_covers_v1_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
-    from brain.sources import list_sources
-
-    smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
+    from brain.sources import V1_SOURCES
 
     def fake_fetch(url: str, timeout: int = 30) -> bytes:
         for name, path in FIXTURE_FILES.items():
             if url == get_source(name)["rss_url"]:
                 return path.read_bytes()
-        return smt_bytes  # any other registry source (e.g. JCK, Swarovski)
+        raise AssertionError(f"V1 default must not fetch non-V1 url: {url}")
 
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch)
 
@@ -271,10 +269,28 @@ def test_ingest_all_sources_flow_covers_all_four(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     results = ingest_all_sources_flow()
-    registry_names = {entry["name"] for entry in list_sources()}
-    assert set(results) == registry_names
-    for name in EXPECTED_RSS:
+    assert set(results) == set(V1_SOURCES)
+    for name in V1_SOURCES:
         assert results[name] == {"inserted": 3, "skipped": 0}
+
+
+def test_extra_registry_sources_ingestible_by_explicit_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import brain.flows as flows
+
+    from brain.flows import ingest_sources_flow
+
+    smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
+    monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: smt_bytes)
+
+    def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
+        return (len(docs), 0)
+
+    monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
+    results = ingest_sources_flow(source_names=["JCK Online"])
+    assert set(results) == {"JCK Online"}
+    assert results["JCK Online"] == {"inserted": 3, "skipped": 0}
 
 
 # --- migration ----------------------------------------------------------------
