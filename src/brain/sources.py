@@ -40,6 +40,19 @@ def normalize_language(raw: Any | None) -> str:
 
 SOURCE_NAME_SMT = "Social Media Today"
 
+#: Default thin threshold (chars) for the enrichment policy when a source
+#: carries no override. Mirrors `brain.enrich.DEFAULT_THIN_THRESHOLD`.
+DEFAULT_ENRICHMENT_THRESHOLD = 500
+
+#: Allowed enrichment modes: thin-only, enrich everything, enrich nothing.
+ENRICHMENT_MODES: tuple[str, ...] = ("auto", "force_on", "force_off")
+
+#: Policy returned for unknown sources and entries without overrides.
+DEFAULT_ENRICHMENT_POLICY: dict[str, Any] = {
+    "threshold": DEFAULT_ENRICHMENT_THRESHOLD,
+    "mode": "auto",
+}
+
 V1_SOURCES: tuple[str, ...] = (
     SOURCE_NAME_SMT,
     "MarTech",
@@ -85,6 +98,11 @@ def _registry() -> dict[str, dict[str, Any]]:
                 "language": normalize_language(entry.get("language")),
                 "raw": entry,
             }
+            overrides = entry.get("enrichment")
+            if isinstance(overrides, dict):
+                # Per-source enrichment policy (ticket 03): file-based
+                # {"threshold": int, "mode": "auto"|"force_on"|"force_off"}.
+                registry[name]["enrichment"] = dict(overrides)
     registry.setdefault(SOURCE_NAME_SMT, dict(_FALLBACK_SMT))
     return registry
 
@@ -100,6 +118,32 @@ def get_source(name: str) -> dict[str, Any]:
         return dict(_registry()[name])
     except KeyError:
         raise KeyError(f"Unknown source: {name!r}") from None
+
+
+def get_enrichment_policy(source_name: str) -> dict[str, Any]:
+    """Return the enrichment policy for `source_name`.
+
+    Result shape is ``{"threshold": int, "mode": "auto"|"force_on"|"force_off"}``:
+    ``auto`` enriches thin bodies only, ``force_on`` enriches every item,
+    ``force_off`` skips all enrichment. Overrides come from the registry
+    entry's ``"enrichment"`` mapping (``{"threshold": ..., "mode": ...}``);
+    entries without overrides yield the default (threshold 500, auto).
+    Unknown sources yield the default — this function never raises.
+    """
+    try:
+        entry = get_source(source_name)
+    except KeyError:
+        return dict(DEFAULT_ENRICHMENT_POLICY)
+    raw = entry.get("enrichment")
+    if not isinstance(raw, dict):
+        return dict(DEFAULT_ENRICHMENT_POLICY)
+    threshold = raw.get("threshold", DEFAULT_ENRICHMENT_THRESHOLD)
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
+        threshold = DEFAULT_ENRICHMENT_THRESHOLD
+    mode = raw.get("mode", "auto")
+    if mode not in ENRICHMENT_MODES:
+        mode = "auto"
+    return {"threshold": threshold, "mode": mode}
 
 
 def list_v1_sources() -> list[dict[str, Any]]:

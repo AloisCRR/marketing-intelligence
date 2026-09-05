@@ -1,0 +1,390 @@
+"""Thin-triggered Markdown enrichment tests (ticket 02).
+
+Contract under test:
+- sufficient RSS bodies skip enrichment untouched (zero fetch cost)
+- thin/missing bodies get clean Markdown stored, hash over stored text
+- every failure mode keeps RSS + records cause; the run completes
+- reruns insert nothing new; no model/LLM calls on the enrichment path
+
+All I/O is faked (monkeypatch, no network, no Postgres).
+"""
+
+from __future__ import annotations
+
+import sys
+import urllib.error
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from brain.normalize import NormalizedDocument, content_hash_for, make_document
+
+THIN_URL = "https://example.com/articles/thin-story"
+FULL_URL = "https://example.com/articles/full-story"
+
+NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
+
+
+def _thin_doc(url: str = THIN_URL, content: str = "Short summary.") -> NormalizedDocument:
+    return make_document(
+        source="Social Media Today",
+        url=url,
+        title="Thin Story",
+        content=content,
+        published_at=NOW,
+        retrieved_at=NOW,
+        language="en",
+    )
+
+
+def _full_doc() -> NormalizedDocument:
+    return make_document(
+        source="Social Media Today",
+        url=FULL_URL,
+        title="Full Story",
+        content="x" * 600,
+        published_at=NOW,
+        retrieved_at=NOW,
+        language="en",
+    )
+
+
+# --- is_thin -----------------------------------------------------------------
+
+
+def test_is_thin_empty_and_whitespace_only() -> None:
+    from brain.enrich import is_thin
+
+    assert is_thin("") is True
+    assert is_thin("   \n\t  ") is True
+
+
+def test_is_thin_threshold_boundary() -> None:
+    from brain.enrich import DEFAULT_THIN_THRESHOLD, is_thin
+
+    assert DEFAULT_THIN_THRESHOLD == 500
+    assert is_thin("x" * 499) is True
+    assert is_thin("x" * 500) is False
+    assert is_thin("x" * 501) is False
+
+
+def test_is_thin_collapses_whitespace_before_measuring() -> None:
+    from brain.enrich import is_thin
+
+    assert is_thin("  a  b  ", threshold=10) is True  # collapses to "a b"
+    assert is_thin("  a  b  ", threshold=3) is False
+    assert is_thin("x" * 400, threshold=500) is True
+    assert is_thin("x" * 400, threshold=100) is False
+
+
+# --- clean_to_markdown --------------------------------------------------------
+
+
+def test_clean_to_markdown_strips_tags_preserves_paragraphs() -> None:
+    from brain.enrich import clean_to_markdown
+
+    html = "<article><h1>Head</h1><p>First &amp; paragraph.</p><p>Second <b>bold</b> one.</p></article>"
+    md = clean_to_markdown(html, THIN_URL)
+    assert "<" not in md and ">" not in md
+    assert "First & paragraph." in md
+    assert "Second bold one." in md
+    assert "\n\n" in md  # paragraph breaks preserved
+
+
+def test_clean_to_markdown_plain_text_passthrough() -> None:
+    from brain.enrich import clean_to_markdown
+
+    md = clean_to_markdown("Just some plain text.", THIN_URL)
+    assert md == "Just some plain text."
+
+
+# --- fetch_and_clean failure mapping ------------------------------------------
+
+
+def test_fetch_and_clean_timeout_raises_fetch_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    def _boom(request: object, timeout: object = None) -> object:
+        raise urllib.error.URLError("timed out")
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _boom)
+    with pytest.raises(enrich.FetchFailed, match="(?i)timed out|fetch failed"):
+        enrich.fetch_and_clean(THIN_URL, timeout=1)
+
+
+def test_fetch_and_clean_http_error_raises_fetch_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    def _denied(request: object, timeout: object = None) -> object:
+        raise urllib.error.HTTPError(str(THIN_URL), 403, "Forbidden", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _denied)
+    with pytest.raises(enrich.FetchFailed, match="(?i)403|forbidden|fetch failed"):
+        enrich.fetch_and_clean(THIN_URL)
+
+
+def test_fetch_and_clean_empty_body_raises_unparseable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    class _Resp:
+        def __enter__(self) -> _Resp:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return b"<html><body>   </body></html>"
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    with pytest.raises(enrich.UnparseableBody):
+        enrich.fetch_and_clean(THIN_URL)
+
+
+# --- enrich_document ----------------------------------------------------------
+
+
+def test_sufficient_rss_skips_untouched_zero_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    calls: list[str] = []
+
+    def _must_not_run(url: str, timeout: int = 30) -> str:
+        calls.append(url)
+        raise AssertionError("fetch must not run for sufficient RSS bodies")
+
+    monkeypatch.setattr(enrich, "fetch_and_clean", _must_not_run)
+    doc = _full_doc()
+    new_doc, method, cause = enrich.enrich_document(doc)
+    assert calls == []
+    assert method == "rss"
+    assert cause is None
+    assert new_doc is doc  # byte-identical: same object, untouched
+
+
+def test_thin_item_stores_markdown_hash_over_stored_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    markdown = "# Thin Story\n\nFull article body with several sentences of real content."
+    monkeypatch.setattr(enrich, "fetch_and_clean", lambda url, timeout=30: markdown)
+    doc = _thin_doc()
+    new_doc, method, cause = enrich.enrich_document(doc)
+    assert cause is None
+    assert method != "rss"
+    assert new_doc.content == markdown
+    assert new_doc.content_hash == content_hash_for(new_doc.title, markdown)
+    assert new_doc.content_hash != doc.content_hash  # hash follows stored text
+    # metadata preserved
+    assert new_doc.url == doc.url
+    assert new_doc.title == doc.title
+    assert new_doc.source == doc.source
+    assert new_doc.language == doc.language
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        Exception("timeout after 30s"),
+        Exception("403 paywall / bot protection"),
+        Exception("unparseable body"),
+    ],
+    ids=["timeout", "paywall", "unparseable"],
+)
+def test_each_failure_mode_keeps_rss_and_records_cause(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    from brain import enrich
+
+    failure_cls: type[enrich.EnrichmentError] = (
+        enrich.UnparseableBody if "unparseable" in str(failure) else enrich.FetchFailed
+    )
+
+    def _fail(url: str, timeout: int = 30) -> str:
+        raise failure_cls(str(failure))
+
+    monkeypatch.setattr(enrich, "fetch_and_clean", _fail)
+    doc = _thin_doc()
+    # raising API surfaces the typed error for callers that catch ...
+    with pytest.raises(enrich.EnrichmentError):
+        enrich.enrich_document(doc)
+    # ... while the never-raises wrapper keeps RSS + cause.
+    kept, method, cause = enrich.enrich_document_or_keep(doc)
+    assert kept is doc
+    assert method == "rss"
+    assert cause is not None and str(failure) in cause
+
+
+def test_enrich_document_or_keep_never_raises_on_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    def _boom(url: str, timeout: int = 30) -> str:
+        raise RuntimeError("something bizarre")
+
+    monkeypatch.setattr(enrich, "fetch_and_clean", _boom)
+    kept, method, cause = enrich.enrich_document_or_keep(_thin_doc())
+    assert method == "rss"
+    assert cause is not None and "bizarre" in cause
+
+
+# --- flow integration ----------------------------------------------------------
+
+THIN_FEED = """<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"><channel><title>SMT</title><link>https://example.com</link>
+<item><title>Thin Story</title><link>https://example.com/articles/thin-story</link>
+<description>Short.</description>
+<pubDate>Thu, 03 Sep 2026 09:15:00 -0500</pubDate></item>
+<item><title>Full Story</title><link>https://example.com/articles/full-story</link>
+<description>{full}</description>
+<pubDate>Thu, 03 Sep 2026 10:15:00 -0500</pubDate></item>
+</channel></rss>""".format(full="x" * 600).encode()
+
+
+class _FakeCursor:
+    def __init__(self, store: dict) -> None:
+        self._store = store
+        self.rowcount = 0
+        self._row = None
+
+    def execute(self, sql: str, params: tuple | None = None) -> _FakeCursor:
+        assert params is not None
+        if sql.lstrip().upper().startswith("SELECT"):
+            self._row = (1,)
+            self.rowcount = 1
+            return self
+        url, content_hash = params[1], params[-1]
+        if url in self._store or content_hash in {p[-1] for p in self._store.values()}:
+            self.rowcount = 0
+        else:
+            self._store[url] = params
+            self.rowcount = 1
+        return self
+
+    def fetchone(self) -> tuple | None:
+        return self._row
+
+
+class FakeConnection:
+    def __init__(self) -> None:
+        self.store: dict = {}
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, params: tuple | None = None) -> _FakeCursor:
+        self.statements.append(sql)
+        return _FakeCursor(self.store).execute(sql, params)
+
+    def commit(self) -> None:
+        pass
+
+
+def _wire_flow(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> Any:
+    import brain.flows as flows
+    from brain.ingest import upsert_documents
+
+    monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: THIN_FEED)
+    monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
+    return flows
+
+
+def test_flow_enriches_thin_only_and_skips_sufficient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich as enrich_mod
+
+    flows = _wire_flow(monkeypatch, FakeConnection())
+    fetched: list[str] = []
+
+    def _spy(url: str, timeout: int = 30) -> str:
+        fetched.append(url)
+        return "# Thin Story\n\nEnriched full markdown body for the thin item."
+
+    monkeypatch.setattr(enrich_mod, "fetch_and_clean", _spy)
+    result = flows.ingest_source_flow(source_name="Social Media Today")
+    assert result["inserted"] == 2
+    assert "error" not in result
+    assert fetched == ["https://example.com/articles/thin-story"]  # full item: zero fetch
+    assert result.get("enrich_skipped", 0) == 0
+    assert "enrich_causes" not in result
+
+
+def test_flow_failure_keeps_rss_records_cause_run_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich as enrich_mod
+
+    flows = _wire_flow(monkeypatch, FakeConnection())
+
+    def _timeout(url: str, timeout: int = 30) -> str:
+        raise enrich_mod.FetchFailed("timeout after 30s (paywall/bot guard)")
+
+    monkeypatch.setattr(enrich_mod, "fetch_and_clean", _timeout)
+    result = flows.ingest_source_flow(source_name="Social Media Today")
+    assert "error" not in result  # run completes: explicit partial failure
+    assert result["inserted"] == 2  # RSS bodies still persisted
+    assert result["enrich_skipped"] == 1
+    assert len(result["enrich_causes"]) == 1
+    assert result["enrich_causes"][0].startswith("rss:")  # method recorded with cause
+    assert "timeout" in result["enrich_causes"][0]
+
+
+def test_flow_enrich_stage_never_blocks_on_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flows = _wire_flow(monkeypatch, FakeConnection())
+
+    def _boom(doc: NormalizedDocument, threshold: int = 500) -> Any:
+        raise RuntimeError("enrichment exploded")
+
+    monkeypatch.setattr(flows, "enrich_document_or_keep", _boom)
+    result = flows.ingest_source_flow(source_name="Social Media Today")
+    assert "error" not in result
+    assert result["inserted"] == 2
+    assert result["enrich_skipped"] == 2  # both items kept their RSS bodies
+    assert len(result["enrich_causes"]) == 2
+    assert all(c.startswith("rss:") for c in result["enrich_causes"])
+
+
+def test_flow_rerun_inserts_nothing_new(monkeypatch: pytest.MonkeyPatch) -> None:
+    from brain import enrich as enrich_mod
+
+    conn = FakeConnection()
+    flows = _wire_flow(monkeypatch, conn)
+    monkeypatch.setattr(
+        enrich_mod,
+        "fetch_and_clean",
+        lambda url, timeout=30: "# Thin Story\n\nStable enriched body.",
+    )
+    first = flows.ingest_source_flow(source_name="Social Media Today")
+    assert first["inserted"] == 2
+    second = flows.ingest_source_flow(source_name="Social Media Today")
+    assert second["inserted"] == 0
+    assert len(conn.store) == 2
+
+
+# --- no-LLM guard --------------------------------------------------------------
+
+
+def test_no_model_calls_on_enrichment_path() -> None:
+    import re
+
+    from brain import enrich
+
+    source = Path(enrich.__file__).read_text(encoding="utf-8")
+    for banned in ("openai", "anthropic", "transformers", "torch", "firecrawl", "crawl4ai"):
+        pattern = re.compile(rf"^\s*(import|from)\s+{banned}\b", re.MULTILINE)
+        assert not pattern.search(source), f"enrichment must stay deterministic, found {banned!r}"
+    for mod in ("openai", "anthropic", "transformers", "torch"):
+        assert mod not in sys.modules, f"model library {mod!r} must not be imported"

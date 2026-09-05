@@ -153,6 +153,15 @@ class _UpsertFakeConnection:
     rowcount: int = 0
 
 
+def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep flow tests hermetic: enrichment is lane 02/03's concern, not weekly/run shape.
+
+    Identity-enriches every document so Ingestion Runs over fixtures keep their
+    pre-enrichment result shapes and skip-reason accounting (no live fetches).
+    """
+    monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
+
+
 # --- seeded article rows -------------------------------------------------------
 # (title, url, canonical_url, source, published_at, author)
 
@@ -325,7 +334,6 @@ def test_empty_range_returns_empty_articles_with_period() -> None:
 def test_naive_datetime_assumed_panama_not_server_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    previous = time.tzname
     monkeypatch.setenv("TZ", "Pacific/Kiritimati")  # UTC+14, far from Panama
     time.tzset()
     try:
@@ -425,6 +433,7 @@ def test_flow_records_runs_without_changing_result_shapes(
     monkeypatch.setattr(
         flows, "fetch_rss", lambda url, timeout=30: (FIXTURES / "martech_sample.xml").read_bytes()
     )
+    _stub_enrich_identity(monkeypatch)
     upsert_conn = _UpsertFakeConnection()
     monkeypatch.setattr(
         flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=upsert_conn)
@@ -453,6 +462,7 @@ def test_flow_records_skip_reasons_on_messy_feeds(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         flows, "fetch_rss", lambda url, timeout=30: (FIXTURES / "messy_sample.xml").read_bytes()
     )
+    _stub_enrich_identity(monkeypatch)
     upsert_conn = _UpsertFakeConnection()
     monkeypatch.setattr(
         flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=upsert_conn)

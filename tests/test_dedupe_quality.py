@@ -201,6 +201,9 @@ def test_flow_surfaces_parse_skipped_without_breaking_clean_flows(
 ) -> None:
     import brain.flows as flows
 
+    # Hermetic: enrichment is lane 02/03's concern — identity-enrich so this
+    # test keeps asserting parse/dedupe shapes, never live article fetches.
+    monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: MESSY.read_bytes())
     conn = FakeConnection()
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))

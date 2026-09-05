@@ -82,9 +82,13 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_two_tools() -> None:
+def test_mcp_registers_exactly_three_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
-    assert sorted(t.name for t in tools) == ["get_weekly_context", "search_articles"]
+    assert sorted(t.name for t in tools) == [
+        "get_article",
+        "get_weekly_context",
+        "search_articles",
+    ]
 
 
 def test_search_api_equals_mcp_tool(stubbed_service: None) -> None:

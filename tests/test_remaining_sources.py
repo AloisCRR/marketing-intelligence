@@ -194,6 +194,17 @@ class FakeConnection:
         self.commits += 1
 
 
+def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep flow tests hermetic: enrichment is lane 02/03's concern, not parse/dedupe.
+
+    Identity-enriches every document so Ingestion Runs over fixtures keep their
+    pre-enrichment {inserted, skipped} shapes (no live article fetches).
+    """
+    import brain.flows as _flows
+
+    monkeypatch.setattr(_flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
+
+
 @pytest.mark.parametrize("name", [MARTECH, PJ, INFOMONEY])
 def test_rerun_upsert_idempotent_per_source(name: str) -> None:
     docs = parse_feed(FIXTURE_FILES[name].read_bytes(), source=name)
@@ -223,6 +234,7 @@ def test_single_source_flow_rerunnable_independently(
 
     fixture = FIXTURE_FILES[name].read_bytes()
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: fixture)
+    _stub_enrich_identity(monkeypatch)
     conn = FakeConnection()
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = ingest_source_flow(source_name=name)
@@ -245,6 +257,7 @@ def test_multi_source_flow_records_failure_without_blocking_others(
         return FIXTURE_FILES[by_url[url]].read_bytes()
 
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch)
+    _stub_enrich_identity(monkeypatch)
     shared: dict[str, FakeConnection] = {}
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
@@ -275,6 +288,7 @@ def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyP
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
+    _stub_enrich_identity(monkeypatch)
     results = ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
     for name in V1_SOURCES:
@@ -294,6 +308,7 @@ def test_extra_registry_sources_ingestible_by_explicit_name(
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
+    _stub_enrich_identity(monkeypatch)
     results = ingest_sources_flow(source_names=["JCK Online"])
     assert set(results) == {"JCK Online"}
     assert results["JCK Online"] == {"inserted": 3, "skipped": 0}

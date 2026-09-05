@@ -50,3 +50,11 @@ def weekly_context(body: WeeklyRequest) -> dict[str, Any]:
     return service.get_weekly_context(
         body.from_date, body.to_date, sources=body.sources, limit=body.limit
     )
+
+
+@app.get("/article")
+def get_article(
+    url: str = Query(..., description="Article URL or canonical URL"),
+) -> dict[str, Any]:
+    """One-item full-text lookup by URL/canonical URL (full body + provenance)."""
+    return service.get_article(url)

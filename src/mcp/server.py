@@ -37,5 +37,11 @@ def get_weekly_context(
     return service.get_weekly_context(from_date, to_date, sources=sources, limit=limit)
 
 
+@mcp.tool()
+def get_article(identifier: str) -> dict[str, Any]:
+    """One article's full stored text plus provenance, by URL/canonical URL."""
+    return service.get_article(identifier)
+
+
 if __name__ == "__main__":
     mcp.run()

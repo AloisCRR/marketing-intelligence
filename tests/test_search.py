@@ -119,7 +119,7 @@ def _patch(monkeypatch, rows: list[tuple]) -> dict:
 
 
 def test_keyword_match_returns_provenance(monkeypatch) -> None:
-    holder = _patch(monkeypatch, ROWS)
+    _patch(monkeypatch, ROWS)
     results = search_module.search_articles("Gen Z")
 
     assert len(results) >= 2

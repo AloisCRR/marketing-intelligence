@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
+from brain import article as _article
 from brain import search as _search
 from brain import weekly as _weekly
 from brain.sources import V1_SOURCES
@@ -38,6 +39,16 @@ WEEKLY_ARTICLE_KEYS = (
     "source",
     "published_at",
     "author",
+)
+
+ARTICLE_KEYS = (
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "content",
 )
 
 TREND_KEYS = (
@@ -157,4 +168,21 @@ def get_weekly_context(
     except InvalidRequest:
         raise
     except (ValueError, TypeError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
+    """Validated one-item lookup; full stored body plus provenance.
+
+    Blank/non-string identifiers raise `InvalidRequest` without a DB
+    round-trip; unknown identifiers surface from the lane as `ValueError`
+    (also `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise InvalidRequest("identifier must be a non-empty string")
+    try:
+        return _article.get_article(identifier.strip(), conn=conn)
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
         raise InvalidRequest(str(exc)) from None

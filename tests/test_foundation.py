@@ -99,7 +99,7 @@ def test_migration_documents_columns():
 def test_migration_indexes_and_seed():
     sql = _read(MIGRATION).lower()
     for col in ("content_hash", "published_at"):
-        assert re.search(r"create index if not exists.*%s" % col, sql), f"missing index on {col}"
+        assert re.search(rf"create index if not exists.*{col}", sql), f"missing index on {col}"
     # url has a UNIQUE constraint; a dedicated index or the constraint both satisfy "indexes on url".
     assert re.search(r"(create( unique)? index if not exists.*\burl\b|url text unique)", sql), (
         "missing index/unique on url"
