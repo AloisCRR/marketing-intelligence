@@ -2,15 +2,16 @@
 
 - Retrieval is plain HTTP (timeout + UA). No Firecrawl (per CONTEXT.md cuts).
 - Parsing accepts RSS or Atom and produces the normalized contract.
-- Persistence is rerun-safe: `ON CONFLICT (url) DO NOTHING` plus per-item
-  error capture, so a repeated run inserts nothing new and one bad row never
-  aborts the batch. (`content_hash` has its own UNIQUE guard in the schema;
-  hash collisions surface as skipped rows via the same per-item handling.)
+- Persistence is rerun-safe: `ON CONFLICT DO NOTHING` (no conflict target,
+  so url, canonical_url, and content_hash collisions all collapse) plus
+  per-item error capture, so a repeated run inserts nothing new and one bad
+  row never aborts the batch.
 """
 
 from __future__ import annotations
 
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,7 +29,7 @@ INSERT INTO documents
   (source_id, url, canonical_url, title, author,
    published_at, retrieved_at, language, content, content_hash)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (url) DO NOTHING\
+ON CONFLICT DO NOTHING\
 """
 
 SOURCE_ID_SQL = "SELECT id FROM sources WHERE name = %s"
@@ -62,16 +63,40 @@ def _registry_language(source: str) -> str:
         return "en"
 
 
-def parse_feed(
+@dataclass
+class ParseReport:
+    """Outcome of parsing one feed: documents plus visible skip accounting.
+
+    `skipped` counts entries that could not become documents (missing
+    title/link, unparseable item); `skipped_reasons` identifies each one
+    (entry index plus link when present) for reprocessing/exclusion.
+    """
+
+    documents: list[NormalizedDocument] = field(default_factory=list)
+    skipped: int = 0
+    skipped_reasons: list[str] = field(default_factory=list)
+
+
+def count_feed_entries(xml: bytes | str) -> int:
+    """Count entries in a feed payload; 0 when the payload has none."""
+    try:
+        payload = xml.decode("utf-8", errors="replace") if isinstance(xml, bytes) else xml
+        return len(feedparser.parse(payload).entries)
+    except Exception:
+        return 0
+
+
+def parse_feed_with_report(
     xml: bytes | str,
     source: str = DEFAULT_SOURCE,
     language: str | None = None,
-) -> list[NormalizedDocument]:
-    """Parse RSS/Atom bytes into normalized documents.
+) -> ParseReport:
+    """Parse RSS/Atom bytes into documents with explicit skip accounting.
 
     Malformed items (missing title/link, unparseable structure) are skipped
-    individually — partial failure is explicit, never a batch abort. A
-    totally unparseable feed raises ValueError.
+    individually and recorded in `skipped_reasons` — partial failure is
+    visible, never a batch abort. A totally unparseable feed raises
+    ValueError.
     """
     payload = xml.decode("utf-8", errors="replace") if isinstance(xml, bytes) else xml
     feed = feedparser.parse(payload)
@@ -79,12 +104,16 @@ def parse_feed(
         raise ValueError(f"Unparseable feed: {feed.bozo_exception!r}")
     retrieved_at = datetime.now(timezone.utc)
     resolved_language = language or _registry_language(source)
-    docs: list[NormalizedDocument] = []
-    for entry in feed.entries:
+    report = ParseReport()
+    for index, entry in enumerate(feed.entries):
         try:
             title = (entry.get("title") or "").strip()
             link = (entry.get("link") or "").strip()
             if not title or not link:
+                missing = "title" if not title else "link"
+                hint = f" ({link})" if link else ""
+                report.skipped += 1
+                report.skipped_reasons.append(f"entry {index}{hint}: missing {missing}")
                 continue
             content_parts: list[str] = []
             for block in entry.get("content", []) or []:
@@ -95,7 +124,7 @@ def parse_feed(
                 entry.get("summary") or entry.get("description") or ""
             )
             author = (entry.get("author") or "").strip() or None
-            docs.append(
+            report.documents.append(
                 make_document(
                     source=source,
                     url=link,
@@ -107,9 +136,25 @@ def parse_feed(
                     language=resolved_language,
                 )
             )
-        except Exception:
-            continue
-    return docs
+        except Exception as exc:
+            report.skipped += 1
+            report.skipped_reasons.append(f"entry {index}: unparseable item ({exc})")
+    return report
+
+
+def parse_feed(
+    xml: bytes | str,
+    source: str = DEFAULT_SOURCE,
+    language: str | None = None,
+) -> list[NormalizedDocument]:
+    """Parse RSS/Atom bytes into normalized documents.
+
+    Malformed items (missing title/link, unparseable structure) are skipped
+    individually — partial failure is explicit, never a batch abort. A
+    totally unparseable feed raises ValueError. For skip accounting see
+    :func:`parse_feed_with_report`.
+    """
+    return parse_feed_with_report(xml, source=source, language=language).documents
 
 
 def upsert_documents(

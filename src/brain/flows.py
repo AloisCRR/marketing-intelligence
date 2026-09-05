@@ -10,7 +10,7 @@ from typing import Any
 
 from prefect import flow, task
 
-from brain.ingest import fetch_rss, parse_feed, upsert_documents
+from brain.ingest import count_feed_entries, fetch_rss, parse_feed, upsert_documents
 from brain.normalize import NormalizedDocument
 from brain.sources import get_source
 
@@ -40,10 +40,12 @@ def upsert_task(docs: list[NormalizedDocument]) -> dict[str, int]:
 
 @flow
 def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any]:
-    """Ingest one source end-to-end. Returns {inserted, skipped[, error]}.
+    """Ingest one source end-to-end. Returns {inserted, skipped[, parse_skipped][, error]}.
 
     Stage failures are explicit (returned as `error`, never raised), so one
-    failing source never invalidates the rest of the pipeline.
+    failing source never invalidates the rest of the pipeline. `parse_skipped`
+    counts malformed feed items dropped at parse time; it is present only when
+    nonzero so clean-feed results keep their exact {inserted, skipped} shape.
     """
     try:
         source = get_source(source_name)
@@ -58,9 +60,18 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     except Exception as exc:
         return {"inserted": 0, "skipped": 0, "error": f"parse failed: {exc}"}
     try:
-        return upsert_task(docs)
+        result = upsert_task(docs)
     except Exception as exc:
         return {"inserted": 0, "skipped": 0, "error": f"persist failed: {exc}"}
+    try:
+        # Skip reasons available via parse_feed_with_report; persisted by 04.
+        entries = count_feed_entries(xml)
+    except Exception:
+        entries = len(docs)
+    parse_skipped = max(0, entries - len(docs))
+    if parse_skipped:
+        result["parse_skipped"] = parse_skipped
+    return result
 
 
 @flow

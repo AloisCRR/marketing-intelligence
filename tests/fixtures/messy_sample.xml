@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Messy Feed (quality probe)</title>
+    <link>https://example.com/</link>
+    <description>Synthetic feed exercising malformed items and missing fields</description>
+    <language>en-us</language>
+    <!-- Item 1: happy path -->
+    <item>
+      <title>Clean Item With Everything Present</title>
+      <link>https://example.com/news/clean-item/1/</link>
+      <dc:creator>Jane Doe</dc:creator>
+      <pubDate>Thu, 04 Sep 2026 12:00:00 +0000</pubDate>
+      <description><![CDATA[<p>A <strong>clean</strong> item for the happy path.</p>]]></description>
+      <guid isPermaLink="false">messy-1</guid>
+    </item>
+    <!-- Item 2: missing title -> skipped, identifiable -->
+    <item>
+      <link>https://example.com/news/missing-title/2/</link>
+      <dc:creator>John Smith</dc:creator>
+      <pubDate>Thu, 04 Sep 2026 11:00:00 +0000</pubDate>
+      <description><![CDATA[<p>This item has no title.</p>]]></description>
+      <guid isPermaLink="false">messy-2</guid>
+    </item>
+    <!-- Item 3: missing link -> skipped, identifiable -->
+    <item>
+      <title>Item With No Link Anywhere</title>
+      <dc:creator>John Smith</dc:creator>
+      <pubDate>Thu, 04 Sep 2026 10:00:00 +0000</pubDate>
+      <description><![CDATA[<p>This item has no link.</p>]]></description>
+      <guid isPermaLink="false">messy-3</guid>
+    </item>
+    <!-- Item 4: missing author -> ingested, author NULL -->
+    <item>
+      <title>Anonymous Item Without Author</title>
+      <link>https://example.com/news/anonymous-item/4/</link>
+      <pubDate>Thu, 04 Sep 2026 09:00:00 +0000</pubDate>
+      <description><![CDATA[<p>No author metadata on this one.</p>]]></description>
+      <guid isPermaLink="false">messy-4</guid>
+    </item>
+    <!-- Item 5: garbage date -> ingested, published falls back to retrieval time -->
+    <item>
+      <title>Item With Garbage Date</title>
+      <link>https://example.com/news/garbage-date/5/</link>
+      <dc:creator>Jane Doe</dc:creator>
+      <pubDate>not-a-date-at-all</pubDate>
+      <description><![CDATA[<p>Its date cannot be parsed.</p>]]></description>
+      <guid isPermaLink="false">messy-5</guid>
+    </item>
+    <!-- Item 6: empty item -> skipped, identifiable -->
+    <item>
+      <guid isPermaLink="false">messy-6</guid>
+    </item>
+  </channel>
+</rss>
