@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_DATABASE_URL = "postgresql://brain:brain@localhost:5432/brain"
+DEFAULT_DATABASE_URL = "postgresql://brain:brain@localhost:5433/brain"
 
 DATABASE_URL: str = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
 

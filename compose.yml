@@ -13,7 +13,7 @@
 # subpath — mounting the old path creates anonymous volumes).
 #
 # App connection (see .env.example):
-#   DATABASE_URL=postgresql://brain:brain@localhost:5432/brain
+#   DATABASE_URL=postgresql://brain:brain@localhost:5433/brain
 
 services:
   db:
@@ -27,7 +27,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brain}
       POSTGRES_DB: ${POSTGRES_DB:-brain}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       # Named volume at the PG18 parent path. No anonymous volumes.
       - pgdata:/var/lib/postgresql

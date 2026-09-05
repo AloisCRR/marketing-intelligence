@@ -46,7 +46,9 @@ def test_compose_uses_named_volume_pgdata_at_pg18_path():
         "compose.yml needs a top-level named volume 'pgdata:'"
     )
     # Postgres service must be named `db`.
-    assert re.search(r"(?m)^\s{2}db:\s*$", text), "compose.yml needs a service named 'db'"
+    assert re.search(r"(?m)^\s{2}db:\s*$", text), (
+        "compose.yml needs a service named 'db'"
+    )
 
 
 def test_compose_has_no_anonymous_volumes():
@@ -54,9 +56,7 @@ def test_compose_has_no_anonymous_volumes():
     # Short-syntax anonymous volumes look like `- /container/path` or
     # `- /container/path:ro` (leading `/` = host path missing = anonymous).
     anonymous = [
-        line
-        for line in text.splitlines()
-        if re.match(r"\s*-\s*[\"']?/", line)
+        line for line in text.splitlines() if re.match(r"\s*-\s*[\"']?/", line)
     ]
     assert not anonymous, f"anonymous short-syntax volumes found: {anonymous}"
 
@@ -96,7 +96,9 @@ def test_migration_documents_columns():
         "created_at",
     ):
         assert col in sql, f"documents table missing column: {col}"
-    assert "references sources" in sql, "documents.source_id must REFERENCES sources(id)"
+    assert "references sources" in sql, (
+        "documents.source_id must REFERENCES sources(id)"
+    )
     assert "unique" in sql
 
 
@@ -107,9 +109,9 @@ def test_migration_indexes_and_seed():
             f"missing index on {col}"
         )
     # url has a UNIQUE constraint; a dedicated index or the constraint both satisfy "indexes on url".
-    assert re.search(r"(create( unique)? index if not exists.*\burl\b|url text unique)", sql), (
-        "missing index/unique on url"
-    )
+    assert re.search(
+        r"(create( unique)? index if not exists.*\burl\b|url text unique)", sql
+    ), "missing index/unique on url"
     raw = _read(MIGRATION)
     assert "Social Media Today" in raw
     assert "https://www.socialmediatoday.com/feeds/news/" in raw
@@ -135,7 +137,7 @@ def test_config_default_database_url():
     import brain.config as config
 
     importlib.reload(config)
-    assert config.DATABASE_URL == "postgresql://brain:brain@localhost:5432/brain"
+    assert config.DATABASE_URL == "postgresql://brain:brain@localhost:5433/brain"
 
 
 # --- live-DB integration (opt-in) -------------------------------------------
