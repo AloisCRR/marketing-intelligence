@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Env / local
+.env
+*.Zone.Identifier
+
+# Docker data (named volumes hold DB state)
+postgres-data/

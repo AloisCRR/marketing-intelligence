@@ -1,0 +1,41 @@
+# Local dev stack — Trend Intelligence Brain (Ticket 01).
+#
+# Bring up the DB:
+#   docker compose up -d db        # start Postgres 18 + pgvector
+#   docker compose logs -f db      # watch readiness
+#   docker compose down            # stop (data persists on named volume `pgdata`)
+#   docker compose down -v         # DANGER: deletes the pgdata volume + all data
+#
+# Persistence check (ADR-0001): seed or insert a row, run
+# `docker compose down && docker compose up -d db`, and confirm the data
+# is still there. Data lives on the named volume `pgdata` mounted at the
+# PG18 path /var/lib/postgresql (NOT the pre-18 /var/lib/postgresql/data
+# subpath — mounting the old path creates anonymous volumes).
+#
+# App connection (see .env.example):
+#   DATABASE_URL=postgresql://brain:brain@localhost:5432/brain
+
+services:
+  db:
+    # Pinned PG18 + pgvector image (verified to exist; trixie variant).
+    # Fallback if trixie is ever pulled: pgvector/pgvector:0.8.6-pg18-bookworm.
+    image: pgvector/pgvector:0.8.6-pg18-trixie
+    container_name: brain-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-brain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brain}
+      POSTGRES_DB: ${POSTGRES_DB:-brain}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume at the PG18 parent path. No anonymous volumes.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-brain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

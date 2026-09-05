@@ -1,0 +1,33 @@
+[project]
+name = "trend-intelligence-brain"
+version = "0.1.0"
+description = "Trend Intelligence Brain — curated-source intelligence platform"
+requires-python = ">=3.12"
+dependencies = [
+  "psycopg[binary]>=3.1",
+  "prefect>=3.0",
+  "feedparser>=6.0",
+  "python-dateutil>=2.9",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "mypy>=1.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

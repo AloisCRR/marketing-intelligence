@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Social Media Today</title>
+    <link>https://www.socialmediatoday.com/</link>
+    <description>Social media news and insights</description>
+    <language>en-us</language>
+    <!-- Item 1: happy path, author present, RFC-822 date, URL with query+fragment -->
+    <item>
+      <title>TikTok Adds Voice Notes and Image Carousels in Comments</title>
+      <link>https://www.socialmediatoday.com/news/tiktok-adds-voice-notes-and-image-carousels-in-comments/829640/?utm_source=feed&amp;utm_medium=rss#comments</link>
+      <dc:creator>Andrew Hutchinson</dc:creator>
+      <pubDate>Thu, 04 Sep 2026 14:30:00 +0000</pubDate>
+      <description><![CDATA[<p>TikTok is adding <strong>voice notes</strong> and image carousels as new comment options, giving brands more creative ways to join conversations.</p>]]></description>
+      <guid isPermaLink="false">smt-829640</guid>
+    </item>
+    <!-- Item 2: missing author, date with non-UTC offset -->
+    <item>
+      <title>Instagram Tests Reels Templates for Collaborative Posts</title>
+      <link>https://www.socialmediatoday.com/news/instagram-tests-reels-templates-collab-posts/829601/</link>
+      <pubDate>Wed, 03 Sep 2026 09:15:00 -0500</pubDate>
+      <description><![CDATA[<p>Instagram is testing new Reels templates designed for collaborative posting between creators and brands.</p>]]></description>
+      <guid isPermaLink="false">smt-829601</guid>
+    </item>
+    <!-- Item 3: edge-case date (ISO-8601, no timezone), content:encoded body -->
+    <item>
+      <title>LinkedIn Reports Record Video Engagement Among Gen Z</title>
+      <link>https://www.socialmediatoday.com/news/linkedin-video-engagement-gen-z/829555/</link>
+      <dc:creator>Emma Wiltshire</dc:creator>
+      <pubDate>2026-09-02T18:45:00</pubDate>
+      <content:encoded><![CDATA[<p>LinkedIn says video posts are driving <em>record engagement</em> from Gen Z members, with watch time up sharply year over year.</p><p>Marketers should take note of the shift toward short-form professional video.</p>]]></content:encoded>
+      <guid isPermaLink="false">smt-829555</guid>
+    </item>
+  </channel>
+</rss>
