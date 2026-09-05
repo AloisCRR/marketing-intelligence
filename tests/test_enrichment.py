@@ -388,3 +388,116 @@ def test_no_model_calls_on_enrichment_path() -> None:
         assert not pattern.search(source), f"enrichment must stay deterministic, found {banned!r}"
     for mod in ("openai", "anthropic", "transformers", "torch"):
         assert mod not in sys.modules, f"model library {mod!r} must not be imported"
+
+
+# --- primary fetch backend: impersonation first, stdlib fallback ----------------
+
+
+ARTICLE_HTML = (
+    "<html><head><title>Thin Story</title></head><body><article><h1>Thin Story</h1>"
+    "<p>" + "Full article body with real content. " * 40 + "</p></article></body></html>"
+).encode()
+
+
+class _CurlResponse:
+    def __init__(self, status_code: int, body: bytes) -> None:
+        self.status_code = status_code
+        self.content = body
+
+
+class _FakeCurlRequests:
+    """curl_cffi.requests double: records calls, replays one canned response."""
+
+    def __init__(self, status_code: int = 200, body: bytes = b"") -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.status_code = status_code
+        self.body = body
+
+    def get(self, url: str, **kwargs: Any) -> _CurlResponse:
+        self.calls.append({"url": url, **kwargs})
+        return _CurlResponse(self.status_code, self.body)
+
+
+class _Resp:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> _Resp:
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _browser_headers_of(request: Any) -> dict[str, str]:
+    return {k.lower(): v for k, v in request.header_items()}
+
+
+def test_impersonation_backend_used_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    fake = _FakeCurlRequests(200, ARTICLE_HTML)
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
+
+    def _must_not_open(request: object, timeout: object = None) -> object:
+        raise AssertionError("impersonation success must not touch stdlib")
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _must_not_open)
+    markdown = enrich.fetch_and_clean(THIN_URL)
+    assert "Full article body" in markdown
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["url"] == THIN_URL
+    assert call["impersonate"] == "chrome"  # Chrome impersonation, never a crawler
+    headers = call["headers"]
+    ua = headers["User-Agent"]
+    assert ua.startswith("Mozilla/5.0") and "Chrome/" in ua
+    assert "Googlebot" not in ua and "bot" not in ua.lower()
+    assert "Cookie" not in headers and "Authorization" not in headers
+
+
+def test_stdlib_fallback_when_curl_cffi_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", None)
+    captured: dict[str, Any] = {}
+
+    def _open(request: Any, timeout: Any = None) -> _Resp:
+        captured["request"] = request
+        return _Resp(ARTICLE_HTML)
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _open)
+    markdown = enrich.fetch_and_clean(THIN_URL)
+    assert "Full article body" in markdown
+    sent = _browser_headers_of(captured["request"])
+    assert sent["user-agent"].startswith("Mozilla/5.0") and "Chrome/" in sent["user-agent"]
+    assert "googlebot" not in sent["user-agent"]
+    assert sent["sec-fetch-mode"] == "navigate"  # genuine browser headers
+    assert "cookie" not in sent and "authorization" not in sent
+
+
+def test_impersonation_failure_falls_back_to_stdlib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain import enrich
+
+    fake = _FakeCurlRequests(403, b"Forbidden")
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
+    stdlib_calls: list[Any] = []
+
+    def _open(request: Any, timeout: Any = None) -> _Resp:
+        stdlib_calls.append(request)
+        return _Resp(ARTICLE_HTML)
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _open)
+    markdown = enrich.fetch_and_clean(THIN_URL)
+    assert "Full article body" in markdown  # legacy attempt outcome is final
+    assert len(fake.calls) == 1
+    assert len(stdlib_calls) == 1

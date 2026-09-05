@@ -165,6 +165,62 @@ def test_challenge_body_behind_429_trips_gated_fallback(monkeypatch: Any) -> Non
     assert new_doc.content == LONG_MARKDOWN
 
 
+def test_keywordless_403_lock_page_trips_gated_fallback(monkeypatch: Any) -> None:
+    from brain import enrich
+
+    # Styled bot lock page: non-empty body, no challenge keywords at all.
+    lock_html = (
+        b"<!DOCTYPE html><html><head><title></title><style>.lock{display:block}</style>"
+        b"</head><body>"
+        b'<div class="lock">Access temporarily restricted. Try again later.</div>'
+        b"</body></html>"
+    )
+    assert not any(key in lock_html.decode().lower() for key in enrich._CHALLENGE_KEYWORDS), (
+        "test premise: lock page carries no challenge keywords"
+    )
+
+    class _FakeCurlRequests:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get(self, url: str, **kwargs: Any) -> Any:
+            self.calls.append(url)
+
+            class _Resp:
+                status_code = 403
+                content = lock_html
+
+            return _Resp()
+
+    fake_curl = _FakeCurlRequests()
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake_curl)
+
+    def _locked(request: Any, timeout: Any = None) -> Any:
+        raise urllib.error.HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            {},  # type: ignore[arg-type]
+            io.BytesIO(lock_html),
+        )
+
+    fallback_calls: list[str] = []
+
+    def _fallback(url: str, timeout: int = 30) -> str:
+        fallback_calls.append(url)
+        return LONG_MARKDOWN
+
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _locked)
+    monkeypatch.setattr(enrich, "try_fallback_reader", _fallback)
+
+    new_doc, method, cause = enrich.enrich_document_or_keep(_thin_doc())
+    assert fake_curl.calls == [GATED_URL]
+    assert fallback_calls == [GATED_URL]  # thin-rendered 403 counts as a miss
+    assert cause is None
+    assert method == "enriched"
+    assert new_doc.content == LONG_MARKDOWN
+
+
 def test_plain_paywall_without_challenge_signal_keeps_rss_no_fallback(
     monkeypatch: Any,
 ) -> None:
