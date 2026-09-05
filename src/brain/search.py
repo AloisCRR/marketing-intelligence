@@ -101,12 +101,17 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def search_articles(keyword: str, limit: int = 20) -> list[dict[str, Any]]:
+def search_articles(
+    keyword: str, limit: int = 20, conn: Any | None = None
+) -> list[dict[str, Any]]:
     """Search ingested articles by keyword, newest first.
 
     Args:
         keyword: matched (case-insensitively) against title and content.
         limit: maximum number of results.
+        conn: optional injected DB-API connection (fake-friendly). When None
+            a connection is opened via `get_connection` and closed afterwards;
+            an injected connection is never committed or closed here.
 
     Returns:
         List of dicts with keys ``title, url, canonical_url, source,
@@ -123,7 +128,10 @@ def search_articles(keyword: str, limit: int = 20) -> list[dict[str, Any]]:
     pattern = f"%{term}%"
     params = (pattern, pattern, limit)
 
-    conn = get_connection()
+    owns_connection = conn is None
+    if conn is None:
+        conn = get_connection()
+    assert conn is not None
     try:
         cursor = conn.cursor()
         try:
@@ -134,9 +142,10 @@ def search_articles(keyword: str, limit: int = 20) -> list[dict[str, Any]]:
             if callable(close):
                 close()
     finally:
-        close_conn = getattr(conn, "close", None)
-        if callable(close_conn):
-            close_conn()
+        if owns_connection:
+            close_conn = getattr(conn, "close", None)
+            if callable(close_conn):
+                close_conn()
 
     results: list[dict[str, Any]] = []
     for row in rows or []:
