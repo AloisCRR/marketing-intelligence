@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from brain import service
+from brain.auth import require_bearer
 from brain.service import (
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_WEEKLY_LIMIT,
@@ -32,6 +33,7 @@ async def _invalid_request_handler(request: Any, exc: InvalidRequest) -> JSONRes
 def search(
     q: str = Query(..., description="Keyword matched against title and content"),
     limit: int = Query(DEFAULT_SEARCH_LIMIT, description="Max results [1..100]"),
+    _: None = Depends(require_bearer),
 ) -> dict[str, Any]:
     """Keyword search, newest first (11-key provenance dicts: 7 base + 4 flag keys)."""
     return {"results": service.search_articles(q, limit=limit)}
@@ -45,7 +47,7 @@ class WeeklyRequest(BaseModel):
 
 
 @app.post("/weekly-context")
-def weekly_context(body: WeeklyRequest) -> dict[str, Any]:
+def weekly_context(body: WeeklyRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
     """Weekly evidence bundle for [from_date, to_date] (ISO dates)."""
     return service.get_weekly_context(
         body.from_date, body.to_date, sources=body.sources, limit=body.limit
@@ -55,6 +57,7 @@ def weekly_context(body: WeeklyRequest) -> dict[str, Any]:
 @app.get("/article")
 def get_article(
     url: str = Query(..., description="Article URL or canonical URL"),
+    _: None = Depends(require_bearer),
 ) -> dict[str, Any]:
     """One-item full-text lookup by URL/canonical URL (full body + provenance)."""
     return service.get_article(url)
@@ -69,7 +72,7 @@ class FlagRequest(BaseModel):
 
 
 @app.post("/flag-extraction")
-def flag_extraction(body: FlagRequest) -> dict[str, Any]:
+def flag_extraction(body: FlagRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
     """Flag (or clear) an extraction issue on one article; returns updated Article."""
     return service.flag_extraction(  # type: ignore[attr-defined, no-any-return]
         body.identifier,

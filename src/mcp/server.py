@@ -5,19 +5,48 @@ shared service functions. Run directly (never `python -m mcp.server` — the
 local `src/mcp/` dir intentionally has no `__init__.py` so the installed
 `mcp` distribution keeps winning plain `import mcp`):
 
-    uv run python src/mcp/server.py
+    uv run python src/mcp/server.py                 # stdio (local `make mcp`)
+    uv run python src/mcp/server.py --http          # streamable HTTP (local only)
+
+Deployment serves the streamable-HTTP app (`http_app`, or a fresh instance via
+`create_http_app()`) as plain HTTP behind Traefik, which terminates TLS. When
+`BRAIN_API_TOKEN` is set, HTTP requests must carry
+`Authorization: Bearer <token>` (enforced via `StaticTokenVerifier` as
+`FastMCP(token_verifier=...)`); stdio is unaffected. When unset, auth is
+disabled (local-dev open mode).
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from starlette.applications import Starlette
 
 from brain import service
+from brain.auth import StaticTokenVerifier, is_auth_configured, mcp_auth_settings
 from brain.service import DEFAULT_SEARCH_LIMIT, DEFAULT_WEEKLY_LIMIT
 
-mcp = FastMCP("trend-intelligence-brain")
+
+def create_mcp() -> FastMCP:
+    """Build the shared FastMCP server.
+
+    Reads `BRAIN_API_TOKEN` at call time so tests/rotation get a fresh
+    verdict; pass the result to `create_http_app` or serve `http_app`.
+    FastMCP 1.29.1 API: `FastMCP(name, auth=AuthSettings(...),
+    token_verifier=...)` — `auth` is required alongside `token_verifier`.
+    """
+    if is_auth_configured():
+        return FastMCP(
+            "trend-intelligence-brain",
+            auth=mcp_auth_settings(),
+            token_verifier=StaticTokenVerifier(),
+        )
+    return FastMCP("trend-intelligence-brain")
+
+
+mcp = create_mcp()
 
 
 @mcp.tool()
@@ -57,5 +86,24 @@ def flag_extraction(
     )
 
 
+def create_http_app() -> Starlette:
+    """Fresh streamable-HTTP Starlette app for this server (FastMCP 1.29.1 API).
+
+    Uses `FastMCP.streamable_http_app(self) -> Starlette` (no args) on a
+    freshly built server so the current `BRAIN_API_TOKEN` value applies.
+    Serve plain HTTP behind Traefik (TLS terminated at the proxy), e.g.
+    `uvicorn mcp.server:http_app --port 8124`.
+    """
+    return create_mcp().streamable_http_app()
+
+
+# ASGI entrypoint reflecting the env at process start (containers set
+# BRAIN_API_TOKEN before import, so this is the enforced app in prod).
+http_app = mcp.streamable_http_app()
+
+
 if __name__ == "__main__":
-    mcp.run()
+    if "--http" in sys.argv:
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()

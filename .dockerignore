@@ -1,0 +1,10 @@
+# Keep the deploy image lean: deps come from uv.lock, never from local state.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.scratch/
+.env
+.pytest_cache/
+*.egg-info/

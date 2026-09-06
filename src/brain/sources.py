@@ -53,6 +53,19 @@ DEFAULT_ENRICHMENT_POLICY: dict[str, Any] = {
     "mode": "auto",
 }
 
+#: Allowed retrieval types: RSS feeds only (V1 cut; 14 null-RSS entries stay out).
+RETRIEVAL_TYPES: tuple[str, ...] = ("rss",)
+
+#: Allowed feed retrieval policies: plain stdlib fetch, or stdlib with one
+#: curl_cffi impersonated retry on 403/challenge evidence.
+RETRIEVAL_POLICIES: tuple[str, ...] = ("stdlib-only", "impersonated-feed")
+
+#: Policy returned for unknown sources and entries without overrides.
+DEFAULT_RETRIEVAL_POLICY: dict[str, Any] = {
+    "type": "rss",
+    "policy": "stdlib-only",
+}
+
 V1_SOURCES: tuple[str, ...] = (
     SOURCE_NAME_SMT,
     "MarTech",
@@ -103,6 +116,11 @@ def _registry() -> dict[str, dict[str, Any]]:
                 # Per-source enrichment policy (ticket 03): file-based
                 # {"threshold": int, "mode": "auto"|"force_on"|"force_off"}.
                 registry[name]["enrichment"] = dict(overrides)
+            retrieval = entry.get("retrieval")
+            if isinstance(retrieval, dict):
+                # Per-source retrieval policy: file-based
+                # {"type": "rss", "policy": "stdlib-only"|"impersonated-feed"}.
+                registry[name]["retrieval"] = dict(retrieval)
     registry.setdefault(SOURCE_NAME_SMT, dict(_FALLBACK_SMT))
     return registry
 
@@ -144,6 +162,35 @@ def get_enrichment_policy(source_name: str) -> dict[str, Any]:
     if mode not in ENRICHMENT_MODES:
         mode = "auto"
     return {"threshold": threshold, "mode": mode}
+
+
+def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
+    """Return the retrieval policy for `source_name`.
+
+    Result shape is ``{"type": "rss", "policy": "stdlib-only"|"impersonated-feed"}``:
+    ``stdlib-only`` fetches feeds with plain urllib (current behavior);
+    ``impersonated-feed`` adds one curl_cffi Chrome-impersonated retry when
+    the stdlib attempt meets 403/challenge evidence, else an explicit fetch
+    error. Overrides come from the registry entry's ``"retrieval"`` mapping;
+    entries without overrides yield the default (rss, stdlib-only).
+    Unknown (or missing) sources yield the default — never raises.
+    """
+    if source_name is None:
+        return dict(DEFAULT_RETRIEVAL_POLICY)
+    try:
+        entry = get_source(source_name)
+    except KeyError:
+        return dict(DEFAULT_RETRIEVAL_POLICY)
+    raw = entry.get("retrieval")
+    if not isinstance(raw, dict):
+        return dict(DEFAULT_RETRIEVAL_POLICY)
+    rtype = raw.get("type", "rss")
+    if rtype not in RETRIEVAL_TYPES:
+        rtype = "rss"
+    policy = raw.get("policy", "stdlib-only")
+    if policy not in RETRIEVAL_POLICIES:
+        policy = "stdlib-only"
+    return {"type": rtype, "policy": policy}
 
 
 def list_v1_sources() -> list[dict[str, Any]]:

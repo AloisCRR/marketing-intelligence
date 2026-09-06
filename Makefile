@@ -1,4 +1,4 @@
-.PHONY: dev test lint fmt mcp db-up migrate ingest help
+.PHONY: dev test lint fmt mcp db-up migrate migrate-baseline ingest help image up up-db down logs migrate-compose
 
 help:
 	@echo "dev      - FastAPI + /docs on :8123 (reload)"
@@ -6,8 +6,15 @@ help:
 	@echo "test     - pytest (no live DB needed)"
 	@echo "lint     - mypy src"
 	@echo "db-up    - docker compose up -d db"
-	@echo "migrate  - apply migrations/*.sql (idempotent)"
-	@echo "ingest   - ingest one source (SOURCE=\"Social Media Today\")"
+	@echo "migrate  - yoyo: apply pending migrations only"
+	@echo "migrate-baseline - one-time: mark applied without executing (pre-yoyo DBs)"
+	@echo "ingest   - ingest all V1 sources (SOURCE=\"MarTech\" for one source)"
+	@echo "image    - docker build deploy image (IMAGE=brain-app:local)"
+	@echo "up       - docker compose up -d --build (db+migrate+api+mcp)"
+	@echo "up-db    - docker compose up -d db (local DB only)"
+	@echo "down     - docker compose down (keeps pgdata volume)"
+	@echo "logs     - docker compose logs -f --tail=100"
+	@echo "migrate-compose - run one-shot migrate service in compose net"
 
 dev:
 	PYTHONPATH=src uv run --frozen uvicorn api.app:app --port 8123 --reload
@@ -30,8 +37,31 @@ fmt:
 db-up:
 	docker compose up -d db
 
+IMAGE ?= brain-app:local
+
+image:
+	docker build -t $(IMAGE) .
+
+up:
+	docker compose up -d --build
+
+up-db:
+	docker compose up -d db
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f --tail=100
+
+migrate-compose:
+	docker compose run --rm migrate
+
 migrate:
-	PYTHONPATH=src uv run --frozen python -c "from brain.db import apply_migrations; apply_migrations()"
+	PYTHONPATH=src uv run --frozen python -c "from brain.db import apply_migrations; print(apply_migrations())"
+
+migrate-baseline:
+	PYTHONPATH=src uv run --frozen python -c "from brain.db import baseline_migrations; print(baseline_migrations())"
 
 ingest:
-	PREFECT_API_URL="" PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=true PREFECT_UI_URL="" PREFECT_UI_API_URL="" PREFECT_API_AUTH_STRING="" PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_source_flow; print(ingest_source_flow('$(or $(SOURCE),Social Media Today)'))"
+	PREFECT_API_URL="" PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=true PREFECT_UI_URL="" PREFECT_UI_API_URL="" PREFECT_API_AUTH_STRING="" PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_sources_flow; print(ingest_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"

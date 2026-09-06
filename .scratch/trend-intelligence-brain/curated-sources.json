@@ -40,6 +40,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
+    "retrieval": {"type": "rss", "policy": "stdlib-only"},
+    "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.professionaljeweller.com/vicenzaoro-september-kicks-off-today/",
     "sample_article_date": "2026-09-04"
@@ -115,6 +117,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
+    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
+    "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.socialmediatoday.com/news/tiktok-adds-voice-notes-and-image-carousels-in-comments/829640/",
     "sample_article_date": "2026-09-03"
@@ -175,6 +179,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
+    "retrieval": {"type": "rss", "policy": "stdlib-only"},
+    "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://martech.org/marketing-without-signals-how-to-perform-when-the-data-disappears/",
     "sample_article_date": "2026-09-04"
@@ -280,6 +286,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
+    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
+    "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.infomoney.com.br/business/casas-bahia-em-crise-quem-mais-no-varejo-enfrenta-pressao-de-divida/",
     "sample_article_date": "2026-08-26"

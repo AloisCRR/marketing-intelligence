@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,6 +25,34 @@ from brain.normalize import NormalizedDocument, coerce_tz_aware, make_document
 USER_AGENT = "TrendIntelligenceBrain/1.0 (+rss-ingest; local)"
 DEFAULT_SOURCE = "Social Media Today"
 
+try:  # optional impersonated-feed backend (mirrors brain.enrich primary)
+    from curl_cffi import requests as _curl_cffi_requests
+except Exception:  # pragma: no cover - stdlib-only environments
+    _curl_cffi_requests = None  # type: ignore[assignment]
+
+#: Allowed feed retrieval policies (validated in fetch_rss; see brain.sources).
+_FEED_POLICIES: tuple[str, ...] = ("stdlib-only", "impersonated-feed")
+
+#: Markers identifying bot/challenge protection in a failed feed fetch.
+_FEED_CHALLENGE_MARKERS: tuple[str, ...] = (
+    "captcha",
+    "challenge",
+    "cloudflare",
+    "just a moment",
+    "verify you are",
+    "are you human",
+    "datadome",
+    "perimeterx",
+    "akamai",
+    "incapsula",
+    "kasada",
+    "access denied",
+    "enable javascript",
+)
+
+#: Error-body bytes inspected for challenge evidence on the stdlib attempt.
+_FEED_ERROR_BODY_CAP = 65536
+
 INSERT_SQL = """\
 INSERT INTO documents
   (source_id, url, canonical_url, title, author,
@@ -35,11 +64,123 @@ ON CONFLICT DO NOTHING\
 SOURCE_ID_SQL = "SELECT id FROM sources WHERE name = %s"
 
 
-def fetch_rss(url: str, timeout: int = 30) -> bytes:
+def _policy_for_feed_url(url: str) -> str:
+    """Resolve the retrieval policy for a feed URL via the source registry.
+
+    Matches the URL against registry `rss_url` values and returns that
+    source's policy; unregistered URLs (and any lookup failure) yield
+    "stdlib-only". Never raises.
+    """
+    try:
+        from brain.sources import get_retrieval_policy, list_sources
+
+        for entry in list_sources():
+            if entry.get("rss_url") == url:
+                policy = get_retrieval_policy(str(entry.get("name", ""))).get("policy")
+                if policy in _FEED_POLICIES:
+                    return str(policy)
+                return "stdlib-only"
+    except Exception:
+        pass
+    return "stdlib-only"
+
+
+def _fetch_feed_stdlib(url: str, timeout: int = 30) -> bytes:
     """Download a feed over plain HTTP. Raises on network/HTTP failure."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return bytes(response.read())
+
+
+def _feed_blocked(status: int | None, snippet: str) -> bool:
+    """True when a failed stdlib attempt carries bot/challenge evidence.
+
+    Any 403 qualifies; other statuses need a challenge marker in the captured
+    body snippet. Deliberately specific: a plain 404/500 with no challenge
+    evidence stays an explicit fetch error without impersonated retry traffic.
+    """
+    if status == 403:
+        return True
+    haystack = snippet.lower()
+    return any(marker in haystack for marker in _FEED_CHALLENGE_MARKERS)
+
+
+def _fetch_feed_impersonated(url: str, timeout: int = 30) -> bytes:
+    """GET `url` with curl_cffi Chrome impersonation plus a browser identity."""
+    from brain.enrich import BROWSER_USER_AGENT  # canonical browser identity
+
+    assert _curl_cffi_requests is not None  # guarded by fetch_rss
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        response = _curl_cffi_requests.get(
+            url, impersonate="chrome", headers=headers, timeout=timeout
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"fetch failed for {url} (retrieval policy=impersonated-feed): {exc}"
+        ) from exc
+    body = bytes(response.content or b"")
+    status = int(response.status_code)
+    if status >= 400:
+        snippet = body[:512].decode("utf-8", errors="replace").strip()
+        detail = f"HTTP Error {status}"
+        if snippet:
+            detail += f" — body: {snippet[:512]}"
+        raise RuntimeError(f"fetch failed for {url} (retrieval policy=impersonated-feed): {detail}")
+    return body
+
+
+def fetch_rss(url: str, timeout: int = 30, policy: str | None = None) -> bytes:
+    """Download a feed over plain HTTP. Raises on network/HTTP failure.
+
+    `policy` selects the retrieval lane: "stdlib-only" keeps the current
+    plain-urllib behavior; "impersonated-feed" tries stdlib first and, only
+    when that attempt meets 403/challenge evidence, retries once with curl_cffi
+    Chrome impersonation — any other failure is an explicit fetch error.
+    None resolves the policy from the source registry by feed URL
+    (unregistered URLs default to stdlib-only); unknown policy values fall
+    back to stdlib-only. Never raises on bad policy input.
+    """
+    if policy in _FEED_POLICIES:
+        effective = str(policy)
+    elif policy is None:
+        effective = _policy_for_feed_url(url)
+    else:
+        effective = "stdlib-only"
+    if effective != "impersonated-feed":
+        return _fetch_feed_stdlib(url, timeout)
+    try:
+        return _fetch_feed_stdlib(url, timeout)
+    except urllib.error.HTTPError as exc:
+        body = b""
+        try:
+            body = bytes(exc.read(_FEED_ERROR_BODY_CAP) or b"")
+        except Exception:
+            body = b""
+        snippet = body[:512].decode("utf-8", errors="replace").strip()
+        status = int(exc.code)
+        if not _feed_blocked(status, snippet):
+            raise RuntimeError(
+                f"fetch failed for {url} (retrieval policy=impersonated-feed): "
+                f"HTTP Error {status}: {exc.reason}"
+            ) from exc
+        blocked_detail = f"HTTP Error {status}: {exc.reason}"
+        if snippet:
+            blocked_detail += f" — body: {snippet[:512]}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"fetch failed for {url} (retrieval policy=impersonated-feed): {exc}"
+        ) from exc
+    if _curl_cffi_requests is None:
+        raise RuntimeError(
+            f"fetch failed for {url} (retrieval policy=impersonated-feed): "
+            f"{blocked_detail} (curl_cffi unavailable for impersonated retry)"
+        )
+    return _fetch_feed_impersonated(url, timeout)
 
 
 def _published_at(entry: Any, fallback: datetime) -> datetime:
