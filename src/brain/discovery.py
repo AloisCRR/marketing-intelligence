@@ -456,6 +456,94 @@ def robots_crawl_delay(robots_txt: str) -> float:
         return 0.0
 
 
+def _robots_star_rules(robots_txt: str) -> tuple[list[str], list[str]]:
+    """Allow/Disallow paths declared for `User-agent: *` groups.
+
+    Same grouping semantics as :func:`robots_crawl_delay`: consecutive
+    user-agent lines share one block, and any directive line starts a fresh
+    group. Returns (allows, disallows) in document order, deduped. Absolute-URL
+    values (e.g. ``Allow: https://host/sitemap.xml``) are reduced to their
+    path; empty Disallow values mean allow-all and are dropped. Never raises.
+    """
+    allows: list[str] = []
+    disallows: list[str] = []
+    try:
+        agents: list[str] = []
+        seen_directive = False
+        for raw_line in (robots_txt or "").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            field, _, value = line.partition(":")
+            field = field.strip().lower()
+            value = value.strip().split()[0] if value.strip() else ""
+            if field == "user-agent":
+                if seen_directive:
+                    agents = []
+                    seen_directive = False
+                agents.append(value.lower())
+            elif field in ("allow", "disallow"):
+                seen_directive = True
+                if not any(a == "*" for a in agents):
+                    continue
+                if not value:
+                    continue  # empty Disallow/Allow: allow-all, no rule
+                if "://" in value:
+                    try:
+                        value = urlsplit(value).path or "/"
+                    except ValueError:
+                        continue
+                if not value.startswith("/"):
+                    continue  # not a path rule; ignore
+                target = allows if field == "allow" else disallows
+                if value not in target:
+                    target.append(value)
+            else:
+                seen_directive = True
+    except Exception:
+        return ([], [])
+    return (allows, disallows)
+
+
+def robots_disallowed_paths(robots_txt: str) -> list[str]:
+    """Disallow paths declared for `User-agent: *` in robots.txt.
+
+    Best-effort: missing/garbled input yields [] — never raises.
+    """
+    try:
+        _, disallows = _robots_star_rules(robots_txt)
+        return list(disallows)
+    except Exception:
+        return []
+
+
+def robots_is_disallowed(url: str, robots_txt: str) -> bool:
+    """True when `url` falls under a `User-agent: *` Disallow.
+
+    Longest-prefix match per RFC (``Disallow: /posts/private`` covers
+    ``/posts/private*``); on ties the Allow wins, so an explicit Allow
+    exception beats a Disallow covering it. Query strings participate in the
+    match (``path[?query]``). Empty Disallow means allow-all; missing/garbled
+    input (or an unparseable URL) allows — never raises.
+    """
+    try:
+        allows, disallows = _robots_star_rules(robots_txt)
+        if not disallows:
+            return False
+        try:
+            parts = urlsplit(url)
+            target = parts.path or "/"
+            if parts.query:
+                target += "?" + parts.query
+        except ValueError:
+            return False
+        best_allow = max((len(a) for a in allows if target.startswith(a)), default=-1)
+        best_deny = max((len(d) for d in disallows if target.startswith(d)), default=-1)
+        return best_deny >= 0 and best_deny > best_allow
+    except Exception:
+        return False
+
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
 _ATTR_RE_TEMPLATE = r"""{name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`>]+))"""
@@ -885,12 +973,15 @@ def harvest_sitemap_source(
             host = urlsplit(candidate.strip()).netloc.lower()
             break
     crawl_delay = 0.0
+    robots_txt = ""
     if host:
         try:
             _, robots_body = fetch_fn(f"https://{host}/robots.txt")
-            crawl_delay = robots_crawl_delay(robots_body.decode("utf-8", errors="replace"))
+            robots_txt = robots_body.decode("utf-8", errors="replace")
+            crawl_delay = robots_crawl_delay(robots_txt)
         except Exception:
             crawl_delay = 0.0
+            robots_txt = ""
     gap = max(pacing_ms / 1000.0, crawl_delay)
 
     def _paced_fetch(url: str) -> tuple[str, bytes]:
@@ -926,7 +1017,24 @@ def harvest_sitemap_source(
                 known.add(canonicalize_url(entry.loc))
                 discovered.append(entry)
         discovered = discovered[:max_urls]
+    if robots_txt:
+        # Robots Disallow filtering: discovered article URLs under a
+        # `User-agent: *` Disallow are explicit skips (never fetched or
+        # extracted). Hub listing pages themselves are never filtered —
+        # only the article URLs discovered from sitemaps/hubs.
+        kept: list[SitemapUrl] = []
+        robots_skipped = 0
+        for entry in discovered:
+            if robots_is_disallowed(entry.loc, robots_txt):
+                errors.append(f"{entry.loc}: disallowed by robots.txt")
+                robots_skipped += 1
+            else:
+                kept.append(entry)
+        discovered = kept
+    else:
+        robots_skipped = 0
     report = HarvestReport(causes=list(errors))
+    report.skipped += robots_skipped
     if not discovered:
         detail = "; ".join(errors) if errors else "no sitemap URLs declared"
         raise DiscoveryError(f"sitemap discovery for {source_label} yielded no URLs: {detail}")

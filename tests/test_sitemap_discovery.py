@@ -1058,9 +1058,9 @@ def test_flow_ingests_jing_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = flows.ingest_source_flow(source_name=JD)
-    # Declared stanza has no hub_pages: hub page 2 (lotus) stays out of the
-    # flow run; harvest-level tests prove declared pagination aggregates.
-    assert result["inserted"] == 6
+    # Declared stanza now ships hub_pages=[page/2/]: hub page 2 (lotus +
+    # dove) joins the flow run; harvest-level tests prove pagination.
+    assert result["inserted"] == 7
     assert result["skipped"] == 0
     assert result["discovery_skipped"] == 1
     assert len(result["discovery_causes"]) == 1
