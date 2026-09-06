@@ -12,7 +12,9 @@
   _Avoid_: Task Run (Prefect implementation term for the same step)
 - **Weekly Context**: a prepared evidence bundle for a caller-given date range (`period`, `important_articles` with provenance). V1: no velocity, no emerging-topics (no history yet).
 - **Service Adapter**: the single validated interface (`brain.service`, `MAX_LIMIT=100`, `InvalidRequest`) behind both caller surfaces; stdlib-only, no HTTP/MCP imports.
-- **API / MCP**: two thin, parity-guaranteed surfaces over the service adapter — HTTP (`GET /search`, `POST /weekly-context`, 422 on `InvalidRequest`) and MCP (2 tools, same payloads by construction).
+- **Extraction Flag**: an agent-reported marker that a Document's content was improperly extracted, with reason + detail + reporter + timestamp.
+  _Avoid_: Page mark, quality flag (factual accuracy is out of scope)
+- **API / MCP**: two thin, parity-guaranteed surfaces over the service adapter — HTTP (`GET /search` with 11-key dicts, `POST /weekly-context` with 10-key dicts, `GET /article`, `POST /flag-extraction`, 422 on `InvalidRequest`) and MCP (4 tools: `search_articles`, `get_weekly_context`, `get_article`, `flag_extraction`, same payloads by construction).
 
 ## V1 cuts (agreed)
 

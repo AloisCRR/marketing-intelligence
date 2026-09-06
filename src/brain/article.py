@@ -2,7 +2,9 @@
 
 Domain contract (stable): ``get_article(identifier)`` returns a single dict
 with keys ``title, url, canonical_url, source, published_at, author,
-content`` — the full stored body (clean Markdown/text, never a snippet).
+content`` plus the Extraction Flag annotation (``flag_reason, flag_detail,
+flagged_at, flagged_by`` — ``None`` when unflagged) — the full stored body
+(clean Markdown/text, never a snippet).
 Matching tries the exact URL first, then the canonical URL via
 ``brain.normalize.canonicalize_url``. Unknown identifiers raise
 ``ValueError`` (the service adapter maps it to ``InvalidRequest``).
@@ -28,7 +30,8 @@ from brain.normalize import canonicalize_url
 
 _ARTICLE_BY_URL_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
-       d.published_at, d.author, d.content
+       d.published_at, d.author, d.content,
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
  WHERE d.url = %s
@@ -37,7 +40,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
 
 _ARTICLE_BY_CANONICAL_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
-       d.published_at, d.author, d.content
+       d.published_at, d.author, d.content,
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
  WHERE d.canonical_url = %s
@@ -52,6 +56,10 @@ _RESULT_KEYS = (
     "published_at",
     "author",
     "content",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
 )
 
 
@@ -84,8 +92,24 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         published_at = row.get("published_at")
         author = row.get("author")
         content = row.get("content")
+        flag_reason = row.get("flag_reason")
+        flag_detail = row.get("flag_detail")
+        flagged_at = row.get("flagged_at")
+        flagged_by = row.get("flagged_by")
     else:
-        title, url, canonical_url, source, published_at, author, content = row
+        (
+            title,
+            url,
+            canonical_url,
+            source,
+            published_at,
+            author,
+            content,
+            flag_reason,
+            flag_detail,
+            flagged_at,
+            flagged_by,
+        ) = row
     return {
         "title": title,
         "url": url,
@@ -94,6 +118,10 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "published_at": published_at,
         "author": author,
         "content": content,
+        "flag_reason": flag_reason,
+        "flag_detail": flag_detail,
+        "flagged_at": flagged_at,
+        "flagged_by": flagged_by,
     }
 
 
@@ -125,8 +153,10 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
 
     Returns:
         Dict with keys ``title, url, canonical_url, source, published_at,
-        author, content``. ``published_at`` is an isoformat tz-aware string;
-        ``content`` is the full stored body (never a snippet).
+        author, content`` plus ``flag_reason, flag_detail, flagged_at,
+        flagged_by`` (``None`` when unflagged). ``published_at`` and a set
+        ``flagged_at`` are isoformat tz-aware strings; ``content`` is the
+        full stored body (never a snippet).
 
     Raises:
         ValueError: blank identifier or no stored article matches.
@@ -157,4 +187,5 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
 
     item = _row_to_dict(row)
     item["published_at"] = _to_iso_tz_aware(item["published_at"])
+    item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
     return {k: item[k] for k in _RESULT_KEYS}

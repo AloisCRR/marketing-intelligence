@@ -2,7 +2,7 @@
 
 Covers the shared validated interface in `brain.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
-- 7-key search schema + provenance + tz-aware published_at
+- 11-key search schema + provenance + tz-aware published_at
 - weekly bundle shape, provenance, [] trend keys, Panama tz handling
 - string coercion for weekly bounds, bounded limit (101 rejected)
 """
@@ -30,6 +30,33 @@ from brain.service import (  # noqa: E402
     search_articles,
 )
 
+SEARCH_EXPECTED_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "snippet",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+}
+
+WEEKLY_EXPECTED_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+}
+
 
 def _utc(*args: int) -> datetime:
     return datetime(*args, tzinfo=_dt.UTC)
@@ -38,7 +65,8 @@ def _utc(*args: int) -> datetime:
 # --- fakes -------------------------------------------------------------------
 
 SEARCH_ROWS = [
-    # (title, url, canonical_url, source, published_at, author, content)
+    # (title, url, canonical_url, source, published_at, author, content,
+    #  flag_reason, flag_detail, flagged_at, flagged_by)
     (
         "TikTok Adds Voice Notes",
         "https://www.socialmediatoday.com/news/tiktok/1/",
@@ -47,6 +75,10 @@ SEARCH_ROWS = [
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
         "TikTok rolls out voice notes and image carousels for comments globally.",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Signal Loss Rebuild",
@@ -56,6 +88,10 @@ SEARCH_ROWS = [
         _utc(2026, 9, 9, 13, 0),
         None,
         "How marketers rebuild measurement after signal loss this quarter.",
+        None,
+        None,
+        None,
+        None,
     ),
 ]
 
@@ -97,7 +133,8 @@ class _SearchConnection:
 
 
 WEEKLY_ROWS = [
-    # (title, url, canonical_url, source, published_at, author)
+    # (title, url, canonical_url, source, published_at, author,
+    #  flag_reason, flag_detail, flagged_at, flagged_by)
     (
         "TikTok Adds Voice Notes",
         "https://www.socialmediatoday.com/news/tiktok/1/",
@@ -105,6 +142,10 @@ WEEKLY_ROWS = [
         "Social Media Today",
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Signal Loss Rebuild",
@@ -112,6 +153,10 @@ WEEKLY_ROWS = [
         "https://martech.org/signal-loss/2/",
         "MarTech",
         _utc(2026, 9, 9, 13, 0),
+        None,
+        None,
+        None,
+        None,
         None,
     ),
 ]
@@ -157,19 +202,11 @@ class _WeeklyConnection:
 # --- search ------------------------------------------------------------------
 
 
-def test_search_returns_seven_key_schema_with_provenance() -> None:
+def test_search_returns_eleven_key_schema_with_provenance() -> None:
     results = search_articles("TikTok", conn=_SearchConnection())
     assert len(results) >= 1
     for row in results:
-        assert set(row.keys()) == {
-            "title",
-            "url",
-            "canonical_url",
-            "source",
-            "published_at",
-            "author",
-            "snippet",
-        }
+        assert set(row.keys()) == SEARCH_EXPECTED_KEYS
         assert row["source"] in ("Social Media Today", "MarTech")
         parsed = _dt.datetime.fromisoformat(str(row["published_at"]))
         assert parsed.tzinfo is not None
@@ -230,14 +267,7 @@ def test_weekly_shape_provenance_and_empty_trend_keys() -> None:
     articles = ctx["important_articles"]
     assert [a["title"] for a in articles] == ["Signal Loss Rebuild", "TikTok Adds Voice Notes"]
     for article in articles:
-        assert set(article) == {
-            "title",
-            "url",
-            "canonical_url",
-            "source",
-            "published_at",
-            "author",
-        }
+        assert set(article) == WEEKLY_EXPECTED_KEYS
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
 

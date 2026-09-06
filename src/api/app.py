@@ -33,7 +33,7 @@ def search(
     q: str = Query(..., description="Keyword matched against title and content"),
     limit: int = Query(DEFAULT_SEARCH_LIMIT, description="Max results [1..100]"),
 ) -> dict[str, Any]:
-    """Keyword search, newest first (7-key provenance dicts)."""
+    """Keyword search, newest first (11-key provenance dicts: 7 base + 4 flag keys)."""
     return {"results": service.search_articles(q, limit=limit)}
 
 
@@ -58,3 +58,23 @@ def get_article(
 ) -> dict[str, Any]:
     """One-item full-text lookup by URL/canonical URL (full body + provenance)."""
     return service.get_article(url)
+
+
+class FlagRequest(BaseModel):
+    identifier: str
+    reason: str | None = None
+    detail: str | None = None
+    flagged_by: str | None = None
+    clear: bool = False
+
+
+@app.post("/flag-extraction")
+def flag_extraction(body: FlagRequest) -> dict[str, Any]:
+    """Flag (or clear) an extraction issue on one article; returns updated Article."""
+    return service.flag_extraction(  # type: ignore[attr-defined, no-any-return]
+        body.identifier,
+        reason=body.reason,
+        detail=body.detail,
+        flagged_by=body.flagged_by,
+        clear=body.clear,
+    )

@@ -23,7 +23,8 @@ except Exception:  # pragma: no cover - defensive fallback when absent
 
 _SEARCH_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
-       d.published_at, d.author, d.content
+       d.published_at, d.author, d.content,
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
  WHERE d.title ILIKE %s OR d.content ILIKE %s
@@ -41,6 +42,10 @@ _RESULT_KEYS = (
     "published_at",
     "author",
     "snippet",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
 )
 
 
@@ -88,8 +93,24 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         published_at = row.get("published_at")
         author = row.get("author")
         content = row.get("content")
+        flag_reason = row.get("flag_reason")
+        flag_detail = row.get("flag_detail")
+        flagged_at = row.get("flagged_at")
+        flagged_by = row.get("flagged_by")
     else:
-        title, url, canonical_url, source, published_at, author, content = row
+        (
+            title,
+            url,
+            canonical_url,
+            source,
+            published_at,
+            author,
+            content,
+            flag_reason,
+            flag_detail,
+            flagged_at,
+            flagged_by,
+        ) = row
     return {
         "title": title,
         "url": url,
@@ -98,6 +119,10 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "published_at": published_at,
         "author": author,
         "_content": content,
+        "flag_reason": flag_reason,
+        "flag_detail": flag_detail,
+        "flagged_at": flagged_at,
+        "flagged_by": flagged_by,
     }
 
 
@@ -150,6 +175,7 @@ def search_articles(keyword: str, limit: int = 20, conn: Any | None = None) -> l
         item = _row_to_dict(row)
         content = item.pop("_content")
         item["published_at"] = _to_iso_tz_aware(item["published_at"])
+        item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
         item["snippet"] = _snippet(content, item["title"], term)
         results.append({k: item[k] for k in _RESULT_KEYS})
     return results

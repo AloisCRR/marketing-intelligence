@@ -23,6 +23,7 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+import brain.flag as flag_lane  # noqa: E402
 import brain.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
@@ -64,6 +65,20 @@ WEEKLY_PAYLOAD = {
     "source_convergence": [],
 }
 
+FLAG_PAYLOAD = {
+    "title": "TikTok Adds Voice Notes",
+    "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "source": "Social Media Today",
+    "published_at": "2026-09-08T14:30:00+00:00",
+    "author": "Andrew Hutchinson",
+    "content": "…full body…",
+    "flag_reason": "truncated",
+    "flag_detail": "body ends mid-sentence",
+    "flagged_at": "2026-09-14T12:00:00+00:00",
+    "flagged_by": "tester",
+}
+
 
 @pytest.fixture()
 def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,6 +87,15 @@ def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         service, "get_weekly_context", lambda from_date, to_date, **kw: WEEKLY_PAYLOAD
+    )
+    # raising=False: parallel-lane compatible (green before/after Lane 1 lands).
+    monkeypatch.setattr(
+        service,
+        "flag_extraction",
+        lambda identifier, reason=None, detail=None, flagged_by=None, clear=False, conn=None: (
+            FLAG_PAYLOAD
+        ),
+        raising=False,
     )
 
 
@@ -82,9 +106,10 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_three_tools() -> None:
+def test_mcp_registers_exactly_four_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
     assert sorted(t.name for t in tools) == [
+        "flag_extraction",
         "get_article",
         "get_weekly_context",
         "search_articles",
@@ -117,8 +142,71 @@ def test_weekly_api_equals_mcp_tool(stubbed_service: None) -> None:
     assert api_payload == _unwrap_call_tool(out)
 
 
-def test_mcp_tools_surface_service_validation() -> None:
+class _EmptyCursor:
+    """Lane-seam fake for unknown URLs: UPDATE matches nothing, SELECT finds nothing."""
+
+    rowcount = 0
+
+    def execute(self, sql: str, params: object = None) -> None:
+        pass
+
+    def fetchall(self) -> list:
+        return []
+
+    def close(self) -> None:
+        pass
+
+
+class _EmptyConn:
+    def cursor(self) -> _EmptyCursor:
+        return _EmptyCursor()
+
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_mcp_tools_surface_service_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.search_articles(keyword="   ")
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.get_weekly_context(from_date="nope", to_date="2026-09-13")
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(identifier="   ")
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(
+            identifier="https://www.socialmediatoday.com/news/tiktok/1/",
+            reason="not-a-reason",
+        )
+    url = "https://www.socialmediatoday.com/news/tiktok/1/"
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(identifier=url, reason="thin", detail="x" * 2001)
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(identifier=url, reason="other")
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(identifier=url, reason="other", detail="   ")
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(identifier=url, reason="thin", detail="d", flagged_by="y" * 101)
+    # Unknown URL reaches the lane (empty store) and still surfaces InvalidRequest.
+    monkeypatch.setattr(flag_lane, "get_connection", lambda: _EmptyConn())
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.flag_extraction(
+            identifier="https://unknown.example/nope/", reason="thin", detail="d"
+        )
+
+
+def test_flag_api_equals_mcp_tool(stubbed_service: None) -> None:
+    body = {"identifier": "https://www.socialmediatoday.com/news/tiktok/1/"}
+    api_payload = TestClient(app).post("/flag-extraction", json=body).json()
+    assert api_payload == FLAG_PAYLOAD
+    # Direct tool call (same service fn) ...
+    assert (
+        MCP_SERVER.flag_extraction(identifier="https://www.socialmediatoday.com/news/tiktok/1/")
+        == FLAG_PAYLOAD
+    )
+    # ... and the registered-tool path agree.
+    out = asyncio.run(MCP_SERVER.mcp.call_tool("flag_extraction", dict(body)))
+    assert _unwrap_call_tool(out) == FLAG_PAYLOAD
+    assert api_payload == _unwrap_call_tool(out)

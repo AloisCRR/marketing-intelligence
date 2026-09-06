@@ -4,7 +4,7 @@ End-to-end verification over lanes 01/02/03, hermetic (fake conns, monkeypatched
 fetch — no live Postgres, no network, no model calls):
 
 - Weekly Context and search list payloads match their pre-feature shapes
-  key-for-key at the same limits (7-key search dicts, 6-key weekly dicts +
+  key-for-key at the same limits (11-key search dicts, 10-key weekly dicts +
   5 explicit-empty V1 trend keys).
 - One-item lookup returns identical payloads over HTTP (TestClient) and MCP
   (direct tool call + registered-tool path), including identical validation
@@ -61,6 +61,10 @@ SEARCH_KEYS = {
     "published_at",
     "author",
     "snippet",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
 }
 
 WEEKLY_ARTICLE_KEYS = {
@@ -70,6 +74,10 @@ WEEKLY_ARTICLE_KEYS = {
     "source",
     "published_at",
     "author",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
 }
 
 WEEKLY_TOP_KEYS = {
@@ -90,7 +98,19 @@ TREND_KEYS = (
     "source_convergence",
 )
 
-ARTICLE_KEYS = WEEKLY_ARTICLE_KEYS | {"content"}
+ARTICLE_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "content",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+}
 
 
 def _utc(*args: int) -> _dt.datetime:
@@ -192,6 +212,10 @@ ARTICLE_ROW = (
     _utc(2026, 9, 8, 14, 30),
     "Andrew Hutchinson",
     FULL_CONTENT,
+    None,
+    None,
+    None,
+    None,
 )
 
 SEARCH_ROWS = [
@@ -203,6 +227,10 @@ SEARCH_ROWS = [
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
         "TikTok rolls out voice notes for comments globally.",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "TikTok Shop Expands",
@@ -212,6 +240,10 @@ SEARCH_ROWS = [
         _utc(2026, 9, 7, 10, 0),
         None,
         "TikTok Shop expands to new markets with live selling.",
+        None,
+        None,
+        None,
+        None,
     ),
 ]
 
@@ -223,6 +255,10 @@ WEEKLY_ROWS = [
         "Social Media Today",
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Signal Loss Rebuild",
@@ -230,6 +266,10 @@ WEEKLY_ROWS = [
         "https://martech.org/signal-loss/2/",
         "MarTech",
         _utc(2026, 9, 9, 13, 0),
+        None,
+        None,
+        None,
+        None,
         None,
     ),
 ]
@@ -244,7 +284,7 @@ def _unwrap_call_tool(out: Any) -> Any:
 # --- list-payload shape stability ---------------------------------------------
 
 
-def test_search_list_payload_is_seven_keys_at_same_limits() -> None:
+def test_search_list_payload_is_eleven_keys_at_same_limits() -> None:
     results = service.search_articles("TikTok", limit=20, conn=_ConnFake(SEARCH_ROWS))
     assert len(results) == 2
     for item in results:

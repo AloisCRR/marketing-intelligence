@@ -17,6 +17,7 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+import brain.flag as flag_lane  # noqa: E402
 import brain.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
@@ -55,6 +56,20 @@ WEEKLY_PAYLOAD = {
     "source_convergence": [],
 }
 
+FLAG_PAYLOAD = {
+    "title": "TikTok Adds Voice Notes",
+    "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "source": "Social Media Today",
+    "published_at": "2026-09-08T14:30:00+00:00",
+    "author": "Andrew Hutchinson",
+    "content": "…full body…",
+    "flag_reason": "truncated",
+    "flag_detail": "body ends mid-sentence",
+    "flagged_at": "2026-09-14T12:00:00+00:00",
+    "flagged_by": "tester",
+}
+
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -65,6 +80,15 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         service,
         "get_weekly_context",
         lambda from_date, to_date, **kw: WEEKLY_PAYLOAD,
+    )
+    # raising=False: parallel-lane compatible (green before/after Lane 1 lands).
+    monkeypatch.setattr(
+        service,
+        "flag_extraction",
+        lambda identifier, reason=None, detail=None, flagged_by=None, clear=False, conn=None: (
+            FLAG_PAYLOAD
+        ),
+        raising=False,
     )
     return TestClient(app)
 
@@ -160,4 +184,133 @@ def test_openapi_docs_demoable(client: TestClient) -> None:
     assert spec.status_code == 200
     paths = spec.json()["paths"]
     assert "/search" in paths and "/weekly-context" in paths
+    assert "/flag-extraction" in paths
     assert client.get("/docs").status_code == 200
+
+
+def test_flag_returns_service_payload(client: TestClient) -> None:
+    resp = client.post(
+        "/flag-extraction",
+        json={"identifier": "https://www.socialmediatoday.com/news/tiktok/1/"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == FLAG_PAYLOAD
+
+
+def test_flag_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(
+        identifier: object,
+        reason: object = None,
+        detail: object = None,
+        flagged_by: object = None,
+        clear: object = False,
+        conn: object = None,
+    ) -> dict:
+        seen["identifier"] = identifier
+        seen["reason"] = reason
+        seen["detail"] = detail
+        seen["flagged_by"] = flagged_by
+        seen["clear"] = clear
+        return FLAG_PAYLOAD
+
+    monkeypatch.setattr(service, "flag_extraction", fake, raising=False)
+    resp = TestClient(app).post(
+        "/flag-extraction",
+        json={
+            "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+            "reason": "truncated",
+            "detail": "body ends mid-sentence",
+            "flagged_by": "tester",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == FLAG_PAYLOAD
+    assert seen == {
+        "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+        "reason": "truncated",
+        "detail": "body ends mid-sentence",
+        "flagged_by": "tester",
+        "clear": False,
+    }
+
+
+class _EmptyCursor:
+    """Lane-seam fake for unknown URLs: UPDATE matches nothing, SELECT finds nothing."""
+
+    rowcount = 0
+
+    def execute(self, sql: str, params: object = None) -> None:
+        pass
+
+    def fetchall(self) -> list:
+        return []
+
+    def close(self) -> None:
+        pass
+
+
+class _EmptyConn:
+    def cursor(self) -> _EmptyCursor:
+        return _EmptyCursor()
+
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_flag_validation_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real service (no service stubs): blank id / bad reason -> 422, never 500.
+    live = TestClient(app)
+    assert live.post("/flag-extraction", json={"identifier": "   "}).status_code == 422
+    assert (
+        live.post(
+            "/flag-extraction",
+            json={
+                "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+                "reason": "not-a-reason",
+            },
+        ).status_code
+        == 422
+    )
+    url = "https://www.socialmediatoday.com/news/tiktok/1/"
+    # Detail over 2000 chars -> 422 (2000 itself is accepted, so no DB hit here).
+    assert (
+        live.post(
+            "/flag-extraction",
+            json={"identifier": url, "reason": "thin", "detail": "x" * 2001},
+        ).status_code
+        == 422
+    )
+    # Reason "other" requires a non-blank detail -> 422.
+    assert (
+        live.post("/flag-extraction", json={"identifier": url, "reason": "other"}).status_code
+        == 422
+    )
+    assert (
+        live.post(
+            "/flag-extraction",
+            json={"identifier": url, "reason": "other", "detail": "   "},
+        ).status_code
+        == 422
+    )
+    # flagged_by over 100 chars -> 422.
+    assert (
+        live.post(
+            "/flag-extraction",
+            json={"identifier": url, "reason": "thin", "detail": "d", "flagged_by": "y" * 101},
+        ).status_code
+        == 422
+    )
+    # Unknown URL reaches the lane (empty store) and still maps to 422.
+    monkeypatch.setattr(flag_lane, "get_connection", lambda: _EmptyConn())
+    assert (
+        live.post(
+            "/flag-extraction",
+            json={"identifier": "https://unknown.example/nope/", "reason": "thin", "detail": "d"},
+        ).status_code
+        == 422
+    )

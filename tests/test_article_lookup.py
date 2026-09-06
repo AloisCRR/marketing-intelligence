@@ -44,7 +44,8 @@ FULL_CONTENT = (
     "whole — never truncated to a snippet — so the agent has full context."
 )
 
-# (title, url, canonical_url, source, published_at, author, content)
+# (title, url, canonical_url, source, published_at, author, content,
+#  flag_reason, flag_detail, flagged_at, flagged_by)
 ARTICLE_ROWS = [
     (
         "TikTok Adds Voice Notes",
@@ -54,6 +55,10 @@ ARTICLE_ROWS = [
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
         FULL_CONTENT,
+        None,
+        None,
+        None,
+        None,
     ),
 ]
 
@@ -65,6 +70,37 @@ ARTICLE_KEYS = {
     "published_at",
     "author",
     "content",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+}
+
+SEARCH_RESULT_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "snippet",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+}
+
+WEEKLY_ARTICLE_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
 }
 
 
@@ -249,15 +285,7 @@ def test_search_shape_unchanged() -> None:
     results = service.search_articles("TikTok", conn=_SearchConnection())
     assert len(results) >= 1
     for row in results:
-        assert set(row.keys()) == {
-            "title",
-            "url",
-            "canonical_url",
-            "source",
-            "published_at",
-            "author",
-            "snippet",
-        }
+        assert set(row.keys()) == SEARCH_RESULT_KEYS
         assert "content" not in row
 
 
@@ -283,14 +311,7 @@ def test_weekly_shape_unchanged() -> None:
     ):
         assert ctx[key] == []
     for article in ctx["important_articles"]:
-        assert set(article) == {
-            "title",
-            "url",
-            "canonical_url",
-            "source",
-            "published_at",
-            "author",
-        }
+        assert set(article) == WEEKLY_ARTICLE_KEYS
         assert "content" not in article
 
 
@@ -333,6 +354,10 @@ class _SearchConnection:
                     _utc(2026, 9, 8, 14, 30),
                     "Andrew Hutchinson",
                     "TikTok rolls out voice notes globally.",
+                    None,
+                    None,
+                    None,
+                    None,
                 )
             ]
         )
@@ -368,6 +393,10 @@ class _WeeklyConn:
                 "Social Media Today",
                 _utc(2026, 9, 8, 14, 30),
                 "Andrew Hutchinson",
+                None,
+                None,
+                None,
+                None,
             )
         ]
 

@@ -22,7 +22,7 @@ mcp = FastMCP("trend-intelligence-brain")
 
 @mcp.tool()
 def search_articles(keyword: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[dict[str, Any]]:
-    """Search ingested articles by keyword, newest first (7-key provenance dicts)."""
+    """Search articles by keyword, newest first (11 keys: 7 base + 4 flag keys)."""
     return service.search_articles(keyword, limit=limit)
 
 
@@ -41,6 +41,20 @@ def get_weekly_context(
 def get_article(identifier: str) -> dict[str, Any]:
     """One article's full stored text plus provenance, by URL/canonical URL."""
     return service.get_article(identifier)
+
+
+@mcp.tool()
+def flag_extraction(
+    identifier: str,
+    reason: str | None = None,
+    detail: str | None = None,
+    flagged_by: str | None = None,
+    clear: bool = False,
+) -> dict[str, Any]:
+    """Flag (or clear) an extraction issue on one article; returns updated Article."""
+    return service.flag_extraction(  # type: ignore[attr-defined, no-any-return]
+        identifier, reason=reason, detail=detail, flagged_by=flagged_by, clear=clear
+    )
 
 
 if __name__ == "__main__":

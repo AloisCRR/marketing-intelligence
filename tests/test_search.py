@@ -26,7 +26,8 @@ def _dt_utc(*args: int) -> _dt.datetime:
 
 
 ROWS = [
-    # (title, url, canonical_url, source, published_at, author, content)
+    # (title, url, canonical_url, source, published_at, author, content,
+    #  flag_reason, flag_detail, flagged_at, flagged_by)
     (
         "Gen Z marketing trends to watch",
         "https://socialmediatoday.com/articles/1",
@@ -36,6 +37,10 @@ ROWS = [
         "Jane Doe",
         "A longform piece about Gen Z marketing trends and creator budgets "
         "with plenty of surrounding context for the snippet window.",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Creators reshape Gen Z budgets",
@@ -45,6 +50,10 @@ ROWS = [
         _dt_utc(2026, 8, 25, 12, 0, 0),
         None,
         "How creators reshape Gen Z budgets across social platforms this quarter.",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Unrelated jewellery piece",
@@ -54,6 +63,10 @@ ROWS = [
         _dt_utc(2026, 8, 26, 12, 0, 0),
         "John Smith",
         "Nothing relevant here about hallmarking and retail footfall.",
+        None,
+        None,
+        None,
+        None,
     ),
 ]
 
@@ -132,6 +145,10 @@ def test_keyword_match_returns_provenance(monkeypatch) -> None:
             "published_at",
             "author",
             "snippet",
+            "flag_reason",
+            "flag_detail",
+            "flagged_at",
+            "flagged_by",
         }
         # Provenance: every result carries its source name.
         assert r["source"] in ("Social Media Today", "Professional Jeweller")

@@ -14,6 +14,7 @@ from datetime import date, datetime
 from typing import Any
 
 from brain import article as _article
+from brain import flag as _flag
 from brain import search as _search
 from brain import weekly as _weekly
 from brain.sources import V1_SOURCES
@@ -21,6 +22,13 @@ from brain.sources import V1_SOURCES
 MAX_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
 DEFAULT_WEEKLY_LIMIT = _weekly.DEFAULT_LIMIT
+
+FLAG_KEYS = (
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+)
 
 SEARCH_RESULT_KEYS = (
     "title",
@@ -30,7 +38,7 @@ SEARCH_RESULT_KEYS = (
     "published_at",
     "author",
     "snippet",
-)
+) + FLAG_KEYS
 
 WEEKLY_ARTICLE_KEYS = (
     "title",
@@ -39,7 +47,7 @@ WEEKLY_ARTICLE_KEYS = (
     "source",
     "published_at",
     "author",
-)
+) + FLAG_KEYS
 
 ARTICLE_KEYS = (
     "title",
@@ -49,7 +57,7 @@ ARTICLE_KEYS = (
     "published_at",
     "author",
     "content",
-)
+) + FLAG_KEYS
 
 TREND_KEYS = (
     "top_stories",
@@ -138,7 +146,7 @@ def _coerce_bound(value: date | datetime | str, *, label: str) -> date | datetim
 def search_articles(
     keyword: str, limit: int = DEFAULT_SEARCH_LIMIT, conn: Any | None = None
 ) -> list[dict[str, Any]]:
-    """Validated keyword search; returns the 7-key provenance dicts, newest first."""
+    """Validated keyword search; returns the 11-key provenance dicts, newest first."""
     if not isinstance(keyword, str) or not keyword.strip():
         raise InvalidRequest("keyword must be a non-empty string")
     bound = _validate_limit(limit, default=DEFAULT_SEARCH_LIMIT)
@@ -182,6 +190,85 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         raise InvalidRequest("identifier must be a non-empty string")
     try:
         return _article.get_article(identifier.strip(), conn=conn)
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+def _validate_flag_reason(reason: Any) -> str:
+    """Validate a flag reason against FLAG_REASONS; failure is InvalidRequest."""
+    if not isinstance(reason, str) or reason.strip() not in _flag.FLAG_REASONS:
+        raise InvalidRequest(
+            f"flag reason must be one of {list(_flag.FLAG_REASONS)}, got {reason!r}"
+        )
+    return reason.strip()
+
+
+def _validate_flag_detail(detail: Any, *, reason: str) -> Any:
+    """Validate flag detail: string-or-null, max 2000 chars, required for other."""
+    if detail is not None and not isinstance(detail, str):
+        raise InvalidRequest(f"flag detail must be a string or null, got {type(detail).__name__}")
+    if isinstance(detail, str) and len(detail) > _flag.DETAIL_MAX_LENGTH:
+        raise InvalidRequest(
+            f"flag detail must be at most {_flag.DETAIL_MAX_LENGTH} chars, got {len(detail)}"
+        )
+    if reason == "other" and (not isinstance(detail, str) or not detail.strip()):
+        raise InvalidRequest("flag reason 'other' requires a non-blank detail")
+    return detail
+
+
+def _validate_flagged_by(flagged_by: Any) -> Any:
+    """Validate the optional reporter tag: string-or-null, max 100 chars."""
+    if flagged_by is None:
+        return None
+    if not isinstance(flagged_by, str):
+        raise InvalidRequest(
+            f"flagged_by must be a string or null, got {type(flagged_by).__name__}"
+        )
+    cleaned = flagged_by.strip() or None
+    if cleaned is not None and len(cleaned) > _flag.FLAGGED_BY_MAX_LENGTH:
+        raise InvalidRequest(
+            f"flagged_by must be at most {_flag.FLAGGED_BY_MAX_LENGTH} chars, got {len(cleaned)}"
+        )
+    return cleaned
+
+
+def flag_extraction(
+    identifier: str,
+    reason: str | None = None,
+    detail: str | None = None,
+    flagged_by: str | None = None,
+    clear: bool = False,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    """Validated Extraction Flag write; returns the updated article dict.
+
+    Blank/non-string identifiers raise `InvalidRequest` without a DB
+    round-trip, as do bad reasons, overlong detail (>2000 chars), a missing
+    detail for reason `"other"`, and overlong `flagged_by` (>100 chars).
+    `clear=True` ignores reason/detail (no validation) and NULLs the four
+    flag columns. Unknown identifiers surface from the lane as `ValueError`
+    and are normalised to `InvalidRequest`.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise InvalidRequest("identifier must be a non-empty string")
+    key = identifier.strip()
+    if clear:
+        clean_reason, clean_detail, clean_by = None, None, None
+    else:
+        clean_reason = _validate_flag_reason(reason)
+        clean_detail = _validate_flag_detail(detail, reason=clean_reason)
+        clean_by = _validate_flagged_by(flagged_by)
+    try:
+        return _flag.flag_extraction(
+            key,
+            reason=clean_reason,
+            detail=clean_detail,
+            flagged_by=clean_by,
+            clear=clear,
+            conn=conn,
+        )
     except InvalidRequest:
         raise
     except (ValueError, TypeError, LookupError) as exc:

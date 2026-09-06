@@ -163,7 +163,8 @@ def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --- seeded article rows -------------------------------------------------------
-# (title, url, canonical_url, source, published_at, author)
+# (title, url, canonical_url, source, published_at, author,
+#  flag_reason, flag_detail, flagged_at, flagged_by)
 
 ARTICLE_ROWS = [
     (
@@ -173,6 +174,10 @@ ARTICLE_ROWS = [
         "Social Media Today",
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Signal Loss Rebuild",
@@ -180,6 +185,10 @@ ARTICLE_ROWS = [
         "https://martech.org/signal-loss/2/",
         "MarTech",
         _utc(2026, 9, 9, 13, 0),
+        None,
+        None,
+        None,
+        None,
         None,
     ),
     (
@@ -189,6 +198,10 @@ ARTICLE_ROWS = [
         "Professional Jeweller",
         _utc(2026, 9, 10, 8, 0),
         "Sarah Jordan",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Casas Bahia em crise",
@@ -197,6 +210,10 @@ ARTICLE_ROWS = [
         "InfoMoney",
         _utc(2026, 9, 11, 14, 0),
         "Mariana Ribeiro",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "JCK Extra-scope Piece",
@@ -205,6 +222,10 @@ ARTICLE_ROWS = [
         "JCK Online",
         _utc(2026, 9, 9, 15, 0),
         "Anita",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "August History",
@@ -213,6 +234,10 @@ ARTICLE_ROWS = [
         "Social Media Today",
         _utc(2026, 8, 20, 12, 0),
         "Jane Doe",
+        None,
+        None,
+        None,
+        None,
     ),
     (
         "Next-week Boundary",
@@ -221,6 +246,10 @@ ARTICLE_ROWS = [
         "MarTech",
         _utc(2026, 9, 14, 5, 0),  # exactly Mon 00:00 Panama -> exclusive
         "Kim Davis",
+        None,
+        None,
+        None,
+        None,
     ),
 ]
 
@@ -306,6 +335,10 @@ def test_range_filtering_newest_first_and_provenance() -> None:
             "source",
             "published_at",
             "author",
+            "flag_reason",
+            "flag_detail",
+            "flagged_at",
+            "flagged_by",
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
@@ -483,6 +516,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "001_init.sql",
         "002_canonical_url_unique.sql",
         "003_ingestion_runs.sql",
+        "005_extraction_flag.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

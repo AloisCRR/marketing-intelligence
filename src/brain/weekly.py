@@ -34,7 +34,8 @@ DEFAULT_LIMIT = 50
 
 WEEKLY_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
-       d.published_at, d.author
+       d.published_at, d.author,
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
   FROM documents d
   JOIN sources s ON s.id = d.source_id
  WHERE d.published_at >= %s
@@ -84,7 +85,9 @@ def get_weekly_context(
 
     Returns ``period {from, to, timezone}`` plus ``important_articles`` —
     each with ``title, url, canonical_url, source, published_at, author``
-    provenance, newest-first, bounded by ``limit`` — plus the V1-empty
+    provenance plus the Extraction Flag annotation (``flag_reason,
+    flag_detail, flagged_at, flagged_by`` — ``None`` when unflagged),
+    newest-first, bounded by ``limit`` — plus the V1-empty
     trend keys documented above.
     """
     start = _coerce_bound(from_date, is_end=False)
@@ -114,7 +117,30 @@ def get_weekly_context(
 
     articles: list[dict[str, Any]] = []
     for row in rows or []:
-        title, url, canonical_url, source, published_at, author = row
+        if isinstance(row, dict):
+            title = row.get("title")
+            url = row.get("url")
+            canonical_url = row.get("canonical_url")
+            source = row.get("source")
+            published_at = row.get("published_at")
+            author = row.get("author")
+            flag_reason = row.get("flag_reason")
+            flag_detail = row.get("flag_detail")
+            flagged_at = row.get("flagged_at")
+            flagged_by = row.get("flagged_by")
+        else:
+            (
+                title,
+                url,
+                canonical_url,
+                source,
+                published_at,
+                author,
+                flag_reason,
+                flag_detail,
+                flagged_at,
+                flagged_by,
+            ) = row
         articles.append(
             {
                 "title": title,
@@ -123,6 +149,10 @@ def get_weekly_context(
                 "source": source,
                 "published_at": _iso_tz_aware(published_at),
                 "author": author,
+                "flag_reason": flag_reason,
+                "flag_detail": flag_detail,
+                "flagged_at": _iso_tz_aware(flagged_at),
+                "flagged_by": flagged_by,
             }
         )
     return {
