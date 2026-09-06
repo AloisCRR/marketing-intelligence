@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+<url>
+	<loc>https://www.marketingdirecto.com/creacion/campanas-de-marketing/ikea-reto-pronunciacion-sueca</loc>
+	<news:news>
+		<news:publication>
+			<news:name>marketingdirecto.com</news:name>
+			<news:language>es</news:language>
+		</news:publication>
+		<news:publication_date>2026-09-06T10:00:00+00:00</news:publication_date>
+		<news:title><![CDATA[IKEA reta a un test de pronunciación sueca]]></news:title>
+	</news:news>
+</url>
+<url>
+	<loc>https://www.marketingdirecto.com/digital-general/social-media-marketing/marcas-creadas-por-influencers</loc>
+	<news:news>
+		<news:publication>
+			<news:name>marketingdirecto.com</news:name>
+			<news:language>es</news:language>
+		</news:publication>
+		<news:publication_date>2026-09-06T08:00:00+00:00</news:publication_date>
+		<news:title><![CDATA[Las marcas creadas por influencers que están triunfando]]></news:title>
+	</news:news>
+</url>
+</urlset>

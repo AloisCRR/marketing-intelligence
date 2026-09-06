@@ -53,12 +53,39 @@ DEFAULT_ENRICHMENT_POLICY: dict[str, Any] = {
     "mode": "auto",
 }
 
-#: Allowed retrieval types: RSS feeds only (V1 cut; 14 null-RSS entries stay out).
-RETRIEVAL_TYPES: tuple[str, ...] = ("rss",)
+#: Allowed retrieval (discovery) types (ticket 07 config seam; spec 06 §18).
+#: ``rss`` is the V1 feed lane; ``sitemap`` traverses declared sitemap
+#: index/URL-set/news feeds; ``hub`` scrapes hub-page anchors; ``sitemap+hub``
+#: runs sitemaps first with hub-anchor fallback; ``url-set`` ingests a declared
+#: URL set; ``url-set+hub`` pairs the set with hub-anchor fallback. Retrieval
+#: stanzas are config, not code forks — downstream ingest/flows behavior for
+#: RSS sources is unchanged.
+RETRIEVAL_TYPES: tuple[str, ...] = (
+    "rss",
+    "sitemap",
+    "hub",
+    "sitemap+hub",
+    "url-set",
+    "url-set+hub",
+)
 
 #: Allowed feed retrieval policies: plain stdlib fetch, or stdlib with one
 #: curl_cffi impersonated retry on 403/challenge evidence.
 RETRIEVAL_POLICIES: tuple[str, ...] = ("stdlib-only", "impersonated-feed")
+
+#: Allowed article extractor families: generic HTML-to-Markdown default, or
+#: JSON-LD ``articleBody``-first (Next.js/Sanity family, e.g. Jing Daily)
+#: with generic fallback; still-thin results are kept-aside/flagged.
+EXTRACTOR_FAMILIES: tuple[str, ...] = ("generic", "json-ld-first")
+
+#: Default extractor when a retrieval stanza declares none.
+DEFAULT_EXTRACTOR = "generic"
+
+#: Default per-host pacing between requests (ms) when a stanza declares none.
+DEFAULT_PACING_MS = 1000
+
+#: Default backfill bound (newest N URLs per Source first) when undeclared.
+DEFAULT_MAX_URLS = 50
 
 #: Policy returned for unknown sources and entries without overrides.
 DEFAULT_RETRIEVAL_POLICY: dict[str, Any] = {
@@ -99,14 +126,16 @@ def _registry() -> dict[str, dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             entries = []
         for entry in entries:
-            if not isinstance(entry, dict) or not entry.get("rss_url"):
+            if not isinstance(entry, dict):
                 continue
             name = str(entry.get("source_name", "")).strip()
             if not name:
                 continue
             registry[name] = {
                 "name": name,
-                "rss_url": entry["rss_url"],
+                # rss_url is None for no-RSS sources (ticket 07: hub/sitemap
+                # lanes); RSS behavior downstream only touches RSS entries.
+                "rss_url": entry.get("rss_url"),
                 "hub_url": entry.get("hub_url"),
                 "language": normalize_language(entry.get("language")),
                 "raw": entry,
@@ -118,15 +147,16 @@ def _registry() -> dict[str, dict[str, Any]]:
                 registry[name]["enrichment"] = dict(overrides)
             retrieval = entry.get("retrieval")
             if isinstance(retrieval, dict):
-                # Per-source retrieval policy: file-based
-                # {"type": "rss", "policy": "stdlib-only"|"impersonated-feed"}.
+                # Per-source retrieval stanza: file-based
+                # {"type": ..., "policy": ...} plus optional discovery keys
+                # (extractor, sitemaps, hub, link_pattern, pacing_ms, max_urls).
                 registry[name]["retrieval"] = dict(retrieval)
     registry.setdefault(SOURCE_NAME_SMT, dict(_FALLBACK_SMT))
     return registry
 
 
 def list_sources() -> list[dict[str, Any]]:
-    """Return all RSS-capable curated sources (registry order)."""
+    """Return all curated sources in registry order (RSS + no-RSS)."""
     return [dict(entry) for entry in _registry().values()]
 
 
@@ -164,13 +194,60 @@ def get_enrichment_policy(source_name: str) -> dict[str, Any]:
     return {"threshold": threshold, "mode": mode}
 
 
+def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate optional retrieval-stanza keys; drop invalid ones silently.
+
+    Never raises: unconfigured/invalid extras simply fall back to defaults
+    (generic extractor, no sitemaps, registry hub, no link pattern, default
+    pacing/backfill). Callers must not rely on invalid values surviving.
+    """
+    extras: dict[str, Any] = {}
+    extractor = raw.get("extractor")
+    if extractor in EXTRACTOR_FAMILIES:
+        extras["extractor"] = extractor
+    sitemaps = raw.get("sitemaps")
+    if isinstance(sitemaps, list):
+        urls = [u for u in (str(u).strip() for u in sitemaps if u is not None) if u]
+        if urls:
+            extras["sitemaps"] = urls
+    hub_pages = raw.get("hub_pages")
+    if isinstance(hub_pages, list):
+        pages = [u for u in (str(u).strip() for u in hub_pages if u is not None) if u]
+        if pages:
+            extras["hub_pages"] = pages
+    hub = raw.get("hub")
+    if isinstance(hub, str) and hub.strip():
+        extras["hub"] = hub.strip()
+    link_pattern = raw.get("link_pattern")
+    if isinstance(link_pattern, str) and link_pattern.strip():
+        extras["link_pattern"] = link_pattern.strip()
+    sitemap_pattern = raw.get("sitemap_pattern")
+    if isinstance(sitemap_pattern, str) and sitemap_pattern.strip():
+        extras["sitemap_pattern"] = sitemap_pattern.strip()
+    id_guard = raw.get("id_guard")
+    if id_guard is True:
+        extras["id_guard"] = True
+    pacing_ms = raw.get("pacing_ms")
+    if isinstance(pacing_ms, int) and not isinstance(pacing_ms, bool) and pacing_ms > 0:
+        extras["pacing_ms"] = pacing_ms
+    max_urls = raw.get("max_urls")
+    if isinstance(max_urls, int) and not isinstance(max_urls, bool) and max_urls > 0:
+        extras["max_urls"] = max_urls
+    return extras
+
+
 def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     """Return the retrieval policy for `source_name`.
 
-    Result shape is ``{"type": "rss", "policy": "stdlib-only"|"impersonated-feed"}``:
-    ``stdlib-only`` fetches feeds with plain urllib (current behavior);
+    Result shape is ``{"type": ..., "policy": "stdlib-only"|"impersonated-feed"}``
+    plus validated optional discovery keys (``extractor``, ``sitemaps``,
+    ``hub``, ``hub_pages``, ``link_pattern``, ``sitemap_pattern``,
+    ``id_guard``, ``pacing_ms``, ``max_urls``) only when the
+    registry stanza declares them: RSS stanzas keep their exact
+    ``{"type", "policy"}`` shape, so RSS ingest behavior is unchanged.
+    ``stdlib-only`` fetches with plain urllib (current behavior);
     ``impersonated-feed`` adds one curl_cffi Chrome-impersonated retry when
-    the stdlib attempt meets 403/challenge evidence, else an explicit fetch
+    the plain attempt meets 403/challenge evidence, else an explicit fetch
     error. Overrides come from the registry entry's ``"retrieval"`` mapping;
     entries without overrides yield the default (rss, stdlib-only).
     Unknown (or missing) sources yield the default — never raises.
@@ -190,7 +267,45 @@ def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     policy = raw.get("policy", "stdlib-only")
     if policy not in RETRIEVAL_POLICIES:
         policy = "stdlib-only"
-    return {"type": rtype, "policy": policy}
+    return {"type": rtype, "policy": policy, **_validated_extras(raw)}
+
+
+def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
+    """Return the full normalized retrieval stanza for `source_name`.
+
+    Shape is ``{"type", "policy", "extractor", "sitemaps", "hub",
+    "hub_pages", "link_pattern", "sitemap_pattern", "id_guard", "pacing_ms",
+    "max_urls"}`` with every default filled:
+    missing extractors yield ``"generic"``, missing sitemaps yield ``[]``,
+    a missing hub falls back to the registry ``hub_url`` (None when unknown),
+    missing hub_pages yield ``[]`` (single hub listing),
+    missing patterns yield None, ``id_guard`` defaults to False,
+    pacing yields 1000ms and backfill yields 50 URLs. Unknown (or missing)
+    sources yield safe RSS defaults — never raises. Discovery consumes this,
+    not ad-hoc dict reads.
+    """
+    policy = get_retrieval_policy(source_name)
+    config: dict[str, Any] = {
+        "type": policy["type"],
+        "policy": policy["policy"],
+        "extractor": str(policy.get("extractor", DEFAULT_EXTRACTOR)),
+        "sitemaps": list(policy.get("sitemaps", [])),
+        "hub": policy.get("hub"),
+        "hub_pages": list(policy.get("hub_pages", [])),
+        "link_pattern": policy.get("link_pattern"),
+        "sitemap_pattern": policy.get("sitemap_pattern"),
+        "id_guard": bool(policy.get("id_guard", False)),
+        "pacing_ms": int(policy.get("pacing_ms", DEFAULT_PACING_MS)),
+        "max_urls": int(policy.get("max_urls", DEFAULT_MAX_URLS)),
+    }
+    if config["hub"] is None and source_name is not None:
+        try:
+            hub_url = get_source(source_name).get("hub_url")
+            if isinstance(hub_url, str) and hub_url.strip():
+                config["hub"] = hub_url.strip()
+        except KeyError:
+            pass
+    return config
 
 
 def list_v1_sources() -> list[dict[str, Any]]:

@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /our-maisons/net-a-porter/
+
+Sitemap: https://www.richemont.com/sitemap.xml
+Host: https://www.richemont.com

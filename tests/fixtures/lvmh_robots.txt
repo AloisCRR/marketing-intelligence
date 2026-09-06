@@ -1,0 +1,6 @@
+User-agent: *
+
+Disallow: /*espace-candidat
+Allow: /
+
+Sitemap: https://www.lvmh.com/sitemap.xml

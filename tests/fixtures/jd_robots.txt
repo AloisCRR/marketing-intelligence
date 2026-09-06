@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /search
+Disallow: /api/rss
+Disallow: /admin
+
+Sitemap: https://jingdaily.com/sitemap.xml

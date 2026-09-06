@@ -100,6 +100,15 @@ _ANCHOR_RE = re.compile(
 )
 _WS_RE = re.compile(r"\s+")
 
+#: Non-visible blocks whose *contents* are never article text (scripts carry
+#: code and embedded JSON-LD, styles carry CSS). Stripped with contents by
+#: the regex fallback so Next.js shells and structured-data blobs cannot
+#: masquerade as article bodies; the trafilatura path already drops these.
+_NON_VISIBLE_RE = re.compile(
+    r"<(script|style|noscript|template)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 #: Markers that, inside a fetch *failure message* (HTTP status line plus any
 #: captured error-body snippet), identify bot/challenge protection or rate
 #: limiting. Deliberately specific: a plain "403 paywall" with no challenge
@@ -183,7 +192,8 @@ def _regex_to_markdown(html_or_text: str) -> str:
     remaining tags are stripped and entities unescaped. Paragraphs are
     preserved (joined with blank lines).
     """
-    text = _ANCHOR_RE.sub(_anchor_to_markdown, html_or_text or "")
+    text = _NON_VISIBLE_RE.sub(" ", html_or_text or "")
+    text = _ANCHOR_RE.sub(_anchor_to_markdown, text)
     text = _BLOCK_RE.sub("\n", text)
     text = _TAG_RE.sub(" ", text)
     text = _html.unescape(text)

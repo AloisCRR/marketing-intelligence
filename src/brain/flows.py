@@ -11,6 +11,7 @@ from typing import Any
 
 from prefect import flow, get_run_logger, task
 
+from brain.discovery import harvest_sitemap_source
 from brain.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
 from brain.health import record_ingestion_run
 from brain.ingest import (
@@ -21,7 +22,13 @@ from brain.ingest import (
     upsert_documents,
 )
 from brain.normalize import NormalizedDocument
-from brain.sources import V1_SOURCES, get_enrichment_policy, get_retrieval_policy, get_source
+from brain.sources import (
+    V1_SOURCES,
+    get_enrichment_policy,
+    get_retrieval_config,
+    get_retrieval_policy,
+    get_source,
+)
 
 
 @task(retries=3, retry_delay_seconds=[2, 5, 15], task_run_name="fetch-{url}")
@@ -61,6 +68,30 @@ def parse_task(
         max(0, entries - len(docs)),
     )
     return docs
+
+
+@task(task_run_name="discover-{source_name}")
+def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list[str]]:
+    """Discover → fetch → extract one sitemap Source; returns (docs, skipped, causes).
+
+    Ticket 08 pilot lane: consumes `get_retrieval_config` (never raises) and
+    delegates to the module-global `harvest_sitemap_source` so tests can
+    substitute fakes. One bad sitemap/article is an explicit per-document skip
+    (counted with causes); zero discovered URLs raise DiscoveryError, which
+    propagates like a dead RSS feed so the batch parent records the explicit
+    per-source error.
+    """
+    config = get_retrieval_config(source_name)
+    source = get_source(source_name)
+    language = str(source.get("language") or "en")
+    report = harvest_sitemap_source(config, source_name, language)
+    get_run_logger().info(
+        "discover source=%s docs=%d skipped=%d",
+        source_name,
+        len(report.documents),
+        report.skipped,
+    )
+    return (report.documents, report.skipped, report.causes)
 
 
 @task(task_run_name="enrich-docs")
@@ -136,7 +167,8 @@ def upsert_task(docs: list[NormalizedDocument]) -> dict[str, int]:
 def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any]:
     """Ingest one source end-to-end.
 
-    Returns {inserted, skipped[, parse_skipped][, enrich_skipped][, enrich_causes][, error]}.
+    Returns {inserted, skipped[, parse_skipped][, discovery_skipped][,
+    discovery_causes][, enrich_skipped][, enrich_causes][, error]}.
 
     Propagate-inside: stage tasks are called with no catch around them, so a
     genuine stage failure (after `fetch_task` retries exhaust) marks its task
@@ -146,12 +178,14 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     converts a Failed subflow state back into the `{inserted, skipped,
     error}` shape, so per-source isolation and the batch contract hold.
 
-    `parse_skipped` counts malformed feed items dropped at parse time;
-    `enrich_skipped` counts thin items whose article fetch failed (RSS body
-    kept) with per-item `enrich_causes` entries shaped `"<method>: <cause>"`
-    (method is `rss` whenever the stored body stayed RSS); both are present
-    only when nonzero so clean-feed results keep their exact {inserted,
-    skipped} shape.
+    `parse_skipped` counts malformed feed items dropped at parse time (RSS lane
+    only); `discovery_skipped` counts sitemap URLs that could not become
+    documents (sitemap lane only) with per-URL `discovery_causes` entries
+    shaped `"<url>: <detail>"`; `enrich_skipped` counts thin items whose
+    article fetch failed (body kept) with per-item `enrich_causes` entries
+    shaped `"<method>: <cause>"` (method is `rss` whenever the stored body
+    stayed RSS); all three are present only when nonzero so clean results
+    keep their exact {inserted, skipped} shape.
 
     Successful outcomes (and unknown-source errors) are recorded to
     `ingestion_runs` on a best-effort basis — recording never changes the
@@ -184,33 +218,49 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     language = str(source.get("language") or "en")
     # No catch around task calls: fetch retries self-heal blips, genuine
     # failures propagate (red task + red subflow) for the parent to record.
-    # source_name threads the per-source retrieval policy into fetch_task.
-    xml = fetch_task(str(source["rss_url"]), source_name=source_label)
-    docs = parse_task(xml, source_label, language)
+    # Lane switch (ticket 08): RSS entries keep the exact fetch → parse path;
+    # sitemap-family entries run discovery → fetch → extract instead. Both
+    # lanes converge on enrich → upsert with identical downstream contracts.
+    retrieval_type = get_retrieval_config(source_label)["type"]
+    discovery_skipped = 0
+    discovery_causes: list[str] = []
+    if retrieval_type == "rss" or source.get("rss_url"):
+        # source_name threads the per-source retrieval policy into fetch_task.
+        xml = fetch_task(str(source["rss_url"]), source_name=source_label)
+        docs = parse_task(xml, source_label, language)
+    else:
+        docs, discovery_skipped, discovery_causes = discover_task(source_label)
+        xml = b""
     # Enrichment never raises (per-item fallback keeps the RSS body), so it
     # can never block an Ingestion Run; no guard needed here.
     docs, enrich_skipped, enrich_causes = enrich_task(docs, source_name=source_label)
     result = upsert_task.with_options(task_run_name=f"upsert-{source_label}-{len(docs)}-docs")(docs)
-    try:
-        entries = count_feed_entries(xml)
-    except Exception:
-        entries = len(docs)
-    parse_skipped = max(0, entries - len(docs))
     reasons: list[str] | None = None
-    if parse_skipped:
-        result["parse_skipped"] = parse_skipped
+    if retrieval_type == "rss" or source.get("rss_url"):
         try:
-            # Single re-parse, only on messy feeds, to persist skip reasons
-            # (closes 03's deferred "persist skipped_reasons" note).
-            reasons = parse_feed_with_report(xml, source_label, language).skipped_reasons
+            entries = count_feed_entries(xml)
         except Exception:
-            reasons = None
+            entries = len(docs)
+        parse_skipped = max(0, entries - len(docs))
+        if parse_skipped:
+            result["parse_skipped"] = parse_skipped
+            try:
+                # Single re-parse, only on messy feeds, to persist skip reasons
+                # (closes 03's deferred "persist skipped_reasons" note).
+                reasons = parse_feed_with_report(xml, source_label, language).skipped_reasons
+            except Exception:
+                reasons = None
+    elif discovery_skipped:
+        discovery_result: dict[str, Any] = dict(result)
+        discovery_result["discovery_skipped"] = discovery_skipped
+        discovery_result["discovery_causes"] = list(discovery_causes)
+        result = discovery_result
     if enrich_skipped:
         enriched_result: dict[str, Any] = dict(result)
         enriched_result["enrich_skipped"] = enrich_skipped
         enriched_result["enrich_causes"] = list(enrich_causes)
         result = enriched_result
-    skipped_reasons = (reasons or []) + list(enrich_causes)
+    skipped_reasons = (reasons or []) + list(discovery_causes) + list(enrich_causes)
     return _finish(result, skipped_reasons or None)
 
 

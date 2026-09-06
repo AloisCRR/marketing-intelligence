@@ -326,3 +326,25 @@ def test_migration_seeds_all_four_sources() -> None:
     assert "https://martech.org/" in sql
     assert "https://www.professionaljeweller.com/" in sql
     assert "https://www.infomoney.com.br/" in sql
+
+
+def test_migration_006_seeds_all_20_sources() -> None:
+    """Ticket 07 (spec story 19): persistence matches the curated set."""
+    import json
+
+    root = FIXTURES.parent.parent
+    curated = {
+        e["source_name"]
+        for e in json.loads(
+            (root / ".scratch" / "trend-intelligence-brain" / "curated-sources.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    }
+    assert len(curated) == 20
+    seed_sql = (root / "migrations" / "001_init.sql").read_text(encoding="utf-8") + (
+        root / "migrations" / "006_seed_all_sources.sql"
+    ).read_text(encoding="utf-8")
+    for name in curated:
+        assert name in seed_sql, f"seeded sources missing: {name}"
+    assert "ON CONFLICT (name) DO NOTHING" in seed_sql

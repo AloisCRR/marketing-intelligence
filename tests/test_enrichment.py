@@ -575,7 +575,10 @@ def test_cleaner_boilerplate_much_shorter_than_regex_path() -> None:
 
     markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
     legacy = enrich._regex_to_markdown(BOILERPLATE_HTML)
-    assert "NREUM" in legacy  # premise: regex path keeps the cruft
+    # Regex fallback strips script/style *contents* (never article text) but
+    # keeps visible boilerplate (nav/ads/comments), so it stays much longer.
+    assert "NREUM" not in legacy
+    assert "Reader comments" in legacy
     assert len(markdown) < len(legacy) / 2
 
 

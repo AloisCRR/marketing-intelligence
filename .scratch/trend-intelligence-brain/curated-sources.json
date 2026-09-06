@@ -10,6 +10,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
+    "retrieval": {"type": "rss", "policy": "stdlib-only"},
+    "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.jckonline.com/editorial-article/britts-pick-state-property-bloom/",
     "sample_article_date": "2026-09-04"
@@ -24,8 +26,9 @@
     "rss_url": null,
     "cadence": "Daily",
     "access": "open",
-    "extractability": "bot-protected (Cloudflare)",
-    "last_verified": "2026-09-04",
+    "extractability": "clean HTML",
+    "retrieval": {"type": "url-set+hub", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://nationaljeweler.com/sitemap.xml"], "hub": "https://nationaljeweler.com/industry", "link_pattern": "/articles/", "sitemap_pattern": "/articles/", "id_guard": true},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://nationaljeweler.com/articles/13197-here-are-the-first-recipients-of-nina-pugliese-memorial-scholarship",
     "sample_article_date": "2026-09-03"
   },
@@ -57,7 +60,8 @@
     "cadence": "Daily",
     "access": "partial",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://exame.com/sitemap.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://exame.com/casual/a-brilhante-disputa-entre-diamantes-naturais-e-sinteticos/",
     "sample_article_date": "2026-08-18"
   },
@@ -71,8 +75,9 @@
     "rss_url": null,
     "cadence": "Daily",
     "access": "partial",
-    "extractability": "clean HTML / Paywall blocks body text",
-    "last_verified": "2026-09-04",
+    "extractability": "clean HTML / cookie-consent wall, body open",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://www.modaes.com/sitemap_current.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://www.modaes.com/empresa/richemont-de-tabaco-a-diamantes-el-grupo-que-hizo-de-cartier-y-van-cleef-su-mejor-negocio",
     "sample_article_date": "2026-08-27"
   },
@@ -87,6 +92,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
+    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.retaildive.com/sitemap.xml", "https://www.retaildive.com/google_news_sitemap.xml"], "hub": "https://www.retaildive.com/topic/consumer-trends/", "link_pattern": "/news/"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.retaildive.com/news/ultas-use-of-flock-technology-causes-upset-online/829567/",
     "sample_article_date": "2026-09-04"
@@ -102,6 +108,7 @@
     "cadence": "Daily",
     "access": "partial",
     "extractability": "clean HTML / Freemium",
+    "retrieval": {"type": "sitemap+hub", "policy": "stdlib-only", "extractor": "json-ld-first", "sitemaps": ["https://jingdaily.com/sitemap.xml"], "hub": "https://jingdaily.com/", "link_pattern": "/posts/"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://jingdaily.com/posts/how-yvmin-became-chinese-gen-z-s-favorite-jewelry-brand",
     "sample_article_date": "2026-01-14"
@@ -134,7 +141,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://consumidormoderno.com.br/sitemap_index.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://consumidormoderno.com.br/experiencia-sensorial-tendencia-marcas/",
     "sample_article_date": "2026-09-04"
   },
@@ -149,7 +157,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://www.meioemensagem.com.br/sitemap_index.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://www.meioemensagem.com.br/marketing/mercado-livre-que-fortalecer-moda-com-pandora",
     "sample_article_date": "2025-07-10"
   },
@@ -164,6 +173,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
+    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.marketingdive.com/sitemap.xml", "https://www.marketingdive.com/google_news_sitemap.xml"], "hub": "https://www.marketingdive.com/", "link_pattern": "/news/"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.marketingdive.com/news/pepsico-hands-global-media-to-publicis-amid-transformation-at-cpg-giant/829556/",
     "sample_article_date": "2026-09-03"
@@ -196,6 +206,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://www.marketingdirecto.com/news-sitemap.xml", "https://www.marketingdirecto.com/sitemap_index.xml"], "pacing_ms": 10000, "max_urls": 50},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.marketingdirecto.com/anunciantes-general/marcas/canva-suma-suite-visual-mas-100-novedades-plataforma-crece-enfocada-profesionales",
     "sample_article_date": "2026-09-04"
@@ -211,7 +222,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://propmark.com.br/wp-sitemap.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://propmark.com.br/anunciantes/mary-kay-leva-as-ruas-brasileiras-acao-global-sobre-beleza-compartilhada/",
     "sample_article_date": "2026-09-04"
   },
@@ -226,7 +238,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://insiderlatam.com/sitemap_index.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://insiderlatam.com/viviana-martinez-explica-como-campari-convierte-la-cocteleria-en-una-plataforma-de-marca/",
     "sample_article_date": "2026-09-03"
   },
@@ -241,7 +254,8 @@
     "cadence": "Weekly",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://www.lvmh.com/sitemap.xml"], "sitemap_pattern": "/news-lvmh/"},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://www.lvmh.com/news-documents/news/maison-fred-celebrates-90th-anniversary/",
     "sample_article_date": "2026-09-03"
   },
@@ -256,7 +270,8 @@
     "cadence": "Weekly",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "url-set", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://www.richemont.com/sitemap.xml"], "hub": "https://www.richemont.com/news-media/press-releases-news/", "sitemap_pattern": "/press-releases-news/"},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://www.richemont.com/news-media/press-releases-news/van-cleef-arpels-opens-its-first-boutique-in-madrid/",
     "sample_article_date": "2026-08-07"
   },
@@ -271,6 +286,8 @@
     "cadence": "Weekly",
     "access": "open",
     "extractability": "clean HTML / RSS available",
+    "retrieval": {"type": "rss", "policy": "stdlib-only"},
+    "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.prnewswire.com/news-releases/swarovski-crystal-business-hy1-2026-trading-update-302851128.html",
     "sample_article_date": "2026-08-13"
@@ -303,7 +320,8 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "last_verified": "2026-09-04",
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://forbes.com.mx/sitemap_index.xml"]},
+    "last_verified": "2026-09-06",
     "sample_article_url": "https://forbes.com.mx/mientras-la-moda-atraviesa-dificultades-la-joyeria-contribuira-a-definir-a-los-ganadores-del-sector-del-lujo/",
     "sample_article_date": "2026-07-27"
   }

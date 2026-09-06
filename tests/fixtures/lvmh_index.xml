@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>https://www.lvmh.com/en/sitemap/en-us.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.lvmh.com/fr/sitemap/fr-fr.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.lvmh.com/it/sitemap/it-it.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.lvmh.com/jp/sitemap/ja-jp.xml</loc>
+  </sitemap>
+</sitemapindex>

@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /wp-admin/
+Disallow: /busca/
+
+Sitemap: https://exame.com/sitemap.xml

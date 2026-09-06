@@ -1,0 +1,4 @@
+User-agent: *
+Crawl-delay: 5
+Allow: https://www.retaildive.com/sitemap.xml
+Allow: https://www.retaildive.com/google_news_sitemap.xml

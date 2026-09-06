@@ -1,0 +1,9 @@
+User-agent: *
+Crawl-delay: 10
+
+Sitemap: https://www.marketingdirecto.com/sitemap_index.xml
+Sitemap: https://www.marketingdirecto.com/news-sitemap.xml
+
+User-agent: *
+Disallow: /wp-admin/
+Allow: /wp-admin/admin-ajax.php

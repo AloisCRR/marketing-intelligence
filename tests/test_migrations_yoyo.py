@@ -169,6 +169,7 @@ def test_live_real_migrations_pending_only_and_rerunnable(scratch_db: str) -> No
         "002_canonical_url_unique",
         "003_ingestion_runs",
         "005_extraction_flag",
+        "006_seed_all_sources",
     ]
     assert db.apply_migrations() == []
     assert db.pending_migrations() == []
@@ -180,6 +181,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
 
     db.apply_migrations()
     assert db.rollback_migrations(99) == [
+        "006_seed_all_sources",
         "005_extraction_flag",
         "003_ingestion_runs",
         "002_canonical_url_unique",
@@ -194,11 +196,13 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "002_canonical_url_unique",
         "003_ingestion_runs",
         "005_extraction_flag",
+        "006_seed_all_sources",
     ]
     assert db.apply_migrations() == [
         "001_init",
         "002_canonical_url_unique",
         "003_ingestion_runs",
         "005_extraction_flag",
+        "006_seed_all_sources",
     ]
     assert db.pending_migrations() == []

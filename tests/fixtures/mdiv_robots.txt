@@ -1,0 +1,4 @@
+User-agent: *
+Crawl-delay: 5
+Allow: https://www.marketingdive.com/sitemap.xml
+Allow: https://www.marketingdive.com/google_news_sitemap.xml

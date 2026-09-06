@@ -2,7 +2,7 @@
 
 Observable behavior (not privates):
 - get_retrieval_policy: allowlist validation, defaults, never raises
-- curated JSON carries retrieval+enrichment stanzas for the 4 V1 sources only
+- curated JSON carries retrieval stanzas for all 20 sources (RSS + no-RSS)
 - fetch_rss stdlib-only lane keeps current behavior byte-identical
 - fetch_rss impersonated-feed lane retries once via curl_cffi on 403/challenge
   evidence, else raises an explicit fetch error (no Firecrawl/Playwright)
@@ -56,8 +56,9 @@ def test_policy_never_raises_and_defaults() -> None:
     default = {"type": "rss", "policy": "stdlib-only"}
     assert get_retrieval_policy("No Such Source") == default
     assert get_retrieval_policy(None) == default
-    # Extra registry sources without stanzas stay stdlib-only.
+    # Registry RSS sources with explicit stdlib-only stanzas equal the default.
     assert get_retrieval_policy("JCK Online") == default
+    assert get_retrieval_policy("Swarovski PR Newswire") == default
 
 
 def test_policy_result_is_a_copy() -> None:
@@ -88,10 +89,44 @@ def test_curated_v1_stanzas() -> None:
         "Professional Jeweller",
     ):
         assert entries[name]["enrichment"] == {"threshold": 500, "mode": "auto"}
-    # Stanzas exist for the 4 V1 sources only.
+    # RSS extras carry explicit rss stanzas.
     for name in ("JCK Online", "Swarovski PR Newswire"):
-        assert "retrieval" not in entries[name]
-        assert "enrichment" not in entries[name]
+        assert entries[name]["retrieval"] == {"type": "rss", "policy": "stdlib-only"}
+
+
+def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
+    """Ticket 07: every no-RSS source declares a discovery route + extractor."""
+    entries = {e["source_name"]: e for e in json.loads(CURATED.read_text(encoding="utf-8"))}
+    assert len(entries) == 20
+    expected_types = {
+        "National Jeweler": "url-set+hub",
+        "Exame": "sitemap",
+        "Modaes": "sitemap",
+        "Retail Dive": "sitemap+hub",
+        "Jing Daily": "sitemap+hub",
+        "Consumidor Moderno": "sitemap",
+        "Meio & Mensagem": "sitemap",
+        "Marketing Dive": "sitemap+hub",
+        "MarketingDirecto": "sitemap",
+        "Propmark": "sitemap",
+        "Insider Latam": "sitemap",
+        "LVMH Press Releases": "sitemap",
+        "Richemont Media": "url-set",
+        "Forbes México": "sitemap",
+    }
+    for name, rtype in expected_types.items():
+        stanza = entries[name]["retrieval"]
+        assert stanza["type"] == rtype, name
+        assert stanza["extractor"] in ("generic", "json-ld-first"), name
+    # Only Jing Daily needs JSON-LD-first extraction.
+    assert entries["Jing Daily"]["retrieval"]["extractor"] == "json-ld-first"
+    # Dive news sitemaps keep the proven impersonated retry lane.
+    assert entries["Retail Dive"]["retrieval"]["policy"] == "impersonated-feed"
+    assert entries["Marketing Dive"]["retrieval"]["policy"] == "impersonated-feed"
+    # Hub-anchor routes declare their link patterns.
+    assert entries["Jing Daily"]["retrieval"]["link_pattern"] == "/posts/"
+    assert entries["Retail Dive"]["retrieval"]["link_pattern"] == "/news/"
+    assert entries["National Jeweler"]["retrieval"]["link_pattern"] == "/articles/"
 
 
 # --- fetch_rss fakes -----------------------------------------------------------
@@ -325,3 +360,121 @@ def test_batch_keeps_shape_across_both_lanes(monkeypatch: pytest.MonkeyPatch) ->
     results = ingest_sources_flow(source_names=["MarTech", "InfoMoney"])
     assert results["MarTech"] == {"inserted": 3, "skipped": 0}
     assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
+
+
+# --- ticket 07: retrieval config seam (registry + fallbacks, no RSS change) ---
+
+
+def test_registry_loads_all_20_sources() -> None:
+    from brain.sources import list_sources
+
+    names = [e["name"] for e in list_sources()]
+    assert len(names) == 20
+    assert len(set(names)) == 20
+
+
+def test_no_rss_entries_keep_null_rss_url_and_iso_language() -> None:
+    expected_language = {
+        "National Jeweler": "en",
+        "Exame": "pt",
+        "Modaes": "es",
+        "Retail Dive": "en",
+        "Jing Daily": "en",
+        "Consumidor Moderno": "pt",
+        "Meio & Mensagem": "pt",
+        "Marketing Dive": "en",
+        "MarketingDirecto": "es",
+        "Propmark": "pt",
+        "Insider Latam": "es",
+        "LVMH Press Releases": "en",
+        "Richemont Media": "en",
+        "Forbes México": "es",
+    }
+    for name, lang in expected_language.items():
+        src = get_source(name)
+        assert src["rss_url"] is None, name
+        assert src["language"] == lang, name
+        assert src["hub_url"], name
+
+
+def test_no_rss_policies_validate_and_never_raise() -> None:
+    assert get_retrieval_policy("Jing Daily")["type"] == "sitemap+hub"
+    assert get_retrieval_policy("Jing Daily")["extractor"] == "json-ld-first"
+    # Sitemap refs live in curated-sources.json (09 lane owns them): assert
+    # shape here, exact URLs in the curated-stanza tests.
+    modaes = get_retrieval_policy("Modaes")
+    assert modaes["type"] == "sitemap"
+    assert modaes["policy"] == "stdlib-only"
+    assert modaes["extractor"] == "generic"
+    assert len(modaes["sitemaps"]) >= 1
+    assert get_retrieval_policy("National Jeweler")["type"] == "url-set+hub"
+    assert get_retrieval_policy("No Such Source") == {"type": "rss", "policy": "stdlib-only"}
+    assert get_retrieval_policy(None) == {"type": "rss", "policy": "stdlib-only"}
+
+
+def test_retrieval_config_fills_defaults_for_ticket_08() -> None:
+    from brain.sources import get_retrieval_config
+
+    cfg = get_retrieval_config("MarketingDirecto")
+    assert cfg == {
+        "type": "sitemap",
+        "policy": "stdlib-only",
+        "extractor": "generic",
+        # Verified live 2026-09-06: Yoast index + news sitemap (robots.txt
+        # declares both); pacing honors robots Crawl-delay: 10.
+        "sitemaps": [
+            "https://www.marketingdirecto.com/news-sitemap.xml",
+            "https://www.marketingdirecto.com/sitemap_index.xml",
+        ],
+        "hub": "https://www.marketingdirecto.com/",
+        "hub_pages": [],
+        "link_pattern": None,
+        "sitemap_pattern": None,
+        "id_guard": False,
+        "pacing_ms": 10000,
+        "max_urls": 50,
+    }
+    # Unknown sources fall back to safe RSS defaults without raising.
+    unknown = get_retrieval_config("No Such Source")
+    assert unknown["type"] == "rss"
+    assert unknown["policy"] == "stdlib-only"
+    assert unknown["extractor"] == "generic"
+    assert unknown["sitemaps"] == []
+    assert get_retrieval_config(None)["type"] == "rss"
+
+
+def test_invalid_stanza_values_fall_back_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import brain.sources as sources
+
+    real_get_source = sources.get_source
+
+    def fake_get_source(name: str) -> dict[str, Any]:
+        entry = real_get_source(name)
+        if name == "Jing Daily":
+            entry["retrieval"] = {
+                "type": "teleport",
+                "policy": "bogus",
+                "extractor": "bogus",
+                "sitemaps": "not-a-list",
+                "pacing_ms": -1,
+            }
+        return entry
+
+    monkeypatch.setattr(sources, "get_source", fake_get_source)
+    assert sources.get_retrieval_policy("Jing Daily") == {"type": "rss", "policy": "stdlib-only"}
+
+
+def test_rss_policy_shapes_unchanged_for_existing_lanes() -> None:
+    # RSS stanzas keep the exact {"type", "policy"} shape: ingest.py and
+    # flows.py read ["policy"] exactly as before.
+    for name in (
+        "Social Media Today",
+        "MarTech",
+        "Professional Jeweller",
+        "InfoMoney",
+        "JCK Online",
+        "Swarovski PR Newswire",
+    ):
+        assert set(get_retrieval_policy(name)) == {"type", "policy"}, name
