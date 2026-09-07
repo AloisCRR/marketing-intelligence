@@ -79,6 +79,9 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
     restart: unless-stopped
 
   mcp:
@@ -111,29 +114,37 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
     restart: unless-stopped
 
-  # Optional Prefect worker (docs-only lane). Excluded from default `up`;
-  # enable explicitly: `docker compose --profile prefect up -d prefect-worker`.
-  # Local dev runs against the host-local Prefect server
-  # (http://127.0.0.1:4200, see `make prefect-up`); `make ingest` guards on
-  # its /api/health. Shares the app image (prefect is a main dependency) and the default compose
-  # network, so `db` resolves as a hostname and DATABASE_URL works unchanged.
-  prefect-worker:
+  # Brain worker (Dokploy: always on; local: `docker compose up -d brain-worker`).
+  # Runs against the VPS Prefect server (see PREFECT_API_URL) on pool `brain-pool`.
+  # Shares the app image (prefect is a main dependency). `db` resolves via the
+  # default compose network; `prefect-server` resolves via `dokploy-network`.
+  brain-worker:
     build: *app-build
     image: brain-app:local
-    container_name: brain-prefect-worker
-    profiles: ["prefect"]
-    command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-default}"]
+    container_name: brain-worker
+    command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-brain-pool}"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
-      PREFECT_API_URL: ${PREFECT_API_URL:-}
+      PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
+      PREFECT_API_AUTH_STRING: ${PREFECT_API_AUTH_STRING:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
       db:
         condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
     restart: unless-stopped
 
 volumes:
   pgdata:
+
+networks:
+  dokploy-network:
+    external: true
