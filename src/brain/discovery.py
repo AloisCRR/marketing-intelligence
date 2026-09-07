@@ -29,6 +29,7 @@ import html as _html
 import json
 import random
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -57,8 +58,10 @@ try:  # optional impersonated-retry backend (mirrors brain.ingest)
 except Exception:  # pragma: no cover - stdlib-only environments
     _curl_cffi_requests = None  # type: ignore[assignment]
 
-#: Explicit timeout (s) for every discovery/extraction request.
-DEFAULT_TIMEOUT = 30
+#: Explicit timeout (s) for article/discovery stdlib fetches (opt 4 split:
+#: 10s feeds in brain.ingest, 15s articles here, 30s only for the
+#: impersonated retry leg in `_impersonated_get`).
+DEFAULT_TIMEOUT = 15
 
 #: Maximum sitemap-nesting depth traversed (index → nested index → URL set).
 MAX_SITEMAP_DEPTH = 2
@@ -147,9 +150,10 @@ def policy_get(
 ) -> tuple[str, bytes]:
     """GET `url` under the stanza policy; return (final_url, body).
 
-    Mirrors the feed lane (`brain.ingest.fetch_rss`): stdlib first, and only
-    when that attempt meets 403/challenge evidence does ``impersonated-feed``
-    retry once via curl_cffi — any other failure is an explicit
+    Mirrors the feed lane (`brain.ingest.fetch_rss`): stdlib first with a
+    15s native timeout, and only when that attempt meets 403/challenge
+    evidence does ``impersonated-feed`` retry once via curl_cffi with its
+    own 30s native timeout — any other failure is an explicit
     :class:`ArticleFetchError`. Never returns a wrong article: HTTP errors
     raise, they never yield bytes.
     """
@@ -180,7 +184,9 @@ def policy_get(
             f"fetch failed for {url}: {blocked_detail} "
             "(curl_cffi unavailable for impersonated retry)",
         )
-    return _impersonated_get(url, timeout)
+    # The impersonated retry leg keeps its own 30s native timeout (opt 4
+    # split): only the stdlib attempt honors the caller's `timeout`.
+    return _impersonated_get(url)
 
 
 def _normalize_exclude(raw: Any) -> list[str]:
@@ -945,7 +951,144 @@ def extract_article(
     )
 
 
-def harvest_sitemap_source(
+#: Per-host in-flight fetch bound for the concurrent path (opt 1): one
+#: fetch per host at a time preserves the serial pacing contract under
+#: flow-level fan-out. Slots are process-global so every
+#: ThreadPoolTaskRunner worker honors the same politeness budget.
+_HOST_CONCURRENCY = 1
+
+_host_slots: dict[str, threading.Semaphore] = {}
+_host_slots_lock = threading.Lock()
+
+
+def _host_slot(host: str) -> threading.Semaphore:
+    """Process-global per-host fetch slot (created on first use). Never raises."""
+    with _host_slots_lock:
+        slot = _host_slots.get(host)
+        if slot is None:
+            slot = threading.Semaphore(_HOST_CONCURRENCY)
+            _host_slots[host] = slot
+        return slot
+
+
+def paced_policy_fetch(
+    url: str,
+    *,
+    policy: str = "stdlib-only",
+    gap_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> tuple[str, bytes]:
+    """One polite fetch for the concurrent path: per-host slot + pacing + jitter.
+
+    Holds the host slot across the pacing sleep and the fetch, so concurrent
+    workers stay sequential per host with the same
+    ``gap * (1 + jitter)`` rhythm as the serial harvest. The stdlib attempt
+    honors `timeout`; the impersonated retry leg keeps its own 30s timeout.
+    """
+    try:
+        host = urlsplit(url).netloc.lower()
+    except ValueError:
+        host = ""
+    with _host_slot(host):
+        sleep(max(0.0, gap_s) * (1.0 + random.uniform(0.0, 0.25)))
+        return policy_get(url, policy=policy, timeout=timeout)
+
+
+@dataclass(frozen=True)
+class ArticleJob:
+    """Immutable per-article work unit for flow-level fan-out (opt 1).
+
+    Frozen (all immutables) so concurrent task workers never share mutable
+    references: the V3 ``unmapped()`` aliasing hazard does not apply.
+    Timestamps travel as ISO strings and are restored inside the worker.
+    """
+
+    loc: str
+    lastmod_iso: str | None = None
+    source_label: str = ""
+    language: str = "en"
+    retrieved_at_iso: str = ""
+    extractor: str = "generic"
+    id_guard: bool = False
+    policy: str = "stdlib-only"
+    gap_s: float = 1.0
+    timeout_s: int = DEFAULT_TIMEOUT
+
+
+@dataclass
+class HarvestPlan:
+    """Serial, cheap discovery outcome: article jobs plus visible skip accounting.
+
+    Everything up to the article loop (robots, sitemap traversal, hub
+    fallback, robots-Disallow filter, empty→DiscoveryError) stays serial and
+    ordered; only the fetch→decode→extract per-article work fans out.
+    `fetch_fn` is the resolved ``(final_url, body)`` fetcher the plan used,
+    so the serial driver reproduces identical pacing with the same callable.
+    """
+
+    jobs: list[ArticleJob] = field(default_factory=list)
+    skipped: int = 0
+    causes: list[str] = field(default_factory=list)
+    source_label: str = ""
+    policy: str = "stdlib-only"
+    gap_s: float = 1.0
+    fetch_fn: Callable[[str], tuple[str, bytes]] | None = None
+
+
+def fetch_extract_one(
+    job: ArticleJob,
+    *,
+    fetch_one: Callable[[str], tuple[str, bytes]] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[NormalizedDocument | None, str | None]:
+    """Fetch → decode → extract one planned article; never raises.
+
+    Returns ``(document, None)`` on success else ``(None, cause)`` with the
+    exact per-URL cause shapes the serial harvest records (``"<url>:
+    <detail>"``), so concurrent assembly preserves skipped/causes counting.
+    The default fetch is the polite concurrent fetch (per-host slot +
+    pacing + jitter); the serial driver injects its own paced fetch.
+    """
+    fetch = fetch_one or (
+        lambda url: paced_policy_fetch(
+            url, policy=job.policy, gap_s=job.gap_s, sleep=sleep, timeout=job.timeout_s
+        )
+    )
+    try:
+        final_url, raw = fetch(job.loc)
+    except ArticleFetchError as exc:
+        return (None, f"{job.loc}: {exc.detail}")
+    except Exception as exc:  # defensive: fetch never aborts the harvest
+        return (None, f"{job.loc}: fetch failed ({exc})")
+    try:
+        html = raw.decode("utf-8", errors="replace")
+    except Exception as exc:
+        return (None, f"{job.loc}: undecodable body ({exc})")
+    try:
+        retrieved_at = coerce_tz_aware(datetime.fromisoformat(job.retrieved_at_iso))
+        fallback = (
+            coerce_tz_aware(datetime.fromisoformat(job.lastmod_iso)) if job.lastmod_iso else None
+        )
+        doc = extract_article(
+            url=job.loc,
+            final_url=final_url,
+            html=html,
+            source=job.source_label,
+            language=job.language,
+            retrieved_at=retrieved_at,
+            fallback_published=fallback,
+            extractor=job.extractor,
+            id_guard=job.id_guard,
+        )
+    except ArticleExtractError as exc:
+        return (None, f"{job.loc}: {exc.detail}")
+    except Exception as exc:  # defensive: extraction never aborts the harvest
+        return (None, f"{job.loc}: extraction failed ({exc})")
+    return (doc, None)
+
+
+def plan_harvest(
     config: dict[str, Any],
     source_label: str,
     language: str,
@@ -953,23 +1096,16 @@ def harvest_sitemap_source(
     fetch: Callable[[str], tuple[str, bytes]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     now: datetime | None = None,
-) -> HarvestReport:
-    """Discover → fetch → extract one hub/sitemap Source; never stores, only builds.
+) -> HarvestPlan:
+    """Serial discovery planning for one hub/sitemap Source; never stores.
 
-    Discovery order is sitemap-first, hub-anchor fallback second: declared
-    sitemaps are traversed newest-first (distilled by the stanza sitemap
-    pattern when declared, so whole-site urlsets yield the declared beat;
-    entries matching the stanza sitemap-exclude list, e.g. ``/webstories/``,
-    are dropped before the backfill budget applies),
-    then hub listings (hub + declared pagination pages) contribute
-    pattern-matching anchors not already discovered, all bounded to
-    `max_urls`. The stanza `extractor` family switches body selection per
-    article; the stanza `id_guard` defeats numeric-ID reuse per article.
-    Returns a :class:`HarvestReport` (documents plus explicit per-document
-    skips). Raises
+    Runs everything in :func:`harvest_sitemap_source` up to the article
+    loop (stanza validation, robots crawl-delay, sitemap-first traversal,
+    hub-anchor fallback, robots-Disallow filter) and returns a
+    :class:`HarvestPlan` of immutable :class:`ArticleJob` units. Raises
     :class:`DiscoveryError` when discovery yields zero URLs — the flow
     converts that into the explicit per-source error, exactly as a dead RSS
-    feed surfaces. One bad sitemap, hub page, or article never aborts the rest.
+    feed surfaces. One bad sitemap or hub page never aborts the rest.
     """
     policy = config.get("policy")
     if policy not in ("stdlib-only", "impersonated-feed"):
@@ -1052,13 +1188,13 @@ def harvest_sitemap_source(
                 known.add(canonicalize_url(entry.loc))
                 discovered.append(entry)
         discovered = discovered[:max_urls]
+    robots_skipped = 0
     if robots_txt:
         # Robots Disallow filtering: discovered article URLs under a
         # `User-agent: *` Disallow are explicit skips (never fetched or
         # extracted). Hub listing pages themselves are never filtered —
         # only the article URLs discovered from sitemaps/hubs.
         kept: list[SitemapUrl] = []
-        robots_skipped = 0
         for entry in discovered:
             if robots_is_disallowed(entry.loc, robots_txt):
                 errors.append(f"{entry.loc}: disallowed by robots.txt")
@@ -1066,48 +1202,79 @@ def harvest_sitemap_source(
             else:
                 kept.append(entry)
         discovered = kept
-    else:
-        robots_skipped = 0
-    report = HarvestReport(causes=list(errors))
-    report.skipped += robots_skipped
     if not discovered:
         detail = "; ".join(errors) if errors else "no sitemap URLs declared"
         raise DiscoveryError(f"sitemap discovery for {source_label} yielded no URLs: {detail}")
-    for entry in discovered:
-        try:
-            final_url, raw = _paced_fetch(entry.loc)
-        except ArticleFetchError as exc:
+    retrieved_iso = retrieved_at.isoformat()
+    jobs = [
+        ArticleJob(
+            loc=entry.loc,
+            lastmod_iso=entry.lastmod.isoformat() if entry.lastmod else None,
+            source_label=source_label,
+            language=language,
+            retrieved_at_iso=retrieved_iso,
+            extractor=str(extractor),
+            id_guard=id_guard,
+            policy=str(policy),
+            gap_s=gap,
+            timeout_s=DEFAULT_TIMEOUT,
+        )
+        for entry in discovered
+    ]
+    return HarvestPlan(
+        jobs=jobs,
+        skipped=robots_skipped,
+        causes=list(errors),
+        source_label=source_label,
+        policy=str(policy),
+        gap_s=gap,
+        fetch_fn=fetch_fn,
+    )
+
+
+def harvest_sitemap_source(
+    config: dict[str, Any],
+    source_label: str,
+    language: str,
+    *,
+    fetch: Callable[[str], tuple[str, bytes]] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    now: datetime | None = None,
+) -> HarvestReport:
+    """Discover → fetch → extract one hub/sitemap Source; never stores, only builds.
+
+    Discovery order is sitemap-first, hub-anchor fallback second: declared
+    sitemaps are traversed newest-first (distilled by the stanza sitemap
+    pattern when declared, so whole-site urlsets yield the declared beat;
+    entries matching the stanza sitemap-exclude list, e.g. ``/webstories/``,
+    are dropped before the backfill budget applies),
+    then hub listings (hub + declared pagination pages) contribute
+    pattern-matching anchors not already discovered, all bounded to
+    `max_urls`. The stanza `extractor` family switches body selection per
+    article; the stanza `id_guard` defeats numeric-ID reuse per article.
+    Returns a :class:`HarvestReport` (documents plus explicit per-document
+    skips). Raises
+    :class:`DiscoveryError` when discovery yields zero URLs — the flow
+    converts that into the explicit per-source error, exactly as a dead RSS
+    feed surfaces. One bad sitemap, hub page, or article never aborts the rest.
+
+    Serial driver over :func:`plan_harvest` + :func:`fetch_extract_one`:
+    the flow fans the same immutable jobs out concurrently, so both paths
+    share planning, cause shapes, and skip accounting exactly.
+    """
+    plan = plan_harvest(config, source_label, language, fetch=fetch, sleep=sleep, now=now)
+    fetch_fn = plan.fetch_fn or (lambda url: policy_get(url, policy=plan.policy))
+
+    def _serial_fetch(url: str) -> tuple[str, bytes]:
+        sleep(plan.gap_s * (1.0 + random.uniform(0.0, 0.25)))
+        return fetch_fn(url)
+
+    report = HarvestReport(documents=[], skipped=plan.skipped, causes=list(plan.causes))
+    for job in plan.jobs:
+        doc, cause = fetch_extract_one(job, fetch_one=_serial_fetch)
+        if doc is not None:
+            report.documents.append(doc)
+        else:
             report.skipped += 1
-            report.causes.append(f"{entry.loc}: {exc.detail}")
-            continue
-        except Exception as exc:  # defensive: fetch never aborts the harvest
-            report.skipped += 1
-            report.causes.append(f"{entry.loc}: fetch failed ({exc})")
-            continue
-        try:
-            html = raw.decode("utf-8", errors="replace")
-        except Exception as exc:
-            report.skipped += 1
-            report.causes.append(f"{entry.loc}: undecodable body ({exc})")
-            continue
-        try:
-            report.documents.append(
-                extract_article(
-                    url=entry.loc,
-                    final_url=final_url,
-                    html=html,
-                    source=source_label,
-                    language=language,
-                    retrieved_at=retrieved_at,
-                    fallback_published=entry.lastmod,
-                    extractor=str(extractor),
-                    id_guard=id_guard,
-                )
-            )
-        except ArticleExtractError as exc:
-            report.skipped += 1
-            report.causes.append(f"{entry.loc}: {exc.detail}")
-        except Exception as exc:  # defensive: extraction never aborts the harvest
-            report.skipped += 1
-            report.causes.append(f"{entry.loc}: extraction failed ({exc})")
+            report.causes.append(str(cause))
     return report

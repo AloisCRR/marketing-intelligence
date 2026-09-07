@@ -28,13 +28,13 @@ from collections.abc import Mapping
 from email.message import Message
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
 import brain.discovery as discovery
 from brain.discovery import (
     ArticleFetchError,
-    DiscoveryError,
     discover_hub_urls,
     extract_hub_links,
     harvest_sitemap_source,
@@ -531,17 +531,10 @@ def test_flow_ingests_dive_source_with_exact_shape(
     routes = _routes(label)
     mapping = _fetch_map(label)
     failures = {routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403: Forbidden")}
-    monkeypatch.setattr(
-        flows,
-        "harvest_sitemap_source",
-        lambda config, name, lang: harvest_sitemap_source(
-            config,
-            name,
-            lang,
-            fetch=_make_fetch(mapping, failures=failures),
-            sleep=lambda _: None,
-        ),
-    )
+    fixture_fetch = _make_fetch(mapping, failures=failures)
+    # One seam for the whole concurrent path: planning + article workers
+    # share `discovery_fetch`, so fixture I/O flows through real logic.
+    monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
     from brain.ingest import upsert_documents
@@ -561,23 +554,25 @@ def test_batch_ingests_both_dives_and_isolates_failure(
     import brain.flows as flows
 
     maps = {label: _fetch_map(label) for label in LABELS}
-
-    def fake_harvest(config: dict[str, Any], label: str, lang: str) -> Any:
+    failing_host = SOURCES["Marketing Dive"]["host"]
+    combined: dict[str, tuple[str, bytes]] = {}
+    failures: dict[str, Exception] = {}
+    for label in LABELS:
         if label == "Marketing Dive":
-            raise DiscoveryError("sitemap discovery for Marketing Dive yielded no URLs: boom")
+            continue
         routes = _routes(label)
-        return harvest_sitemap_source(
-            config,
-            label,
-            lang,
-            fetch=_make_fetch(
-                maps[label],
-                failures={routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403")},
-            ),
-            sleep=lambda _: None,
-        )
+        combined.update(maps[label])
+        failures[routes["bad"]] = ArticleFetchError(routes["bad"], "HTTP Error 403")
+    fixture_fetch = _make_fetch(combined, failures=failures)
 
-    monkeypatch.setattr(flows, "harvest_sitemap_source", fake_harvest)
+    def fake_fetch(url: str, policy: str, gap_s: float) -> tuple[str, bytes]:
+        # Every Marketing Dive fetch fails: planning finds zero URLs and
+        # raises DiscoveryError, exactly the isolated per-source error.
+        if urlsplit(url).netloc == failing_host:
+            raise ArticleFetchError(url, "sitemap discovery yielded no URLs: boom")
+        return fixture_fetch(url)
+
+    monkeypatch.setattr(flows, "discovery_fetch", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     shared: dict[str, FakeConnection] = {}
 

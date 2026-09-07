@@ -532,17 +532,10 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
 
     mapping = _full_fetch_map()
     failures = {URL_BAD: ArticleFetchError(URL_BAD, "HTTP Error 403: Forbidden")}
-    monkeypatch.setattr(
-        flows,
-        "harvest_sitemap_source",
-        lambda config, label, lang: harvest_sitemap_source(
-            config,
-            label,
-            lang,
-            fetch=_make_fetch(mapping, failures=failures),
-            sleep=lambda _: None,
-        ),
-    )
+    fixture_fetch = _make_fetch(mapping, failures=failures)
+    # One seam for the whole concurrent path: planning + article workers
+    # share `discovery_fetch`, so fixture I/O flows through real logic.
+    monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
     from brain.ingest import upsert_documents
@@ -582,13 +575,8 @@ def test_flow_clean_harvest_keeps_exact_shape(monkeypatch: pytest.MonkeyPatch) -
         b'<?xml version="1.0" encoding="UTF-8"?>'
         b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>',
     )
-    monkeypatch.setattr(
-        flows,
-        "harvest_sitemap_source",
-        lambda config, label, lang: harvest_sitemap_source(
-            config, label, lang, fetch=_make_fetch(mapping), sleep=lambda _: None
-        ),
-    )
+    fixture_fetch = _make_fetch(mapping)
+    monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     from brain.ingest import upsert_documents
 
@@ -602,13 +590,8 @@ def test_batch_isolates_sitemap_failure(monkeypatch: pytest.MonkeyPatch) -> None
     from brain.sources import get_source
 
     mapping = _full_fetch_map()
-    monkeypatch.setattr(
-        flows,
-        "harvest_sitemap_source",
-        lambda config, label, lang: harvest_sitemap_source(
-            config, label, lang, fetch=_make_fetch(mapping), sleep=lambda _: None
-        ),
-    )
+    fixture_fetch = _make_fetch(mapping)
+    monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     shared: dict[str, FakeConnection] = {}
 
@@ -1041,17 +1024,8 @@ def test_flow_ingests_jing_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> 
 
     mapping = _jing_fetch_map()
     failures = {JD_ROULETTE: ArticleFetchError(JD_ROULETTE, "HTTP Error 403")}
-    monkeypatch.setattr(
-        flows,
-        "harvest_sitemap_source",
-        lambda config, label, lang: harvest_sitemap_source(
-            config,
-            label,
-            lang,
-            fetch=_make_fetch(mapping, failures=failures),
-            sleep=lambda _: None,
-        ),
-    )
+    fixture_fetch = _make_fetch(mapping, failures=failures)
+    monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
     from brain.ingest import upsert_documents
@@ -1167,10 +1141,12 @@ def test_harvest_sitemap_exclude_webstories_never_fetched_bad_urls_explicit() ->
 def test_batch_isolates_jing_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
 
+    # The whole discovery lane hard-fails: planning raises out of the
+    # discover subflow, and the batch records the explicit per-source error.
     monkeypatch.setattr(
         flows,
-        "harvest_sitemap_source",
-        lambda config, label, lang: (_ for _ in ()).throw(RuntimeError("hub down")),
+        "plan_harvest",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("hub down")),
     )
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     fixture = (FIXTURES / "martech_sample.xml").read_bytes()

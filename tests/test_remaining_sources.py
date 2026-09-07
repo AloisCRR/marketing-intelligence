@@ -274,7 +274,7 @@ def test_multi_source_flow_records_failure_without_blocking_others(
 
 def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
-    from brain.discovery import HarvestReport
+    from brain.discovery import HarvestPlan
     from brain.sources import V1_SOURCES, get_source
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
@@ -293,11 +293,14 @@ def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch)
     # Discovery-lane sources (sitemap/hub/url-set) yield zero docs here —
     # lane behavior is covered by the dedicated discovery suites; this test
-    # locks the V1 default scope, not per-lane extraction.
+    # locks the V1 default scope, not per-lane extraction. An empty plan
+    # keeps the concurrent lane (no articles, no network) without errors.
     monkeypatch.setattr(
         flows,
-        "harvest_sitemap_source",
-        lambda config, name, lang: HarvestReport(documents=[], skipped=0, causes=[]),
+        "plan_harvest",
+        lambda config, name, lang, **kw: HarvestPlan(
+            jobs=[], skipped=0, causes=[], source_label=name
+        ),
     )
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:

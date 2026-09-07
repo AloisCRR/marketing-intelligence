@@ -6,15 +6,20 @@ Tasks delegate to module-global functions so tests can substitute fakes.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
 from prefect import flow, get_run_logger, task
+from prefect.cache_policies import NONE
+from prefect.task_runners import ThreadPoolTaskRunner
 
-from brain.discovery import harvest_sitemap_source
+from brain.db import get_connection
+from brain.discovery import ArticleJob, fetch_extract_one, paced_policy_fetch, plan_harvest
 from brain.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
 from brain.health import record_ingestion_run
 from brain.ingest import (
+    SOURCE_ID_SQL,
     EmptyFeedError,
     count_feed_entries,
     feed_candidate_urls,
@@ -33,7 +38,35 @@ from brain.sources import (
 )
 
 
-@task(retries=3, retry_delay_seconds=[2, 5, 15], task_run_name="fetch-{url}")
+def _retry_unless_permanent(task: Any, task_run: Any, state: Any) -> bool:
+    """Prefect retry gate: never retry permanent failures (opt 4 fail-fast).
+
+    Returns False (no retry) when the failed state carries an
+    :class:`EmptyFeedError` or an HTTP 404 — retrying a dead/emptied feed
+    only burns the 2s/5s/15s backoff. Anything else (transient network
+    blips, 5xx, timeouts) retries as before. Never raises: an
+    uninspectable state retries, preserving the self-healing default.
+    """
+    try:
+        outcome = state.result(raise_on_failure=False)
+    except Exception:
+        return True
+    if not isinstance(outcome, BaseException):
+        return True
+    if isinstance(outcome, EmptyFeedError):
+        return False
+    if "404" in str(outcome):
+        return False
+    return True
+
+
+@task(
+    retries=3,
+    retry_delay_seconds=[2, 5, 15],
+    retry_condition_fn=_retry_unless_permanent,
+    cache_policy=NONE,
+    task_run_name="fetch-{url}",
+)
 def fetch_task(url: str, source_name: str | None = None) -> bytes:
     """Retrieve raw feed bytes for a source URL.
 
@@ -77,31 +110,112 @@ def parse_task(
     return docs
 
 
-@task(task_run_name="discover-{source_name}")
+def discovery_fetch(url: str, policy: str, gap_s: float) -> tuple[str, bytes]:
+    """Paced, per-host-polite fetch behind the concurrent discovery path.
+
+    Single module-global seam for tests: planning (sitemap/hub traversal)
+    and every article worker share it, so one fixture patch covers the
+    whole flow without touching production pacing (stanza gap + robots
+    crawl-delay + jitter, one in-flight fetch per host).
+    """
+    return paced_policy_fetch(url, policy=policy, gap_s=gap_s)
+
+
+@task(task_run_name="article-fetch", cache_policy=NONE)
+def _article_task(job: ArticleJob) -> tuple[Any | None, str | None]:
+    """Fetch → decode → extract one planned article; never raises.
+
+    Returns ``(document, None)`` or ``(None, cause)`` per
+    :func:`brain.discovery.fetch_extract_one`, so the parent flow keeps the
+    exact skipped/causes accounting. Side-effecting (network): no result
+    caching. The job is an immutable value — no shared-mutable aliasing
+    across workers.
+    """
+
+    def fetch(url: str) -> tuple[str, bytes]:
+        return discovery_fetch(url, job.policy, job.gap_s)
+
+    return fetch_extract_one(job, fetch_one=fetch)
+
+
+@flow(
+    flow_run_name="discover-{source_name}",
+    task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
+)
 def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list[str]]:
     """Discover → fetch → extract one sitemap Source; returns (docs, skipped, causes).
 
-    Ticket 08 pilot lane: consumes `get_retrieval_config` (never raises) and
-    delegates to the module-global `harvest_sitemap_source` so tests can
-    substitute fakes. One bad sitemap/article is an explicit per-document skip
-    (counted with causes); zero discovered URLs raise DiscoveryError, which
-    propagates like a dead RSS feed so the Ingestion Run parent records the explicit
-    per-source error.
+    Ticket 08 pilot lane, now fanned out V3-safe (opt 1): serial planning
+    via the module-global `plan_harvest` (sitemap-first order, hub-anchor
+    fallback, robots-Disallow filter — raises DiscoveryError on zero URLs
+    like a dead RSS feed), then one `_article_task` per planned URL
+    submitted to this flow's ThreadPoolTaskRunner (max 4 workers, no raw
+    executor inside any task). Futures resolve in submission order, so
+    document order, skipped counts, and per-URL causes match the serial
+    harvest exactly; per-host politeness (slot + pacing + jitter) lives in
+    `discovery_fetch`.
+
+    Consumes `get_retrieval_config` (never raises). One bad
+    sitemap/article is an explicit per-document skip (counted with causes);
+    zero discovered URLs raise DiscoveryError, which propagates like a dead
+    RSS feed so the Ingestion Run parent records the explicit per-source
+    error.
     """
     config = get_retrieval_config(source_name)
     source = get_source(source_name)
     language = str(source.get("language") or "en")
-    report = harvest_sitemap_source(config, source_name, language)
+    policy = str(config.get("policy") or "stdlib-only")
+    pacing_ms = config.get("pacing_ms")
+    pacing_s = pacing_ms / 1000.0 if isinstance(pacing_ms, int) and pacing_ms > 0 else 1.0
+    # Planning traverses a handful of sitemap/hub listings at stanza pace
+    # (robots crawl-delay is folded into each article job's own gap below,
+    # where the bulk traffic lives).
+    plan = plan_harvest(
+        config,
+        source_name,
+        language,
+        fetch=lambda url: discovery_fetch(url, policy, pacing_s),
+    )
+    futures = [_article_task.submit(job) for job in plan.jobs]
+    for future in futures:
+        future.wait()
+    documents: list[NormalizedDocument] = []
+    skipped = plan.skipped
+    causes = list(plan.causes)
+    for future in futures:
+        doc, cause = future.result()
+        if doc is not None:
+            documents.append(doc)
+        else:
+            skipped += 1
+            causes.append(str(cause))
     get_run_logger().info(
         "discover source=%s docs=%d skipped=%d",
         source_name,
-        len(report.documents),
-        report.skipped,
+        len(documents),
+        skipped,
     )
-    return (report.documents, report.skipped, report.causes)
+    return (documents, skipped, causes)
 
 
-@task(task_run_name="enrich-docs")
+@task(task_run_name="enrich-one", cache_policy=NONE)
+def _enrich_one_task(
+    doc: NormalizedDocument, threshold: int, force: bool
+) -> tuple[NormalizedDocument, str, str | None]:
+    """Enrich one document; never raises (keeps the RSS body with a cause).
+
+    Thin wrapper over the module-global `enrich_document_or_keep` so tests
+    keep substituting fakes. Side-effecting (article fetch): no result
+    caching. Inputs are deepcopied by the parent flow, so workers never
+    share mutable documents.
+    """
+    return enrich_document_or_keep(doc, threshold, force=force)
+
+
+@flow(
+    flow_run_name="enrich-docs",
+    task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
+)
 def enrich_task(
     docs: list[NormalizedDocument],
     threshold: int = DEFAULT_THIN_THRESHOLD,
@@ -138,15 +252,18 @@ def enrich_task(
         )
         return (list(docs), 0, [])
     force = mode == "force_on"
+    # Fan-out V3-safe (opt 1): one task per document on this flow's
+    # ThreadPoolTaskRunner; futures resolve in submission order so the
+    # (docs, skipped, causes) contract matches the serial loop exactly.
+    futures = [_enrich_one_task.submit(deepcopy(doc), threshold, force) for doc in docs]
+    for future in futures:
+        future.wait()
     enriched: list[NormalizedDocument] = []
     skipped = 0
     causes: list[str] = []
-    for doc in docs:
+    for doc, future in zip(docs, futures, strict=True):
         try:
-            if force:
-                new_doc, method, cause = enrich_document_or_keep(doc, threshold, force=True)
-            else:
-                new_doc, method, cause = enrich_document_or_keep(doc, threshold)
+            new_doc, method, cause = future.result()
         except Exception as exc:  # defensive: enrichment never blocks ingestion
             enriched.append(doc)
             skipped += 1
@@ -168,6 +285,36 @@ def upsert_task(docs: list[NormalizedDocument]) -> dict[str, int]:
     inserted, skipped = upsert_documents(docs)
     get_run_logger().info("upsert docs=%d inserted=%d skipped=%d", len(docs), inserted, skipped)
     return {"inserted": inserted, "skipped": skipped}
+
+
+def _ensure_source_row(source_label: str) -> None:
+    """Fail fast when the `sources` row is missing (opt 3).
+
+    Runs the same SELECT as the upsert guard (`ingest.SOURCE_ID_SQL`) at
+    the top of the Ingestion Run, before any fetch, so a source without a
+    DB row fails in milliseconds instead of after minutes of retrieval.
+    Raises ValueError on a missing row; a DB that cannot be reached (unit
+    tests without Postgres) is not an error here — the run proceeds and
+    the upsert guard still enforces the invariant at persist time.
+    """
+    try:
+        conn = get_connection()
+    except Exception:
+        return
+    try:
+        row = conn.execute(SOURCE_ID_SQL, (source_label,)).fetchone()
+    except Exception:
+        return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if row is None or row[0] is None:
+        raise ValueError(
+            f"Unknown source for ingest: {source_label!r} "
+            "(no row in sources; refusing ingest without source_id)"
+        )
 
 
 @flow(flow_run_name="ingest-{source_name}")
@@ -223,6 +370,13 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
         return _finish({"inserted": 0, "skipped": 0, "error": str(exc)})
     source_label = str(source.get("name", source_name))
     language = str(source.get("language") or "en")
+    # Fail-fast DB-row guard (opt 3): same SELECT as the upsert guard, but
+    # before any fetch — a source without a DB row returns the explicit
+    # per-source error in milliseconds instead of after minutes of fetch.
+    try:
+        _ensure_source_row(source_label)
+    except ValueError as exc:
+        return _finish({"inserted": 0, "skipped": 0, "error": str(exc)})
     # No catch around task calls: fetch retries self-heal blips, genuine
     # failures propagate (red task + red subflow) for the parent to record.
     # Lane switch (ticket 08): RSS entries keep the exact fetch → parse path;
@@ -295,7 +449,52 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     return _finish(result, skipped_reasons or None)
 
 
-@flow(flow_run_name="ingest-batch")
+#: Batch fan-out chunk: at most this many Ingestion Runs in flight (opt 2),
+#: matching the ThreadPoolTaskRunner bound below.
+_BATCH_CHUNK = 4
+
+
+@task(task_run_name="ingest-one", cache_policy=NONE)
+def _ingest_one_task(source_name: str, flow_run_name: str) -> dict[str, Any]:
+    """Run one Ingestion Run with return_state isolation; never raises.
+
+    Calls the leaf `ingest_source_flow` exactly as the sequential batch did
+    (`return_state=True`): a Completed state yields its result dict directly
+    (including the unknown-source error dict, already recorded by the leaf),
+    while a Failed/Crashed state is recorded here via `record_ingestion_run`
+    (best-effort, never raises) and converted to `{inserted: 0, skipped: 0,
+    error}`. Side-effecting (network + DB): no result caching.
+    """
+    logger = get_run_logger()
+    started_at = datetime.now(UTC)
+    state = ingest_source_flow.with_options(flow_run_name=flow_run_name)(
+        source_name=source_name, return_state=True
+    )
+    if state.is_completed():
+        try:
+            return state.result()
+        except Exception as exc:  # Completed but unreadable: treat as failure
+            detail = str(exc) or "unreadable subflow result"
+    else:
+        detail = state.message or "subflow failed"
+    result: dict[str, Any] = {"inserted": 0, "skipped": 0, "error": detail}
+    try:
+        record_ingestion_run(
+            source_name,
+            result,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+        )
+    except Exception:
+        pass
+    logger.error("ingest-batch source=%s failed: %s", source_name, detail)
+    return result
+
+
+@flow(
+    flow_run_name="ingest-batch",
+    task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
+)
 def ingest_sources_flow(
     source_names: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -311,36 +510,46 @@ def ingest_sources_flow(
     recorded here via `record_ingestion_run` (best-effort, never raises) and
     converted to `{inserted: 0, skipped: 0, error}` — the batch return shape
     is unchanged and iteration continues to the next source.
+
+    Sources run in chunks of `_BATCH_CHUNK` on this flow's
+    ThreadPoolTaskRunner (opt 2): loop-called subflows are sequential by
+    default, so the bound lives one level down — each chunk submits one
+    `_ingest_one_task` per source (which owns the return_state isolation
+    above), waits the chunk, then collects results in name order. A failed
+    chunk task can never block its siblings: the task itself never raises,
+    and an unreadable future degrades to the same explicit error shape.
     """
     logger = get_run_logger()
     names = list(source_names) if source_names is not None else list(V1_SOURCES)
     batch_ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     results: dict[str, dict[str, Any]] = {}
-    for name in names:
-        started_at = datetime.now(UTC)
-        state = ingest_source_flow.with_options(flow_run_name=f"ingest-{name}-{batch_ts}")(
-            source_name=name, return_state=True
-        )
-        if state.is_completed():
-            try:
-                results[name] = state.result()
-            except Exception as exc:  # Completed but unreadable: treat as failure
-                detail = str(exc) or "unreadable subflow result"
-            else:
-                continue
-        else:
-            detail = state.message or "subflow failed"
-        result: dict[str, Any] = {"inserted": 0, "skipped": 0, "error": detail}
-        try:
-            record_ingestion_run(
-                name,
-                result,
-                started_at=started_at,
-                finished_at=datetime.now(UTC),
+    for offset in range(0, len(names), _BATCH_CHUNK):
+        chunk = names[offset : offset + _BATCH_CHUNK]
+        chunk_started = {name: datetime.now(UTC) for name in chunk}
+        futures = [
+            _ingest_one_task.with_options(task_run_name=f"ingest-{name}-{batch_ts}").submit(
+                source_name=name, flow_run_name=f"ingest-{name}-{batch_ts}"
             )
-        except Exception:
-            pass
-        logger.error("ingest-batch source=%s failed: %s", name, detail)
-        results[name] = result
+            for name in chunk
+        ]
+        for future in futures:
+            future.wait()
+        for name, future in zip(chunk, futures, strict=True):
+            try:
+                results[name] = future.result()
+            except Exception as exc:  # defensive: crashed task degrades to error dict
+                detail = str(exc) or "batch task failed"
+                result: dict[str, Any] = {"inserted": 0, "skipped": 0, "error": detail}
+                try:
+                    record_ingestion_run(
+                        name,
+                        result,
+                        started_at=chunk_started[name],
+                        finished_at=datetime.now(UTC),
+                    )
+                except Exception:
+                    pass
+                logger.error("ingest-batch source=%s failed: %s", name, detail)
+                results[name] = result
     logger.info("ingest-batch sources=%d result=%s", len(names), results)
     return results

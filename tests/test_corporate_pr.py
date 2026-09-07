@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -639,17 +640,13 @@ class FakeConnection:
 # --- flow wiring -----------------------------------------------------------------
 
 
-def _flow_harvest(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, tuple[str, bytes]]) -> None:
+def _flow_fetch(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, tuple[str, bytes]]) -> None:
     import brain.flows as flows
-    from brain.discovery import harvest_sitemap_source as _harvest
 
-    monkeypatch.setattr(
-        flows,
-        "harvest_sitemap_source",
-        lambda config, label, lang: _harvest(
-            config, label, lang, fetch=_make_fetch(mapping), sleep=lambda _: None
-        ),
-    )
+    # One seam for the whole concurrent path: planning + article workers
+    # share `discovery_fetch`, so fixture I/O flows through real logic.
+    fetch = _make_fetch(mapping)
+    monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
 
 
@@ -663,7 +660,7 @@ def _flow_upsert(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> None:
 def test_flow_ingests_nj_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
 
-    _flow_harvest(monkeypatch, _nj_fetch_map())
+    _flow_fetch(monkeypatch, _nj_fetch_map())
     conn = FakeConnection()
     _flow_upsert(monkeypatch, conn)
     result = flows.ingest_source_flow(source_name=NJ)
@@ -677,7 +674,7 @@ def test_flow_ingests_nj_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> No
 def test_flow_ingests_ri_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
 
-    _flow_harvest(monkeypatch, _ri_fetch_map())
+    _flow_fetch(monkeypatch, _ri_fetch_map())
     conn = FakeConnection()
     _flow_upsert(monkeypatch, conn)
     assert flows.ingest_source_flow(source_name=RI) == {"inserted": 3, "skipped": 0}
@@ -686,7 +683,7 @@ def test_flow_ingests_ri_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_flow_ingests_lvmh_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
 
-    _flow_harvest(monkeypatch, _lvmh_fetch_map())
+    _flow_fetch(monkeypatch, _lvmh_fetch_map())
     conn = FakeConnection()
     _flow_upsert(monkeypatch, conn)
     assert flows.ingest_source_flow(source_name=LVMH) == {"inserted": 6, "skipped": 0}
@@ -696,17 +693,23 @@ def test_batch_ingests_all_three_and_isolates_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import brain.flows as flows
-    from brain.discovery import DiscoveryError
-    from brain.discovery import harvest_sitemap_source as _harvest
+    from brain.discovery import ArticleFetchError
 
     maps = {NJ: _nj_fetch_map(), RI: _ri_fetch_map(), LVMH: _lvmh_fetch_map()}
+    combined: dict[str, tuple[str, bytes]] = {}
+    for label, mapping in maps.items():
+        if label != RI:
+            combined.update(mapping)
+    fixture_fetch = _make_fetch(combined)
 
-    def fake_harvest(config: dict[str, Any], label: str, lang: str) -> Any:
-        if label == RI:
-            raise DiscoveryError("sitemap discovery for Richemont Media yielded no URLs: boom")
-        return _harvest(config, label, lang, fetch=_make_fetch(maps[label]), sleep=lambda _: None)
+    def fake_fetch(url: str, policy: str, gap_s: float) -> tuple[str, bytes]:
+        # Every Richemont fetch fails: planning finds zero URLs and raises
+        # DiscoveryError, exactly the isolated per-source error.
+        if urlsplit(url).netloc == "www.richemont.com":
+            raise ArticleFetchError(url, "sitemap discovery yielded no URLs: boom")
+        return fixture_fetch(url)
 
-    monkeypatch.setattr(flows, "harvest_sitemap_source", fake_harvest)
+    monkeypatch.setattr(flows, "discovery_fetch", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     shared: dict[str, FakeConnection] = {}
 
