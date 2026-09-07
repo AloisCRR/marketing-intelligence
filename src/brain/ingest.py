@@ -50,6 +50,14 @@ _FEED_CHALLENGE_MARKERS: tuple[str, ...] = (
     "enable javascript",
 )
 
+#: Native timeout (s) for the plain feed attempt (opt 4 split: fast feeds,
+#: slower articles, slowest impersonated retry). Prefect `timeout_seconds`
+#: cannot preempt blocking socket I/O, so the split lives in the clients.
+FEED_TIMEOUT = 10
+
+#: Native timeout (s) for the impersonated retry leg only.
+IMPERSONATED_TIMEOUT = 30
+
 #: Error-body bytes inspected for challenge evidence on the stdlib attempt.
 _FEED_ERROR_BODY_CAP = 65536
 
@@ -146,7 +154,7 @@ def _policy_for_feed_url(url: str) -> str:
     return "stdlib-only"
 
 
-def _fetch_feed_stdlib(url: str, timeout: int = 30) -> bytes:
+def _fetch_feed_stdlib(url: str, timeout: int = FEED_TIMEOUT) -> bytes:
     """Download a feed over plain HTTP. Raises on network/HTTP failure."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -166,7 +174,7 @@ def _feed_blocked(status: int | None, snippet: str) -> bool:
     return any(marker in haystack for marker in _FEED_CHALLENGE_MARKERS)
 
 
-def _fetch_feed_impersonated(url: str, timeout: int = 30) -> bytes:
+def _fetch_feed_impersonated(url: str, timeout: int = IMPERSONATED_TIMEOUT) -> bytes:
     """GET `url` with curl_cffi Chrome impersonation plus a browser identity."""
     from brain.enrich import BROWSER_USER_AGENT  # canonical browser identity
 
@@ -195,13 +203,14 @@ def _fetch_feed_impersonated(url: str, timeout: int = 30) -> bytes:
     return body
 
 
-def fetch_rss(url: str, timeout: int = 30, policy: str | None = None) -> bytes:
+def fetch_rss(url: str, timeout: int = FEED_TIMEOUT, policy: str | None = None) -> bytes:
     """Download a feed over plain HTTP. Raises on network/HTTP failure.
 
     `policy` selects the retrieval lane: "stdlib-only" keeps the current
-    plain-urllib behavior; "impersonated-feed" tries stdlib first and, only
-    when that attempt meets 403/challenge evidence, retries once with curl_cffi
-    Chrome impersonation — any other failure is an explicit fetch error.
+    plain-urllib behavior (10s native timeout); "impersonated-feed" tries
+    stdlib first and, only when that attempt meets 403/challenge evidence,
+    retries once with curl_cffi Chrome impersonation under its own 30s
+    native timeout — any other failure is an explicit fetch error.
     None resolves the policy from the source registry by feed URL
     (unregistered URLs default to stdlib-only); unknown policy values fall
     back to stdlib-only. Never raises on bad policy input.
@@ -241,7 +250,9 @@ def fetch_rss(url: str, timeout: int = 30, policy: str | None = None) -> bytes:
             f"fetch failed for {url} (retrieval policy=impersonated-feed): "
             f"{blocked_detail} (curl_cffi unavailable for impersonated retry)"
         )
-    return _fetch_feed_impersonated(url, timeout)
+    # The impersonated retry leg keeps its own 30s native timeout (opt 4
+    # split): the caller's `timeout` only bounds the stdlib attempt.
+    return _fetch_feed_impersonated(url)
 
 
 def _published_at(entry: Any, fallback: datetime) -> datetime:

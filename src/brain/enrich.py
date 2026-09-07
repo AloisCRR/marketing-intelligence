@@ -83,6 +83,14 @@ FALLBACK_MAX_RETRIES = 2
 #: Upper bound honoring a 429 Retry-After (ingestion must never sleep unbounded).
 FALLBACK_RETRY_CAP_SECONDS = 60.0
 
+#: Native timeout (s) for the primary article fetch (opt 4 split: 10s feeds,
+#: 15s articles, 30s fallback reader). Prefect `timeout_seconds` cannot
+#: preempt blocking I/O, so the split lives in the clients.
+PRIMARY_TIMEOUT = 15
+
+#: Native timeout (s) for the gated fallback reader only.
+FALLBACK_TIMEOUT = 30
+
 #: Failure headers the fallback always sends (and the only ones it ever sends).
 FALLBACK_ACCEPT = "text/*"
 
@@ -272,7 +280,7 @@ def _failure_for_status(url: str, status: int, reason: str, body: bytes) -> Fetc
     return FetchFailed(f"fetch failed for {url}: {detail}")
 
 
-def _fetch_via_impersonation(url: str, timeout: int = 30) -> bytes:
+def _fetch_via_impersonation(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
     """GET `url` with curl_cffi Chrome impersonation plus browser headers."""
     assert _curl_cffi_requests is not None  # guarded by _fetch_primary_bytes
     try:
@@ -287,7 +295,7 @@ def _fetch_via_impersonation(url: str, timeout: int = 30) -> bytes:
     return bytes(response.content)
 
 
-def _fetch_via_stdlib(url: str, timeout: int = 30) -> bytes:
+def _fetch_via_stdlib(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
     """GET `url` with plain urllib plus the same genuine browser headers."""
     request = urllib.request.Request(url, headers=dict(BROWSER_HEADERS))
     try:
@@ -307,7 +315,7 @@ def _fetch_via_stdlib(url: str, timeout: int = 30) -> bytes:
         raise FetchFailed(f"fetch failed for {url}: {exc}") from exc
 
 
-def _fetch_primary_bytes(url: str, timeout: int = 30) -> bytes:
+def _fetch_primary_bytes(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
     """GET article bytes: impersonation first, one graceful stdlib attempt.
 
     curl_cffi Chrome impersonation beats bot-guard 403s on article pages.
@@ -323,7 +331,7 @@ def _fetch_primary_bytes(url: str, timeout: int = 30) -> bytes:
     return _fetch_via_stdlib(url, timeout)
 
 
-def fetch_and_clean(url: str, timeout: int = 30) -> str:
+def fetch_and_clean(url: str, timeout: int = PRIMARY_TIMEOUT) -> str:
     """Fetch `url` and return clean Markdown.
 
     Primary path is impersonated-Chrome HTTPS (``curl_cffi``) with one
@@ -356,7 +364,7 @@ def _retry_after_seconds(exc: urllib.error.HTTPError) -> float:
     return max(0.0, min(delay, FALLBACK_RETRY_CAP_SECONDS))
 
 
-def try_fallback_reader(url: str, timeout: int = 30) -> str:
+def try_fallback_reader(url: str, timeout: int = FALLBACK_TIMEOUT) -> str:
     """Fetch `url` through the zero-ops reader fallback; return clean Markdown.
 
     Gated by the caller (:func:`enrich_document` only calls this on a
@@ -460,7 +468,7 @@ def _fallback_after_primary_miss(
 def enrich_document(
     doc: NormalizedDocument,
     threshold: int = DEFAULT_THIN_THRESHOLD,
-    timeout: int = 30,
+    timeout: int = PRIMARY_TIMEOUT,
     force: bool = False,
 ) -> tuple[NormalizedDocument, str, str | None]:
     """Enrich one document when its RSS body is thin.
@@ -508,7 +516,7 @@ def enrich_document(
 def enrich_document_or_keep(
     doc: NormalizedDocument,
     threshold: int = DEFAULT_THIN_THRESHOLD,
-    timeout: int = 30,
+    timeout: int = PRIMARY_TIMEOUT,
     force: bool = False,
 ) -> tuple[NormalizedDocument, str, str | None]:
     """Like :func:`enrich_document` but never raises.
