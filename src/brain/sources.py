@@ -125,10 +125,15 @@ _FALLBACK_SMT: dict[str, Any] = {
 
 
 def _curated_path() -> Path | None:
+    # Dev override first: editable .scratch copy (never shipped in the image).
     for parent in Path(__file__).resolve().parents:
         candidate = parent / ".scratch" / "trend-intelligence-brain" / "curated-sources.json"
         if candidate.is_file():
             return candidate
+    # Baked-in fallback: shipped inside the image via `COPY src ./src`.
+    baked_in = Path(__file__).resolve().parent / "data" / "curated-sources.json"
+    if baked_in.is_file():
+        return baked_in
     return None
 
 
