@@ -5,7 +5,7 @@ description = "Trend Intelligence Brain — curated-source intelligence platform
 requires-python = ">=3.12"
 dependencies = [
   "psycopg[binary]>=3.1",
-  "prefect>=3.0",
+  "prefect==3.8.5",
   "feedparser>=6.0",
   "python-dateutil>=2.9",
   "fastapi>=0.115",

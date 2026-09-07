@@ -2706,7 +2706,7 @@ requires-dist = [
     { name = "feedparser", specifier = ">=6.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "mcp", specifier = "==1.29.1" },
-    { name = "prefect", specifier = ">=3.0" },
+    { name = "prefect", specifier = "==3.8.5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
     { name = "python-dateutil", specifier = ">=2.9" },
     { name = "trafilatura", specifier = ">=2.0" },
