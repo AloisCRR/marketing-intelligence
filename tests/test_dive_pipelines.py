@@ -230,8 +230,11 @@ def _harvest(label: str, **overrides: Any) -> Any:
     config = _dive_config(label)
     config.update(overrides)
     return harvest_sitemap_source(
-        config, label, str(get_source(label)["language"]),
-        fetch=fetch, sleep=lambda _: None,
+        config,
+        label,
+        str(get_source(label)["language"]),
+        fetch=fetch,
+        sleep=lambda _: None,
     )
 
 
@@ -277,9 +280,7 @@ def test_discover_hub_urls_records_bad_page_without_aborting() -> None:
             raise ArticleFetchError(url, "HTTP Error 404")
         return fetch(url)[1]
 
-    urls, errors = discover_hub_urls(
-        [hub, dead], fetch_body=failing, link_pattern="/news/"
-    )
+    urls, errors = discover_hub_urls([hub, dead], fetch_body=failing, link_pattern="/news/")
     assert [u.loc for u in urls] == [
         SOURCES["Retail Dive"]["articles"][k]["url"] for k in ("A", "N", "H")
     ]
@@ -296,7 +297,10 @@ def test_sitemap_index_lists_archive_children(label: str) -> None:
     urls, children = parse_sitemap(_fixture(f"{spec['prefix']}_sitemap_index.xml"))
     assert urls == []
     assert [c.loc for c in children] == [
-        routes["footer"], routes["topics"], routes["sept"], routes["aug"]
+        routes["footer"],
+        routes["topics"],
+        routes["sept"],
+        routes["aug"],
     ]
 
 
@@ -305,9 +309,7 @@ def test_news_sitemap_yields_publication_dates(label: str) -> None:
     spec = SOURCES[label]
     urls, children = parse_sitemap(_fixture(f"{spec['prefix']}_news_sitemap.xml"))
     assert children == []
-    assert [u.loc for u in urls] == [
-        spec["articles"]["A"]["url"], spec["articles"]["N"]["url"]
-    ]
+    assert [u.loc for u in urls] == [spec["articles"]["A"]["url"], spec["articles"]["N"]["url"]]
     assert urls[0].lastmod is not None
     assert urls[0].lastmod.isoformat() == "2026-09-05T00:00:00+00:00"
     assert urls[1].lastmod is not None
@@ -326,7 +328,10 @@ def test_harvest_sitemap_first_news_and_hub_extend(label: str) -> None:
     # News-only N first (newest), then archive A/C, then hub-only H (undated);
     # the archive BAD url is an explicit skip.
     assert [d.url for d in report.documents] == [
-        arts["N"]["url"], arts["A"]["url"], arts["C"]["url"], arts["H"]["url"]
+        arts["N"]["url"],
+        arts["A"]["url"],
+        arts["C"]["url"],
+        arts["H"]["url"],
     ]
     assert {d.language for d in report.documents} == {"en"}
     by_url = {d.url: d for d in report.documents}
@@ -368,9 +373,7 @@ def test_harvest_without_news_correction_still_flows_via_archives_and_hub() -> N
     config = dict(get_retrieval_config("Retail Dive"))
     config["sitemaps"] = [routes["index"]]
     assert routes["news"] not in config["sitemaps"]
-    report = harvest_sitemap_source(
-        config, "Retail Dive", "en", fetch=fetch, sleep=lambda _: None
-    )
+    report = harvest_sitemap_source(config, "Retail Dive", "en", fetch=fetch, sleep=lambda _: None)
     # N still flows via the hub, but undated (last) and dateless: the news
     # route promotes it to newest with a real publication date.
     assert [d.url for d in report.documents] == [
@@ -391,8 +394,11 @@ def test_dive_robots_crawl_delay_honored() -> None:
         failures={routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403")},
     )
     harvest_sitemap_source(
-        _dive_config("Retail Dive"), "Retail Dive", "en",
-        fetch=fetch, sleep=sleeps.append,
+        _dive_config("Retail Dive"),
+        "Retail Dive",
+        "en",
+        fetch=fetch,
+        sleep=sleeps.append,
     )
     assert sleeps and all(s >= 5.0 for s in sleeps)
 
@@ -413,13 +419,9 @@ def test_plain_first_no_retry_when_plain_succeeds(
         seen.append(url)
         raise AssertionError("impersonated retry must not fire")
 
-    monkeypatch.setattr(
-        discovery, "_stdlib_get", lambda url, timeout=30: (url, b"<urlset/>")
-    )
+    monkeypatch.setattr(discovery, "_stdlib_get", lambda url, timeout=30: (url, b"<urlset/>"))
     monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
-    final_url, body = policy_get(
-        _routes("Retail Dive")["aug"], policy="impersonated-feed"
-    )
+    final_url, body = policy_get(_routes("Retail Dive")["aug"], policy="impersonated-feed")
     assert body == b"<urlset/>"
     assert seen == []
 
@@ -533,7 +535,10 @@ def test_flow_ingests_dive_source_with_exact_shape(
         flows,
         "harvest_sitemap_source",
         lambda config, name, lang: harvest_sitemap_source(
-            config, name, lang, fetch=_make_fetch(mapping, failures=failures),
+            config,
+            name,
+            lang,
+            fetch=_make_fetch(mapping, failures=failures),
             sleep=lambda _: None,
         ),
     )
@@ -562,7 +567,9 @@ def test_batch_ingests_both_dives_and_isolates_failure(
             raise DiscoveryError("sitemap discovery for Marketing Dive yielded no URLs: boom")
         routes = _routes(label)
         return harvest_sitemap_source(
-            config, label, lang,
+            config,
+            label,
+            lang,
             fetch=_make_fetch(
                 maps[label],
                 failures={routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403")},

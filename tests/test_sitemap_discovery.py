@@ -1067,6 +1067,103 @@ def test_flow_ingests_jing_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> 
     assert "error" not in result
 
 
+# --- ticket 14: sitemap_exclude (Exame /webstories/ pollution) ------------------
+
+EX_SITEMAP = "https://exame.com/sitemap.xml"
+EX_WS_1 = "https://exame.com/webstories/resumo-do-dia-1/"
+EX_WS_2 = "https://exame.com/webstories/resumo-do-dia-2/"
+EX_WS_3 = "https://exame.com/webstories/resumo-do-dia-3/"
+EX_REAL_1 = "https://exame.com/negocios/varejo-de-luxo-acelera-expansao/"
+EX_REAL_2 = "https://exame.com/casual/a-brilhante-disputa-entre-diamantes/"
+EX_404 = "https://exame.com/negocios/pagina-que-falha-sempre/"
+EX_NO_TITLE = "https://exame.com/negocios/pagina-sem-titulo/"
+
+
+def _exame_polluted_sitemap() -> bytes:
+    """Newest-first polluted urlset: webstories newest, then real articles,
+    then a 404 and a title-less page (mirrors the 2026-09-06 Exame run)."""
+    entries = [
+        (EX_WS_1, "2026-09-06T12:00:00-03:00"),
+        (EX_WS_2, "2026-09-06T11:00:00-03:00"),
+        (EX_WS_3, "2026-09-06T10:00:00-03:00"),
+        (EX_REAL_1, "2026-09-05T08:30:00-03:00"),
+        (EX_REAL_2, "2026-09-04T08:30:00-03:00"),
+        (EX_404, "2026-09-03T08:30:00-03:00"),
+        (EX_NO_TITLE, "2026-09-02T08:30:00-03:00"),
+    ]
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    ]
+    for loc, lastmod in entries:
+        parts.append(f"<url><loc>{loc}</loc><lastmod>{lastmod}</lastmod></url>")
+    parts.append("</urlset>")
+    return "".join(parts).encode("utf-8")
+
+
+def test_discover_without_exclude_spends_budget_on_webstories() -> None:
+    """Bug premise: with no exclusion, the newest webstories fill max_urls."""
+    fetch = _make_fetch({EX_SITEMAP: (EX_SITEMAP, _exame_polluted_sitemap())})
+    urls, errors = discover_urls([EX_SITEMAP], fetch_body=lambda u: fetch(u)[1], max_urls=2)
+    assert errors == []
+    assert [u.loc for u in urls] == [EX_WS_1, EX_WS_2]
+
+
+def test_discover_sitemap_exclude_drops_webstories_before_budget() -> None:
+    """Excluded URLs never consume the backfill budget: max_urls=2 still
+    yields the two genuine articles even though webstories are newer."""
+    fetch = _make_fetch({EX_SITEMAP: (EX_SITEMAP, _exame_polluted_sitemap())})
+    urls, errors = discover_urls(
+        [EX_SITEMAP],
+        fetch_body=lambda u: fetch(u)[1],
+        max_urls=2,
+        sitemap_exclude=["/webstories/"],
+    )
+    assert errors == []
+    assert [u.loc for u in urls] == [EX_REAL_1, EX_REAL_2]
+
+
+def test_harvest_sitemap_exclude_webstories_never_fetched_bad_urls_explicit() -> None:
+    """Webstories are excluded before fetch; the 404 and the title-less page
+    surface as explicit per-URL discovery_causes skips; genuine articles
+    still insert."""
+    log: list[str] = []
+    mapping = {
+        "https://exame.com/robots.txt": (
+            "https://exame.com/robots.txt",
+            b"User-agent: *\nDisallow:\n",
+        ),
+        EX_SITEMAP: (EX_SITEMAP, _exame_polluted_sitemap()),
+        EX_REAL_1: (EX_REAL_1, _fixture("md_article_canva.html")),
+        EX_REAL_2: (EX_REAL_2, _fixture("md_article_canva.html")),
+        EX_NO_TITLE: (EX_NO_TITLE, b"<html><body><p>no title here</p></body></html>"),
+    }
+    fetch = _make_fetch(
+        mapping,
+        log=log,
+        failures={
+            EX_404: ArticleFetchError(
+                EX_404, "fetch failed for " + EX_404 + ": HTTP Error 404: Not Found"
+            )
+        },
+    )
+    config: dict[str, Any] = {
+        "type": "sitemap",
+        "policy": "stdlib-only",
+        "extractor": "generic",
+        "sitemaps": [EX_SITEMAP],
+        "sitemap_exclude": ["/webstories/"],
+        "pacing_ms": 1000,
+        "max_urls": 50,
+    }
+    report = harvest_sitemap_source(config, "Exame", "pt", fetch=fetch, sleep=lambda _: None)
+    assert [d.url for d in report.documents] == [EX_REAL_1, EX_REAL_2]
+    assert report.skipped == 2
+    assert any(EX_404 in c and "404" in c for c in report.causes)
+    assert any(EX_NO_TITLE in c and "missing title" in c for c in report.causes)
+    assert not any("/webstories/" in u for u in log)
+
+
 def test_batch_isolates_jing_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
 

@@ -199,8 +199,11 @@ def _harvest(label: str, **overrides: Any) -> Any:
     config = dict(get_retrieval_config(label))
     config.update(overrides)
     return harvest_sitemap_source(
-        config, label, str(get_source(label)["language"]),
-        fetch=fetch, sleep=lambda _: None,
+        config,
+        label,
+        str(get_source(label)["language"]),
+        fetch=fetch,
+        sleep=lambda _: None,
     )
 
 
@@ -266,9 +269,7 @@ def test_discover_newest_child_first_stops_early() -> None:
     fetch = _make_fetch(mapping, log=log)
     bodies = {url: body for url, body in mapping.values()}
     assert bodies  # fixture map is non-empty; traversal below goes through `fetch`
-    urls, errors = discover_urls(
-        spec["sitemaps"], fetch_body=lambda u: fetch(u)[1], max_urls=2
-    )
+    urls, errors = discover_urls(spec["sitemaps"], fetch_body=lambda u: fetch(u)[1], max_urls=2)
     assert errors == []
     assert [u.loc for u in urls] == [spec["url_a"], spec["url_bad"]]
     assert spec["child_new"] in log
@@ -281,8 +282,11 @@ def test_harvest_raises_when_nothing_discovered() -> None:
 
     with pytest.raises(DiscoveryError, match="yielded no URLs"):
         harvest_sitemap_source(
-            dict(get_retrieval_config("Exame")), "Exame", "pt",
-            fetch=dead, sleep=lambda _: None,
+            dict(get_retrieval_config("Exame")),
+            "Exame",
+            "pt",
+            fetch=dead,
+            sleep=lambda _: None,
         )
 
 
@@ -302,8 +306,11 @@ def test_modaes_robots_crawl_delay_honored() -> None:
         failures={spec["url_bad"]: ArticleFetchError(spec["url_bad"], "HTTP Error 403")},
     )
     harvest_sitemap_source(
-        dict(get_retrieval_config("Modaes")), "Modaes", "es",
-        fetch=fetch, sleep=sleeps.append,
+        dict(get_retrieval_config("Modaes")),
+        "Modaes",
+        "es",
+        fetch=fetch,
+        sleep=sleeps.append,
     )
     assert sleeps and all(s >= 3.0 for s in sleeps)
 
@@ -316,8 +323,11 @@ def test_wordpress_default_pacing_honored() -> None:
         failures={spec["url_bad"]: ArticleFetchError(spec["url_bad"], "HTTP Error 403")},
     )
     harvest_sitemap_source(
-        dict(get_retrieval_config("Propmark")), "Propmark", "pt",
-        fetch=fetch, sleep=sleeps.append,
+        dict(get_retrieval_config("Propmark")),
+        "Propmark",
+        "pt",
+        fetch=fetch,
+        sleep=sleeps.append,
     )
     assert sleeps and all(s >= 1.0 for s in sleeps)
 
@@ -376,6 +386,69 @@ def test_rerun_upsert_is_noop(label: str) -> None:
 # --- flow wiring ------------------------------------------------------------
 
 
+def test_exame_registry_carries_webstories_exclude_with_full_budget() -> None:
+    """Ticket 14: the Exame stanza excludes /webstories/ while keeping the
+    full max_urls=50 backfill budget for genuine articles."""
+    config = get_retrieval_config("Exame")
+    assert config["sitemap_exclude"] == ["/webstories/"]
+    assert config["max_urls"] == 50
+
+
+def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips() -> None:
+    """Ticket 14 end-to-end on the registry stanza: webstories (newest in the
+    urlset) are excluded before the budget applies, the genuine article still
+    inserts, and the 404 + title-less page are explicit per-URL skips."""
+    from brain.discovery import ArticleFetchError as _FetchError
+    from brain.discovery import harvest_sitemap_source as _harvest
+
+    ws_new = "https://exame.com/webstories/resumo-do-dia-novo/"
+    ws_old = "https://exame.com/webstories/resumo-do-dia-antigo/"
+    real = SOURCES["Exame"]["url_a"]
+    bad = SOURCES["Exame"]["url_bad"]
+    no_title = "https://exame.com/negocios/pagina-sem-titulo/"
+    sitemap_url = "https://exame.com/polluted-sitemap.xml"
+    host = _host("Exame")
+    sitemap_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"<url><loc>{ws_new}</loc><lastmod>2026-09-06T12:00:00-03:00</lastmod></url>"
+        f"<url><loc>{ws_old}</loc><lastmod>2026-09-06T11:00:00-03:00</lastmod></url>"
+        f"<url><loc>{real}</loc><lastmod>2026-09-05T08:30:00-03:00</lastmod></url>"
+        f"<url><loc>{bad}</loc><lastmod>2026-09-04T09:00:00-03:00</lastmod></url>"
+        f"<url><loc>{no_title}</loc><lastmod>2026-09-03T09:00:00-03:00</lastmod></url>"
+        "</urlset>"
+    ).encode()
+    log: list[str] = []
+    mapping = {
+        f"https://{host}/robots.txt": (
+            f"https://{host}/robots.txt",
+            _fixture("ex_robots.txt"),
+        ),
+        sitemap_url: (sitemap_url, sitemap_xml),
+        real: (real, _fixture("ex_article_a.html")),
+        no_title: (no_title, b"<html><body><p>no title here</p></body></html>"),
+    }
+    fetch = _make_fetch(
+        mapping,
+        log=log,
+        failures={bad: _FetchError(bad, f"fetch failed for {bad}: HTTP Error 404: Not Found")},
+    )
+    config = dict(get_retrieval_config("Exame"))
+    config["sitemaps"] = [sitemap_url]
+    config["max_urls"] = 3
+    report = _harvest(config, "Exame", "pt", fetch=fetch, sleep=lambda _: None)
+    # Budget of 3 covers the genuine article plus both bad URLs (webstories
+    # excluded first — without exclusion the budget would hold ws_new,
+    # ws_old and real); the 404 + title-less page are explicit skips,
+    # never silent drops.
+    assert [d.url for d in report.documents] == [real]
+    assert report.documents[0].title == SOURCES["Exame"]["title_a"]
+    assert report.skipped == 2
+    assert any(bad in c and "404" in c for c in report.causes)
+    assert any(no_title in c and "missing title" in c for c in report.causes)
+    assert not any("/webstories/" in u for u in log)
+
+
 def test_flow_ingests_sitemap_source_with_exact_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -389,7 +462,10 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
         flows,
         "harvest_sitemap_source",
         lambda config, name, lang: harvest_sitemap_source(
-            config, name, lang, fetch=_make_fetch(mapping, failures=failures),
+            config,
+            name,
+            lang,
+            fetch=_make_fetch(mapping, failures=failures),
             sleep=lambda _: None,
         ),
     )
@@ -418,7 +494,9 @@ def test_batch_ingests_all_seven_and_isolates_failure(
             raise DiscoveryError("sitemap discovery for Exame yielded no URLs: boom")
         spec = SOURCES[label]
         return harvest_sitemap_source(
-            config, label, lang,
+            config,
+            label,
+            lang,
             fetch=_make_fetch(
                 maps[label],
                 failures={spec["url_bad"]: ArticleFetchError(spec["url_bad"], "HTTP Error 403")},

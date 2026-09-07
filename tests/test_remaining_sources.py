@@ -1,12 +1,12 @@
 """Remaining V1 sources on the 01 adapter contract (Ticket 02).
 
 Observable behavior (not privates):
-- registry returns all 4 V1 sources with correct rss_url
-- each fixture parses to the normalized contract (incl. pt for InfoMoney)
+- registry returns all 20 V1 sources (RSS + sitemap/hub/url-set lanes)
+- each RSS fixture parses to the normalized contract (incl. pt for InfoMoney)
 - rerun upsert is idempotent per source
 - unknown source flow returns an explicit error dict
 - multi-source flow: one source failing still ingests the others
-- migration SQL seeds all 4 sources
+- migration SQL seeds all 20 sources (001 + 006)
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ EXPECTED_LANGUAGE = {SMT: "en", MARTECH: "en", PJ: "en", INFOMONEY: "pt"}
 # --- registry ---------------------------------------------------------------
 
 
-def test_registry_returns_all_four_v1_sources_with_correct_rss_url() -> None:
+def test_registry_returns_rss_v1_sources_with_correct_rss_url() -> None:
     for name, rss in EXPECTED_RSS.items():
         src = get_source(name)
         assert src["name"] == name
@@ -274,15 +274,31 @@ def test_multi_source_flow_records_failure_without_blocking_others(
 
 def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyPatch) -> None:
     import brain.flows as flows
-    from brain.sources import V1_SOURCES
+    from brain.discovery import HarvestReport
+    from brain.sources import V1_SOURCES, get_source
+
+    smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
 
     def fake_fetch(url: str, timeout: int = 30) -> bytes:
         for name, path in FIXTURE_FILES.items():
             if url == get_source(name)["rss_url"]:
                 return path.read_bytes()
-        raise AssertionError(f"V1 default must not fetch non-V1 url: {url}")
+        # Remaining RSS entries (JCK Online, Swarovski PR Newswire) reuse a
+        # representative RSS payload; parsing is labeled per-source downstream.
+        rss_urls = {get_source(n)["rss_url"] for n in V1_SOURCES if get_source(n)["rss_url"]}
+        if url in rss_urls:
+            return smt_bytes
+        raise AssertionError(f"V1 default must not fetch unknown url: {url}")
 
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch)
+    # Discovery-lane sources (sitemap/hub/url-set) yield zero docs here —
+    # lane behavior is covered by the dedicated discovery suites; this test
+    # locks the V1 default scope, not per-lane extraction.
+    monkeypatch.setattr(
+        flows,
+        "harvest_sitemap_source",
+        lambda config, name, lang: HarvestReport(documents=[], skipped=0, causes=[]),
+    )
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
         return (len(docs), 0)
@@ -291,11 +307,24 @@ def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyP
     _stub_enrich_identity(monkeypatch)
     results = ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
+    assert len(results) == 20
     for name in V1_SOURCES:
-        assert results[name] == {"inserted": 3, "skipped": 0}
+        if get_source(name)["rss_url"]:
+            assert results[name] == {"inserted": 3, "skipped": 0}, name
+        else:
+            assert results[name] == {"inserted": 0, "skipped": 0}, name
+        assert "error" not in results[name], name
 
 
-def test_extra_registry_sources_ingestible_by_explicit_name(
+def test_no_extra_registry_sources_outside_v1() -> None:
+    """V1 covers the full curated set: every registry name is in V1 scope."""
+    from brain.sources import V1_SOURCES, list_sources
+
+    assert {e["name"] for e in list_sources()} == set(V1_SOURCES)
+    assert len(V1_SOURCES) == 20
+
+
+def test_explicit_subset_still_ingests_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import brain.flows as flows

@@ -43,7 +43,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "stdlib-only"},
+    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
     "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.professionaljeweller.com/vicenzaoro-september-kicks-off-today/",
@@ -60,7 +60,7 @@
     "cadence": "Daily",
     "access": "partial",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://exame.com/sitemap.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {"type": "sitemap", "policy": "stdlib-only", "extractor": "generic", "sitemaps": ["https://exame.com/sitemap.xml"], "sitemap_exclude": ["/webstories/"], "pacing_ms": 1000, "max_urls": 50},
     "last_verified": "2026-09-06",
     "sample_article_url": "https://exame.com/casual/a-brilhante-disputa-entre-diamantes-naturais-e-sinteticos/",
     "sample_article_date": "2026-08-18"

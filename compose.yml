@@ -115,7 +115,9 @@ services:
 
   # Optional Prefect worker (docs-only lane). Excluded from default `up`;
   # enable explicitly: `docker compose --profile prefect up -d prefect-worker`.
-  # Shares the app image (prefect is a main dependency) and the default compose
+  # Local dev runs against the host-local Prefect server
+  # (http://127.0.0.1:4200, see `make prefect-up`); `make ingest` guards on
+  # its /api/health. Shares the app image (prefect is a main dependency) and the default compose
   # network, so `db` resolves as a hostname and DATABASE_URL works unchanged.
   prefect-worker:
     build: *app-build

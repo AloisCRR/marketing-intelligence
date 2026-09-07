@@ -1,4 +1,4 @@
-.PHONY: dev test lint fmt mcp db-up migrate migrate-baseline ingest help image up up-db down logs migrate-compose
+.PHONY: dev test lint fmt mcp db-up migrate migrate-baseline ingest prefect-up help image up up-db down logs migrate-compose
 
 help:
 	@echo "dev      - FastAPI + /docs on :8123 (reload)"
@@ -8,7 +8,8 @@ help:
 	@echo "db-up    - docker compose up -d db"
 	@echo "migrate  - yoyo: apply pending migrations only"
 	@echo "migrate-baseline - one-time: mark applied without executing (pre-yoyo DBs)"
-	@echo "ingest   - ingest all V1 sources (SOURCE=\"MarTech\" for one source)"
+	@echo "ingest   - ingest all sources (20) (SOURCE=\"MarTech\" for one source; requires local Prefect server)"
+	@echo "prefect-up - start local Prefect server (http://127.0.0.1:4200)"
 	@echo "image    - docker build deploy image (IMAGE=brain-app:local)"
 	@echo "up       - docker compose up -d --build (db+migrate+api+mcp)"
 	@echo "up-db    - docker compose up -d db (local DB only)"
@@ -63,5 +64,11 @@ migrate:
 migrate-baseline:
 	PYTHONPATH=src uv run --frozen python -c "from brain.db import baseline_migrations; print(baseline_migrations())"
 
+PREFECT_API_URL ?= http://127.0.0.1:4200/api
+
+prefect-up:
+	prefect server start
+
 ingest:
-	PREFECT_API_URL="" PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=true PREFECT_UI_URL="" PREFECT_UI_API_URL="" PREFECT_API_AUTH_STRING="" PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_sources_flow; print(ingest_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"
+	@scripts/check-prefect.sh
+	PREFECT_API_URL="$(PREFECT_API_URL)" PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_sources_flow; print(ingest_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"

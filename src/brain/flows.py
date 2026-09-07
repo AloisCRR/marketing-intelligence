@@ -15,7 +15,9 @@ from brain.discovery import harvest_sitemap_source
 from brain.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
 from brain.health import record_ingestion_run
 from brain.ingest import (
+    EmptyFeedError,
     count_feed_entries,
+    feed_candidate_urls,
     fetch_rss,
     parse_feed,
     parse_feed_with_report,
@@ -54,7 +56,12 @@ def parse_task(
     source: str = "Social Media Today",
     language: str | None = None,
 ) -> list[NormalizedDocument]:
-    """Normalize raw feed bytes into documents."""
+    """Normalize raw feed bytes into documents.
+
+    A cleanly parsed feed with zero entries raises EmptyFeedError (an
+    explicit per-source error, never a silent zero); per-item skips stay
+    partial. The exception propagates for the Ingestion Run parent to record.
+    """
     docs = parse_feed(xml, source=source, language=language)
     try:
         entries = count_feed_entries(xml)
@@ -78,7 +85,7 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
     delegates to the module-global `harvest_sitemap_source` so tests can
     substitute fakes. One bad sitemap/article is an explicit per-document skip
     (counted with causes); zero discovered URLs raise DiscoveryError, which
-    propagates like a dead RSS feed so the batch parent records the explicit
+    propagates like a dead RSS feed so the Ingestion Run parent records the explicit
     per-source error.
     """
     config = get_retrieval_config(source_name)
@@ -190,7 +197,7 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     Successful outcomes (and unknown-source errors) are recorded to
     `ingestion_runs` on a best-effort basis — recording never changes the
     result dict and never raises, so DB-free unit tests keep passing without
-    Postgres. Stage-failure recording belongs to the batch parent, which owns
+    Postgres. Stage-failure recording belongs to the Ingestion Run parent, which owns
     the Failed-state path via `return_state=True`.
     """
     logger = get_run_logger()
@@ -226,8 +233,32 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     discovery_causes: list[str] = []
     if retrieval_type == "rss" or source.get("rss_url"):
         # source_name threads the per-source retrieval policy into fetch_task.
-        xml = fetch_task(str(source["rss_url"]), source_name=source_label)
-        docs = parse_task(xml, source_label, language)
+        # Fallback routing (ticket 13): a dead/emptied primary feed raises
+        # EmptyFeedError and the next code-level candidate (feed_candidate_urls)
+        # is tried; the last failure propagates (red task + red subflow) for
+        # the Ingestion Run parent to record as the explicit per-source error.
+        # Sources without a declared correction keep the single-URL contract.
+        candidates = feed_candidate_urls(str(source["rss_url"]))
+        docs = []
+        xml = b""
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                xml = fetch_task(candidate, source_name=source_label)
+                docs = parse_task(xml, source_label, language)
+            except EmptyFeedError as exc:
+                last_error = exc
+                continue
+            except Exception as exc:
+                if candidate != candidates[-1]:
+                    last_error = exc
+                    continue
+                raise
+            else:
+                last_error = None
+                break
+        if last_error is not None:
+            raise last_error
     else:
         docs, discovery_skipped, discovery_causes = discover_task(source_label)
         xml = b""
@@ -271,8 +302,8 @@ def ingest_sources_flow(
     """Ingest multiple sources; one failure never blocks the others.
 
     Returns a per-source mapping of {inserted, skipped[, error]}.
-    Defaults to the V1 scope when `source_names` is None; extra registry
-    sources (JCK, Swarovski) are ingestible by explicit name.
+    Defaults to the V1 scope (all 20 curated sources) when `source_names`
+    is None; pass explicit names to narrow to a subset.
 
     Each per-source subflow is invoked with `return_state=True`: a Completed
     state yields its result dict directly (including the unknown-source error

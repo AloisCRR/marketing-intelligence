@@ -1,0 +1,278 @@
+"""Deterministic source seeds + NULL-source quarantine (DB lane).
+
+TDD for migration 007:
+- (a) all 20 curated sources seeded idempotently (ON CONFLICT DO NOTHING),
+- (b) existing NULL source_id rows quarantined explicitly (no silent drop),
+- (c) rerun is idempotent.
+
+Fast tier parses SQL/helpers with no live DB. Live tier (scratch database,
+skipped if Postgres is unreachable) exercises the real yoyo apply path:
+pre-007 NULL document -> 007 quarantines it -> NOT NULL enforced after.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SRC = os.path.join(os.path.dirname(_HERE), "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+import pytest  # noqa: E402
+
+import brain.db as db  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+MIGRATION_007 = ROOT / "migrations" / "007_deterministic_sources_and_not_null.sql"
+CURATED = ROOT / ".scratch" / "trend-intelligence-brain" / "curated-sources.json"
+
+_LANG_CODE = {"English": "en", "Portuguese": "pt", "Spanish": "es"}
+
+_UUID_RE = re.compile(r"'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'")
+
+
+def _curated_names() -> set[str]:
+    return {e["source_name"] for e in json.loads(CURATED.read_text(encoding="utf-8"))}
+
+
+def _read_007() -> str:
+    assert MIGRATION_007.exists(), f"expected migration missing: {MIGRATION_007}"
+    return MIGRATION_007.read_text(encoding="utf-8")
+
+
+# --- SQL text contract -------------------------------------------------------
+
+
+def test_007_seeds_all_20_curated_sources() -> None:
+    curated = _curated_names()
+    assert len(curated) == 20
+    sql = _read_007()
+    for name in curated:
+        assert name in sql, f"007 missing curated source: {name}"
+
+
+def test_007_seed_is_idempotent_on_conflict_do_nothing() -> None:
+    sql = _read_007()
+    assert "ON CONFLICT (name) DO NOTHING" in sql
+
+
+def test_007_ids_are_deterministic_uuid5() -> None:
+    """Embedded ids must equal brain.db.source_uuid(name) (stdlib uuid5, no new dep)."""
+    sql = _read_007()
+    found = _UUID_RE.findall(sql)
+    assert len(found) >= 20, f"expected >=20 UUID literals in 007, found {len(found)}"
+    for name in _curated_names():
+        assert str(db.source_uuid(name)) in sql, f"007 missing deterministic id for: {name}"
+
+
+def test_007_quarantines_null_source_rows_explicitly() -> None:
+    sql = _read_007()
+    assert "CREATE TABLE IF NOT EXISTS quarantined_documents" in sql
+    assert "WHERE source_id IS NULL" in sql
+    assert "DELETE FROM documents WHERE source_id IS NULL" in sql
+    # Evidence is preserved (moved), never silently dropped.
+    assert "quarantined_documents" in sql
+
+
+def test_007_enforces_not_null_only_after_quarantine() -> None:
+    sql = _read_007()
+    guard = "ALTER TABLE documents ALTER COLUMN source_id SET NOT NULL"
+    assert guard in sql
+    # Guard ordering: quarantine DELETE must precede the NOT NULL enforcement.
+    assert sql.index("DELETE FROM documents WHERE source_id IS NULL") < sql.index(guard)
+
+
+def test_007_cleans_null_ingestion_runs() -> None:
+    sql = _read_007()
+    assert "ingestion_runs" in sql
+    assert re.search(r"DELETE FROM ingestion_runs WHERE source_name IS NULL", sql)
+
+
+# --- helper contract (no live DB) --------------------------------------------
+
+
+class _FakeCursor:
+    def __init__(self, rowcount: int = 1) -> None:
+        self.rowcount = rowcount
+
+    def fetchone(self) -> None:
+        return None
+
+
+class _FakeConn:
+    def __init__(self, rowcount: int = 1) -> None:
+        self.statements: list[tuple[str, Any]] = []
+        self._rowcount = rowcount
+        self.committed = False
+        self.closed = False
+
+    def execute(self, sql: str, params: Any = None) -> _FakeCursor:
+        self.statements.append((sql, params))
+        return _FakeCursor(self._rowcount)
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_source_uuid_is_deterministic_and_unique_per_name() -> None:
+    assert db.source_uuid("MarTech") == db.source_uuid("MarTech")
+    assert db.source_uuid("MarTech") != db.source_uuid("Retail Dive")
+    for name in _curated_names():
+        assert str(db.source_uuid(name))  # stable, non-empty
+
+
+def test_seed_sources_helper_covers_all_20_curated() -> None:
+    assert {name for name, _, _, _ in db.SEED_SOURCES} == _curated_names()
+
+
+def test_seed_sources_helper_is_idempotent_shape() -> None:
+    """First run inserts; a rerun (rowcount 0, i.e. ON CONFLICT) only skips."""
+    fake = _FakeConn(rowcount=1)
+    assert db.seed_sources(conn=fake) == (20, 0)  # type: ignore[arg-type]
+    assert fake.committed
+    for sql, params in fake.statements:
+        assert "ON CONFLICT (name) DO NOTHING" in sql
+        assert params is not None and str(params[0]) == str(db.source_uuid(params[1]))
+
+    rerun = _FakeConn(rowcount=0)
+    assert db.seed_sources(conn=rerun) == (0, 20)  # type: ignore[arg-type]
+
+
+def test_quarantine_helper_moves_null_rows() -> None:
+    fake = _FakeConn(rowcount=3)
+    assert db.quarantine_null_documents(conn=fake) == 3  # type: ignore[arg-type]
+    blob = "\n".join(sql for sql, _ in fake.statements)
+    assert "quarantined_documents" in blob
+    assert "WHERE source_id IS NULL" in blob
+    assert fake.committed
+
+
+# --- live Postgres: real yoyo path on an isolated scratch database -----------
+
+
+def _live_url() -> str | None:
+    import psycopg
+
+    url = os.environ.get("DATABASE_URL", "postgresql://brain:brain@localhost:5433/brain")
+    try:
+        conn = psycopg.connect(url, connect_timeout=3)
+        conn.close()
+        return url
+    except Exception:
+        return None
+
+
+def _maintenance_url(url: str) -> str:
+    base, _, _ = url.rpartition("/")
+    return f"{base}/postgres"
+
+
+@pytest.fixture()
+def scratch_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Create/drop an isolated scratch DB; skip when Postgres is unreachable."""
+    import psycopg
+
+    url = _live_url()
+    if url is None:
+        pytest.skip("no live Postgres reachable")
+    assert url is not None
+    name = "brain_seed_scratch"
+    admin = psycopg.connect(_maintenance_url(url), autocommit=True)
+    try:
+        with admin.cursor() as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
+            cur.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        admin.close()
+    base, _, _ = url.rpartition("/")
+    scratch_url = f"{base}/{name}"
+    monkeypatch.setenv("DATABASE_URL", scratch_url)
+    yield scratch_url
+    admin = psycopg.connect(_maintenance_url(url), autocommit=True)
+    try:
+        with admin.cursor() as cur:
+            cur.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (name,),
+            )
+            cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
+    finally:
+        admin.close()
+
+
+def _exec_sql_file(conn: object, path: Path) -> None:
+    cur = conn.cursor()  # type: ignore[union-attr]
+    cur.execute(path.read_text(encoding="utf-8"))
+    conn.commit()  # type: ignore[union-attr]
+
+
+def test_live_007_backfills_quarantine_and_enforces_not_null(scratch_db: str) -> None:
+    """Pre-007 NULL document -> 007 quarantines it -> NOT NULL holds after."""
+    import psycopg
+
+    mig = ROOT / "migrations"
+    # Pre-007 schema via raw SQL (no yoyo version table yet), then one NULL row.
+    with psycopg.connect(scratch_db, autocommit=True) as conn:
+        for fname in (
+            "001_init.sql",
+            "002_canonical_url_unique.sql",
+            "003_ingestion_runs.sql",
+            "005_extraction_flag.sql",
+            "006_seed_all_sources.sql",
+        ):
+            _exec_sql_file(conn, mig / fname)
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO documents
+                     (source_id, url, canonical_url, title, published_at,
+                      retrieved_at, language, content, content_hash)
+                   VALUES (NULL, %s, %s, %s, now(), now(), 'en', %s, %s)""",
+                (
+                    "https://example.com/null-source",
+                    "https://example.com/null-source",
+                    "orphan row",
+                    "orphan content",
+                    "quarantine-probe-hash",
+                ),
+            )
+
+    applied = db.apply_migrations()
+    assert "007_deterministic_sources_and_not_null" in applied
+    assert db.apply_migrations() == []  # rerun is a no-op
+
+    with psycopg.connect(scratch_db) as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM sources")
+        assert cur.fetchone()[0] == 20
+        cur.execute("SELECT COUNT(*) FROM documents WHERE source_id IS NULL")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT COUNT(*) FROM quarantined_documents WHERE content_hash = %s",
+            ("quarantine-probe-hash",),
+        )
+        assert cur.fetchone()[0] == 1
+        # NOT NULL is now enforced: future NULLs fail instead of going silent.
+        with pytest.raises(psycopg.Error):
+            cur.execute(
+                """INSERT INTO documents
+                     (source_id, url, canonical_url, title, published_at,
+                      retrieved_at, language, content, content_hash)
+                   VALUES (NULL, %s, %s, %s, now(), now(), 'en', %s, %s)""",
+                (
+                    "https://example.com/null-after",
+                    "https://example.com/null-after",
+                    "blocked row",
+                    "blocked content",
+                    "blocked-hash",
+                ),
+            )

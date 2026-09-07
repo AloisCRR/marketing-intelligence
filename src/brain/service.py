@@ -83,7 +83,7 @@ def _validate_limit(limit: int, *, default: int) -> int:
 
 
 def _known_source_names() -> set[str]:
-    """V1 names plus every RSS-capable registry name (extras stay valid)."""
+    """V1 names plus every registry name (V1 covers all 20; kept union for safety)."""
     names = set(V1_SOURCES)
     try:
         from brain.sources import list_sources

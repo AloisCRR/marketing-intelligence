@@ -52,9 +52,7 @@ def _article_html(title: str) -> bytes:
 
 def _sitemap_xml(urls: list[str]) -> bytes:
     entries = "".join(
-        f"<url><loc>{u}</loc>"
-        "<lastmod>2026-09-05T10:00:00+00:00</lastmod></url>"
-        for u in urls
+        f"<url><loc>{u}</loc><lastmod>2026-09-05T10:00:00+00:00</lastmod></url>" for u in urls
     )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -137,14 +135,9 @@ def test_real_fixture_rules() -> None:
     jd = (FIXTURES / "jd_robots.txt").read_text()
     assert robots_is_disallowed("https://jingdaily.com/search?q=x", jd) is True
     assert robots_is_disallowed("https://jingdaily.com/api/rss/feed", jd) is True
-    assert (
-        robots_is_disallowed("https://jingdaily.com/posts/some-story", jd) is False
-    )
+    assert robots_is_disallowed("https://jingdaily.com/posts/some-story", jd) is False
     ri = (FIXTURES / "ri_robots.txt").read_text()
-    assert (
-        robots_is_disallowed("https://www.richemont.com/our-maisons/net-a-porter/", ri)
-        is True
-    )
+    assert robots_is_disallowed("https://www.richemont.com/our-maisons/net-a-porter/", ri) is True
     assert robots_is_disallowed("https://www.richemont.com/our-maisons/cartier/", ri) is False
     mo = (FIXTURES / "mo_robots.txt").read_text()
     assert robots_is_disallowed("https://www.modaes.com/admin/panel", mo) is True
@@ -212,12 +205,8 @@ def test_hub_url_under_disallow_skipped_but_hub_page_fetched() -> None:
         },
         log=log,
     )
-    config = _sitemap_config(
-        type="hub", sitemaps=[], hub=HUB_URL, hub_pages=[], link_pattern="/"
-    )
-    report = harvest_sitemap_source(
-        config, "Example", "en", fetch=fetch, sleep=lambda _: None
-    )
+    config = _sitemap_config(type="hub", sitemaps=[], hub=HUB_URL, hub_pages=[], link_pattern="/")
+    report = harvest_sitemap_source(config, "Example", "en", fetch=fetch, sleep=lambda _: None)
     # The hub listing page itself is fetched (never filtered); only the
     # discovered article URL under the Disallow is skipped.
     assert HUB_URL in log

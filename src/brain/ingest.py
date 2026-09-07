@@ -5,7 +5,7 @@
 - Persistence is rerun-safe: `ON CONFLICT DO NOTHING` (no conflict target,
   so url, canonical_url, and content_hash collisions all collapse) plus
   per-item error capture, so a repeated run inserts nothing new and one bad
-  row never aborts the batch.
+   row never aborts the Ingestion Run.
 """
 
 from __future__ import annotations
@@ -52,6 +52,67 @@ _FEED_CHALLENGE_MARKERS: tuple[str, ...] = (
 
 #: Error-body bytes inspected for challenge evidence on the stdlib attempt.
 _FEED_ERROR_BODY_CAP = 65536
+
+#: Code-level feed fallback routing (ticket 13): canonical feed URLs that are
+#: known-dead/emptied map to working same-publisher replacements, tried in
+#: order after the primary. Curated sources JSON stays untouched; this is the
+#: routing correction for a dead feed URL, not a registry edit.
+_FEED_FALLBACK_URLS: dict[str, tuple[str, ...]] = {
+    # Live 2026-09-06: the JCK root feed returns HTTP 200 with a channel
+    # skeleton but 0 entries (emptied/dead), while the Retail category feed
+    # (the source's hub vertical) carries live items.
+    "https://www.jckonline.com/feed/": (
+        "https://www.jckonline.com/category/news-trends/retail/feed/",
+    ),
+}
+
+
+class EmptyFeedError(ValueError):
+    """A feed that arrived without transport error but carries zero entries.
+
+    Subclasses ValueError so the Ingestion Run parent (`ingest_sources_flow`) converts
+    it to an explicit per-source `{inserted: 0, skipped: 0, error}` outcome —
+    the same lane totally unparseable feeds already travel. Never a silent
+    zero: the message diagnoses dead/changed URL vs. blocked/challenge page.
+    """
+
+
+def feed_candidate_urls(url: str) -> tuple[str, ...]:
+    """Primary feed URL plus any code-level fallbacks, in try order.
+
+    Sources without a declared correction keep the exact single-URL contract.
+    Never raises.
+    """
+    return (url, *_FEED_FALLBACK_URLS.get(url, ()))
+
+
+def diagnose_empty_feed(
+    xml: bytes | str,
+    *,
+    url: str | None = None,
+    source: str | None = None,
+) -> str:
+    """Classify a zero-entry feed payload: dead/changed URL vs. blocked page.
+
+    A body carrying bot/challenge markers diagnoses as a blocked/challenge
+    page; anything else (e.g. a channel skeleton with no items after an
+    HTTP 200) diagnoses as a dead/changed feed URL. Never raises.
+    """
+    try:
+        payload = xml.decode("utf-8", errors="replace") if isinstance(xml, bytes) else xml
+        haystack = payload[:_FEED_ERROR_BODY_CAP].lower()
+        blocked = any(marker in haystack for marker in _FEED_CHALLENGE_MARKERS)
+    except Exception:
+        blocked = False
+    where = ""
+    if source is not None:
+        where += f" source {source!r}"
+    if url is not None:
+        where += f" url={url}"
+    if blocked:
+        return f"blocked/challenge page suspected for{where or ' feed'}"
+    return f"dead/changed feed URL suspected for{where or ' feed'}: 0 entries, no bot evidence"
+
 
 INSERT_SQL = """\
 INSERT INTO documents
@@ -236,13 +297,25 @@ def parse_feed_with_report(
 
     Malformed items (missing title/link, unparseable structure) are skipped
     individually and recorded in `skipped_reasons` — partial failure is
-    visible, never a batch abort. A totally unparseable feed raises
-    ValueError.
+    visible, never an Ingestion Run abort. A totally unparseable feed raises
+    ValueError; a cleanly parsed feed with zero entries raises
+    EmptyFeedError (an explicit per-source error, never a silent zero).
     """
     payload = xml.decode("utf-8", errors="replace") if isinstance(xml, bytes) else xml
     feed = feedparser.parse(payload)
-    if feed.bozo and not feed.entries:
-        raise ValueError(f"Unparseable feed: {feed.bozo_exception!r}")
+    if not feed.entries:
+        if feed.bozo:
+            raise ValueError(f"Unparseable feed: {feed.bozo_exception!r}")
+        try:
+            title = str(feed.feed.get("title") or "").strip()
+        except Exception:
+            title = ""
+        size = len(xml) if isinstance(xml, bytes) else len(xml.encode("utf-8"))
+        detail = f"Empty feed for source {source!r}: 0 entries in {size} bytes"
+        if title:
+            detail += f" (channel {title!r})"
+        diagnosis = diagnose_empty_feed(xml, source=source)
+        raise EmptyFeedError(f"{detail} — {diagnosis}")
     retrieved_at = datetime.now(UTC)
     resolved_language = language or _registry_language(source)
     report = ParseReport()
@@ -291,8 +364,9 @@ def parse_feed(
     """Parse RSS/Atom bytes into normalized documents.
 
     Malformed items (missing title/link, unparseable structure) are skipped
-    individually — partial failure is explicit, never a batch abort. A
-    totally unparseable feed raises ValueError. For skip accounting see
+    individually — partial failure is explicit, never an Ingestion Run abort. A
+    totally unparseable feed raises ValueError; a cleanly parsed feed with
+    zero entries raises EmptyFeedError. For skip accounting see
     :func:`parse_feed_with_report`.
     """
     return parse_feed_with_report(xml, source=source, language=language).documents
@@ -303,6 +377,10 @@ def upsert_documents(docs: list[NormalizedDocument], conn: Any | None = None) ->
 
     When `conn` is None a connection is opened via `brain.db.get_connection`
     (caller may inject any DB-API connection — fakes welcome in tests).
+
+    Fail-fast source guard: the source row must exist — an unknown source
+    raises ValueError instead of inserting rows with a NULL `source_id`.
+    Genuine DB failures during the lookup propagate unchanged.
     """
     if not docs:
         return (0, 0)
@@ -312,12 +390,14 @@ def upsert_documents(docs: list[NormalizedDocument], conn: Any | None = None) ->
         owns_connection = True
     assert conn is not None
     try:
-        try:
-            cursor = conn.execute(SOURCE_ID_SQL, (docs[0].source,))
-            row = cursor.fetchone()
-            source_id = row[0] if row else None
-        except Exception:
-            source_id = None
+        cursor = conn.execute(SOURCE_ID_SQL, (docs[0].source,))
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            raise ValueError(
+                f"Unknown source for upsert: {docs[0].source!r} "
+                "(no row in sources; refusing NULL source_id insert)"
+            )
+        source_id = row[0]
         inserted = 0
         skipped = 0
         for doc in docs:

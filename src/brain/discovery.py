@@ -183,6 +183,26 @@ def policy_get(
     return _impersonated_get(url, timeout)
 
 
+def _normalize_exclude(raw: Any) -> list[str]:
+    """Normalize a sitemap-exclude stanza value to non-empty substrings.
+
+    Accepts a single string or a list of strings (anything else yields []);
+    whitespace-only entries are dropped. Never raises.
+    """
+    try:
+        items: list[Any] = [raw] if isinstance(raw, str) else list(raw or [])
+    except TypeError:
+        return []
+    patterns: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        pattern = str(item).strip()
+        if pattern:
+            patterns.append(pattern)
+    return patterns
+
+
 def _path_of(url: str) -> str:
     """URL path for pattern matching; "" when unparseable (never raises)."""
     try:
@@ -257,6 +277,7 @@ def discover_urls(
     max_urls: int = DEFAULT_MAX_URLS,
     prefer_pattern: str | None = None,
     url_filter: str | None = None,
+    sitemap_exclude: list[str] | str | None = None,
 ) -> tuple[list[SitemapUrl], list[str]]:
     """Traverse declared sitemaps newest-first; return (urls, errors).
 
@@ -269,6 +290,11 @@ def discover_urls(
     sitemap pattern, e.g. ``/press-releases-news/``), urlset entries whose
     path lacks it are skipped silently — they are out of the corpus, not
     failures — so large whole-site urlsets distill to the declared beat.
+    `sitemap_exclude` (the stanza sitemap-exclude list, e.g.
+    ``["/webstories/"]``) drops urlset entries whose path contains any of
+    its substrings, likewise silently. Inclusion and exclusion both apply
+    per urlset *before* collection, so excluded URLs never consume the
+    `max_urls` backfill budget — genuine articles fill it instead.
     Traversal stops fetching new children once `max_urls` is reached — the
     bounded backfill. One bad sitemap is recorded in `errors` and never aborts
     the rest. Results are sorted newest-first by lastmod (undated last),
@@ -278,6 +304,7 @@ def discover_urls(
     errors: list[str] = []
     visited: set[str] = set()
     stop = False
+    excludes = _normalize_exclude(sitemap_exclude)
 
     def _collect(sitemap_url: str, depth: int) -> None:
         nonlocal stop
@@ -296,6 +323,8 @@ def discover_urls(
             return
         if url_filter:
             urls = [u for u in urls if url_filter in _path_of(u.loc)]
+        if excludes:
+            urls = [u for u in urls if not any(x in _path_of(u.loc) for x in excludes)]
         collected.extend(urls)
         if len(collected) >= max_urls:
             stop = True
@@ -929,7 +958,9 @@ def harvest_sitemap_source(
 
     Discovery order is sitemap-first, hub-anchor fallback second: declared
     sitemaps are traversed newest-first (distilled by the stanza sitemap
-    pattern when declared, so whole-site urlsets yield the declared beat),
+    pattern when declared, so whole-site urlsets yield the declared beat;
+    entries matching the stanza sitemap-exclude list, e.g. ``/webstories/``,
+    are dropped before the backfill budget applies),
     then hub listings (hub + declared pagination pages) contribute
     pattern-matching anchors not already discovered, all bounded to
     `max_urls`. The stanza `extractor` family switches body selection per
@@ -966,6 +997,7 @@ def harvest_sitemap_source(
     sitemap_pattern = config.get("sitemap_pattern")
     if not isinstance(sitemap_pattern, str) or not sitemap_pattern.strip():
         sitemap_pattern = ""
+    excludes = _normalize_exclude(config.get("sitemap_exclude"))
     id_guard = bool(config.get("id_guard", False))
     host = ""
     for candidate in sitemap_urls + ([hub_url] if hub_url else []):
@@ -998,6 +1030,7 @@ def harvest_sitemap_source(
         max_urls=max_urls,
         prefer_pattern=sitemap_pattern or link_pattern or None,
         url_filter=sitemap_pattern or None,
+        sitemap_exclude=excludes or None,
     )
     if hub_url:
         # The hub is the listing, not an article: never ingest it as one.
@@ -1013,6 +1046,8 @@ def harvest_sitemap_source(
         errors.extend(hub_errors)
         known = {canonicalize_url(entry.loc) for entry in discovered}
         for entry in hub_found:
+            if excludes and any(x in _path_of(entry.loc) for x in excludes):
+                continue
             if canonicalize_url(entry.loc) not in known:
                 known.add(canonicalize_url(entry.loc))
                 discovered.append(entry)

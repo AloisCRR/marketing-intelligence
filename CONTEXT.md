@@ -2,7 +2,7 @@
 
 ## Glossary
 
-- **Source**: a curated origin (site/feed) with retrieval config. V1: RSS-only, 4 sources.
+- **Source**: a curated origin (site/feed) with retrieval config. V1: all 20 curated sources via RSS + sitemap/hub/url-set lanes.
 - **Document / Article**: one normalized retrieved item (title, content, URLs, timestamps, language, hash). The durable evidence unit.
 - **Story / Event**: the underlying development multiple documents may cover. V1: column reserved (`story_id`, nullable) but unused — no clustering yet.
 - **Topic / Entity**: thematic and named-entity annotations. V1: deferred (no LLM enrichment).
@@ -18,8 +18,8 @@
 
 ## V1 cuts (agreed)
 
-- RSS-only: Social Media Today, MarTech, Professional Jeweller, InfoMoney.
+- RSS + sitemap/hub/url-set: all 20 curated sources (6 RSS, 14 discovery lanes).
 - Deterministic only: no LLM, no embeddings, no topics/entities.
 - API-only: search + `get_weekly_context(from, to)`; no Monday digest schedule yet.
-- Retrieval: plain HTTP + RSS parsing. No Firecrawl (revisit per-source when RSS/HTTP fails, e.g. bot protection/paywall).
-- Postgres 18 + pgvector in local compose; Prefect `@flow/@task` runnable locally without a server (VPS deploy later). B2 deferred.
+- Retrieval: plain HTTP + RSS parsing and sitemap/hub/url-set discovery. No Firecrawl (revisit per-source when RSS/HTTP fails, e.g. bot protection/paywall).
+- Postgres 18 + pgvector in local compose; Prefect `@flow/@task` run against a local server for ingest (`prefect server start` required; VPS deploy later). B2 deferred.

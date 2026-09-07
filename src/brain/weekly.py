@@ -80,8 +80,8 @@ def get_weekly_context(
     (``from`` is a Python keyword, hence ``from_date``/``to_date``; positional
     ``get_weekly_context(a, b)`` reads as (from, to). Plain dates are
     day-inclusive; datetimes are half-open ``[from, to)``. Explicit
-    ``sources`` must have seed rows in the ``sources`` table (the V1 four
-    are seeded by migration 001) or they match no articles.
+    ``sources`` must have seed rows in the ``sources`` table (the V1 twenty
+    are seeded by migrations 001 + 006) or they match no articles.
 
     Returns ``period {from, to, timezone}`` plus ``important_articles`` —
     each with ``title, url, canonical_url, source, published_at, author``

@@ -265,25 +265,46 @@ def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-unt
 # --- V1 scope -----------------------------------------------------------------
 
 
-def test_v1_sources_constant_is_exactly_the_four() -> None:
+def test_v1_sources_constant_is_all_twenty() -> None:
     assert V1_SOURCES == (
-        "Social Media Today",
-        "MarTech",
+        "JCK Online",
+        "National Jeweler",
         "Professional Jeweller",
+        "Exame",
+        "Modaes",
+        "Retail Dive",
+        "Jing Daily",
+        "Social Media Today",
+        "Consumidor Moderno",
+        "Meio & Mensagem",
+        "Marketing Dive",
+        "MarTech",
+        "MarketingDirecto",
+        "Propmark",
+        "Insider Latam",
+        "LVMH Press Releases",
+        "Richemont Media",
+        "Swarovski PR Newswire",
         "InfoMoney",
+        "Forbes México",
     )
 
 
 def test_list_v1_sources_resolves_registry_entries() -> None:
     entries = list_v1_sources()
     assert [e["name"] for e in entries] == list(V1_SOURCES)
-    assert all(e["rss_url"] for e in entries)
+    # 6 RSS entries carry rss_url; 14 sitemap/hub/url-set entries keep
+    # NULL rss_url with a hub_url fallback — both resolve from the registry.
+    assert all(e["hub_url"] for e in entries)
+    rss_entries = [e for e in entries if e["rss_url"]]
+    assert len(rss_entries) == 6
 
 
 def test_weekly_defaults_to_v1_sources() -> None:
     ctx, conn = _context()
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
+    assert len(conn.cursor_obj.last_params[2]) == 20
     assert {a["source"] for a in ctx["important_articles"]} <= set(V1_SOURCES)
 
 
@@ -324,6 +345,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
     assert [a["title"] for a in articles] == [
         "Casas Bahia em crise",
         "Vicenzaoro Opens",
+        "JCK Extra-scope Piece",
         "Signal Loss Rebuild",
         "TikTok Adds Voice Notes",
     ]
@@ -342,17 +364,18 @@ def test_range_filtering_newest_first_and_provenance() -> None:
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
-    # Out-of-range August article, next-week boundary, and non-V1 JCK excluded.
+    # Out-of-range August article and next-week boundary excluded; JCK is
+    # in V1 scope (all 20), so it is included.
     titles = {a["title"] for a in articles}
     assert "August History" not in titles
     assert "Next-week Boundary" not in titles
-    assert "JCK Extra-scope Piece" not in titles
+    assert "JCK Extra-scope Piece" in titles
     # Nullable author passes through.
     by_title = {a["title"]: a for a in articles}
     assert by_title["Signal Loss Rebuild"]["author"] is None
 
 
-def test_explicit_sources_reach_beyond_v1() -> None:
+def test_explicit_sources_narrow_within_v1() -> None:
     ctx, _ = _context(sources=["JCK Online"])
     assert [a["title"] for a in ctx["important_articles"]] == ["JCK Extra-scope Piece"]
 
@@ -425,6 +448,7 @@ def test_get_source_health_reports_latest_run_per_source() -> None:
     ]
     report = get_source_health(conn=_RunsConnection(runs))
     assert [r["source"] for r in report] == list(V1_SOURCES)
+    assert len(report) == 20
     by_source = {r["source"]: r for r in report}
     assert by_source["Social Media Today"]["status"] == "ok"
     assert by_source["Social Media Today"]["inserted"] == 3
@@ -518,6 +542,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "003_ingestion_runs.sql",
         "005_extraction_flag.sql",
         "006_seed_all_sources.sql",
+        "007_deterministic_sources_and_not_null.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

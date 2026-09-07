@@ -1,5 +1,10 @@
 # ADR-0003 — Local ephemeral Prefect, named runs, single leaf+batch flow shape
 
+> **Superseded (2026-09-06):** local ingest no longer runs ephemeral — `make ingest`
+> now requires a local Prefect server (`make prefect-up` / `prefect server start`,
+> guarded by `scripts/check-prefect.sh`). See `docs/prefect-local.md` and the
+> `ingest`/`prefect-up` Makefile targets. The history below is kept as written.
+
 **Status:** accepted
 **Date:** 2026-09-05
 

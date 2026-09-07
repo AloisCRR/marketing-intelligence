@@ -18,7 +18,7 @@ docker compose up -d db        # Postgres 18 + pgvector (DATABASE_URL=postgresql
 ## What this is
 
 Five layers (spec §Solution): Source (curated sites/feeds) → Ingestion (Prefect `@flow/@task`, RSS+HTTP V1) → Data/Knowledge (Postgres 18 + pgvector, system of record) → Semantic/Query (`brain.service` adapter → thin HTTP + MCP parity surfaces) → AI (digest consumer).
-V1 cuts (`CONTEXT.md`): RSS-only (4 sources), deterministic only (no LLM/embeddings/topics), search + `get_weekly_context(from, to)` only.
+V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), deterministic only (no LLM/embeddings/topics), search + `get_weekly_context(from, to)` only.
 
 ## How to work here
 

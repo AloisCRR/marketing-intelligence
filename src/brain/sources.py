@@ -94,10 +94,26 @@ DEFAULT_RETRIEVAL_POLICY: dict[str, Any] = {
 }
 
 V1_SOURCES: tuple[str, ...] = (
-    SOURCE_NAME_SMT,
-    "MarTech",
+    "JCK Online",
+    "National Jeweler",
     "Professional Jeweller",
+    "Exame",
+    "Modaes",
+    "Retail Dive",
+    "Jing Daily",
+    SOURCE_NAME_SMT,
+    "Consumidor Moderno",
+    "Meio & Mensagem",
+    "Marketing Dive",
+    "MarTech",
+    "MarketingDirecto",
+    "Propmark",
+    "Insider Latam",
+    "LVMH Press Releases",
+    "Richemont Media",
+    "Swarovski PR Newswire",
     "InfoMoney",
+    "Forbes México",
 )
 
 _FALLBACK_SMT: dict[str, Any] = {
@@ -224,6 +240,13 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
     sitemap_pattern = raw.get("sitemap_pattern")
     if isinstance(sitemap_pattern, str) and sitemap_pattern.strip():
         extras["sitemap_pattern"] = sitemap_pattern.strip()
+    sitemap_exclude = raw.get("sitemap_exclude")
+    if isinstance(sitemap_exclude, str):
+        sitemap_exclude = [sitemap_exclude]
+    if isinstance(sitemap_exclude, list):
+        patterns = [p for p in (str(p).strip() for p in sitemap_exclude if p is not None) if p]
+        if patterns:
+            extras["sitemap_exclude"] = patterns
     id_guard = raw.get("id_guard")
     if id_guard is True:
         extras["id_guard"] = True
@@ -242,7 +265,7 @@ def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     Result shape is ``{"type": ..., "policy": "stdlib-only"|"impersonated-feed"}``
     plus validated optional discovery keys (``extractor``, ``sitemaps``,
     ``hub``, ``hub_pages``, ``link_pattern``, ``sitemap_pattern``,
-    ``id_guard``, ``pacing_ms``, ``max_urls``) only when the
+    ``sitemap_exclude``, ``id_guard``, ``pacing_ms``, ``max_urls``) only when the
     registry stanza declares them: RSS stanzas keep their exact
     ``{"type", "policy"}`` shape, so RSS ingest behavior is unchanged.
     ``stdlib-only`` fetches with plain urllib (current behavior);
@@ -280,9 +303,11 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
     a missing hub falls back to the registry ``hub_url`` (None when unknown),
     missing hub_pages yield ``[]`` (single hub listing),
     missing patterns yield None, ``id_guard`` defaults to False,
-    pacing yields 1000ms and backfill yields 50 URLs. Unknown (or missing)
-    sources yield safe RSS defaults — never raises. Discovery consumes this,
-    not ad-hoc dict reads.
+    pacing yields 1000ms and backfill yields 50 URLs. ``sitemap_exclude``
+    is carried only when the stanza declares it (no empty-list default),
+    so stanzas without exclusions keep their exact established shape.
+    Unknown (or missing) sources yield safe RSS defaults — never raises.
+    Discovery consumes this, not ad-hoc dict reads.
     """
     policy = get_retrieval_policy(source_name)
     config: dict[str, Any] = {
@@ -298,6 +323,10 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
         "pacing_ms": int(policy.get("pacing_ms", DEFAULT_PACING_MS)),
         "max_urls": int(policy.get("max_urls", DEFAULT_MAX_URLS)),
     }
+    if "sitemap_exclude" in policy:
+        # Declared-only: stanzas without exclusions keep their exact
+        # established shape (see test_retrieval_config_fills_defaults_for_ticket_08).
+        config["sitemap_exclude"] = list(policy["sitemap_exclude"])
     if config["hub"] is None and source_name is not None:
         try:
             hub_url = get_source(source_name).get("hub_url")
@@ -311,7 +340,8 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
 def list_v1_sources() -> list[dict[str, Any]]:
     """Return registry entries for the V1 scope, in V1 order.
 
-    Extra registry entries (e.g. JCK Online, Swarovski PR Newswire) stay
-    ingestible by explicit name; they are simply outside V1 defaults.
+    V1 covers all 20 curated sources in registry order (RSS plus
+    sitemap/hub/url-set lanes); explicit ``sources=[...]`` still narrows
+    weekly/flows queries to a subset.
     """
     return [get_source(name) for name in V1_SOURCES]

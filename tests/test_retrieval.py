@@ -48,7 +48,7 @@ def test_v1_policies_match_oracle_design() -> None:
     assert get_retrieval_policy("MarTech") == {"type": "rss", "policy": "stdlib-only"}
     assert get_retrieval_policy("Professional Jeweller") == {
         "type": "rss",
-        "policy": "stdlib-only",
+        "policy": "impersonated-feed",
     }
 
 
@@ -80,7 +80,7 @@ def test_curated_v1_stanzas() -> None:
     assert entries["MarTech"]["retrieval"] == {"type": "rss", "policy": "stdlib-only"}
     assert entries["Professional Jeweller"]["retrieval"] == {
         "type": "rss",
-        "policy": "stdlib-only",
+        "policy": "impersonated-feed",
     }
     for name in (
         "Social Media Today",
