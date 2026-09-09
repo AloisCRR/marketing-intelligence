@@ -35,7 +35,8 @@ package-dir = {"" = "src"}
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["live_db: live Postgres"]
-# Parallel runs: pytest -n auto (default stays single-process safe; no -n auto in addopts).
+# Parallel by default (`make test` runs pytest -n auto): scratch-DB fixtures use
+# unique per-test names so xdist workers never collide; plain pytest stays valid.
 
 [tool.mypy]
 python_version = "3.12"

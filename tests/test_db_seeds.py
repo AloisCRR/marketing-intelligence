@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -140,7 +141,8 @@ def scratch_db(scratch_db_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator
     import psycopg
 
     url = scratch_db_url
-    name = "brain_seed_scratch"
+    # Unique per test so parallel xdist workers never share a scratch DB.
+    name = f"brain_seed_scratch_{os.getpid()}_{uuid.uuid4().hex[:8]}"
     admin = psycopg.connect(maintenance_url(url), autocommit=True)
     try:
         with admin.cursor() as cur:

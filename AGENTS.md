@@ -8,10 +8,10 @@ Full system spec: `.scratch/trend-intelligence-brain/spec.md`. Glossary/single s
 Grounded in `pyproject.toml` (`src/` layout, Python >=3.12) and `compose.yml` (`db` = Postgres 18 + pgvector).
 
 ```sh
-pip install -e ".[dev]"   # or: pip install -e . && pip install pytest ruff mypy
-pytest                     # testpaths = tests/
-ruff check src tests && ruff format --check src tests
-mypy src
+uv sync --frozen              # create/update .venv from uv.lock (this venv has no pip — use uv sync / uv pip, never pip install)
+uv run --frozen pytest        # testpaths = tests/ (add -n auto for parallel xdist run)
+uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
+uv run --frozen mypy src
 docker compose up -d db        # Postgres 18 + pgvector (DATABASE_URL=postgresql://brain:brain@localhost:5433/brain)
 ```
 

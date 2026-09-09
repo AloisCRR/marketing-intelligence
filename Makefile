@@ -24,7 +24,7 @@ mcp:
 	uv run --frozen python src/mcp/server.py
 
 test:
-	uv run --frozen pytest
+	uv run --frozen pytest -n auto
 
 lint:
 	uv run --frozen mypy src
