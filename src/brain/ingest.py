@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import gzip
 import urllib.error
 import urllib.request
+import zlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -154,11 +156,59 @@ def _policy_for_feed_url(url: str) -> str:
     return "stdlib-only"
 
 
+def _decode_body(raw: bytes, encoding: str | None) -> bytes:
+    """Decode `raw` per Content-Encoding (gzip/deflate/br); never raises.
+
+    Multi-value headers handled case-insensitively. `br` decodes only when
+    `brotli` is already importable (no new dep). Defense-in-depth: a missing
+    or empty header with gzip-magic bytes gunzips anyway. Any decode failure
+    falls back to the raw bytes.
+    """
+    data = bytes(raw or b"")
+    try:
+        tokens = {(t.strip().lower()) for t in (encoding or "").split(",") if t.strip()}
+        if not tokens and data[:2] == b"\x1f\x8b":
+            try:
+                return gzip.decompress(data)
+            except Exception:
+                return data
+        if "gzip" in tokens or "x-gzip" in tokens:
+            try:
+                return gzip.decompress(data)
+            except Exception:
+                return data
+        if "deflate" in tokens:
+            try:
+                try:
+                    return zlib.decompress(data)
+                except Exception:
+                    return zlib.decompress(data, -15)
+            except Exception:
+                return data
+        if "br" in tokens:
+            try:
+                import brotli as _brotli  # type: ignore[import-not-found]
+            except Exception:
+                return data
+            try:
+                return bytes(_brotli.decompress(data))
+            except Exception:
+                return data
+        return data
+    except Exception:
+        return bytes(raw or b"")
+
+
 def _fetch_feed_stdlib(url: str, timeout: int = FEED_TIMEOUT) -> bytes:
     """Download a feed over plain HTTP. Raises on network/HTTP failure."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return bytes(response.read())
+        raw = bytes(response.read())
+        try:
+            encoding = response.getheader("Content-Encoding")
+        except Exception:
+            encoding = None
+        return _decode_body(raw, encoding)
 
 
 def _feed_blocked(status: int | None, snippet: str) -> bool:

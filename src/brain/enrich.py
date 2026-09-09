@@ -29,12 +29,14 @@ is the policy seam the flow uses for ``force_on`` sources.
 
 from __future__ import annotations
 
+import gzip
 import html as _html
 import http
 import re
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 from brain.ingest import USER_AGENT
 from brain.normalize import NormalizedDocument, make_document, normalize_text
@@ -295,12 +297,60 @@ def _fetch_via_impersonation(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
     return bytes(response.content)
 
 
+def _decode_body(raw: bytes, encoding: str | None) -> bytes:
+    """Decode `raw` per Content-Encoding (gzip/deflate/br); never raises.
+
+    Multi-value headers handled case-insensitively. `br` decodes only when
+    `brotli` is already importable (no new dep). Defense-in-depth: a missing
+    or empty header with gzip-magic bytes gunzips anyway. Any decode failure
+    falls back to the raw bytes.
+    """
+    data = bytes(raw or b"")
+    try:
+        tokens = {(t.strip().lower()) for t in (encoding or "").split(",") if t.strip()}
+        if not tokens and data[:2] == b"\x1f\x8b":
+            try:
+                return gzip.decompress(data)
+            except Exception:
+                return data
+        if "gzip" in tokens or "x-gzip" in tokens:
+            try:
+                return gzip.decompress(data)
+            except Exception:
+                return data
+        if "deflate" in tokens:
+            try:
+                try:
+                    return zlib.decompress(data)
+                except Exception:
+                    return zlib.decompress(data, -15)
+            except Exception:
+                return data
+        if "br" in tokens:
+            try:
+                import brotli as _brotli  # type: ignore[import-not-found]
+            except Exception:
+                return data
+            try:
+                return bytes(_brotli.decompress(data))
+            except Exception:
+                return data
+        return data
+    except Exception:
+        return bytes(raw or b"")
+
+
 def _fetch_via_stdlib(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
     """GET `url` with plain urllib plus the same genuine browser headers."""
     request = urllib.request.Request(url, headers=dict(BROWSER_HEADERS))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return bytes(response.read())
+            raw = bytes(response.read())
+            try:
+                encoding = response.getheader("Content-Encoding")
+            except Exception:
+                encoding = None
+            return _decode_body(raw, encoding)
     except EnrichmentError:
         raise
     except urllib.error.HTTPError as exc:
@@ -386,6 +436,11 @@ def try_fallback_reader(url: str, timeout: int = FALLBACK_TIMEOUT) -> str:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = bytes(response.read())
+                try:
+                    _encoding = response.getheader("Content-Encoding")
+                except Exception:
+                    _encoding = None
+                raw = _decode_body(raw, _encoding)
         except EnrichmentError:
             raise
         except urllib.error.HTTPError as exc:
