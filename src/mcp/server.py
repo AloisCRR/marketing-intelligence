@@ -23,9 +23,13 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from brain import service
 from brain.auth import StaticTokenVerifier, is_auth_configured, mcp_auth_settings
+from brain.healthcheck import health_payload  # noqa: F401  (installs access-log filter)
 from brain.service import DEFAULT_SEARCH_LIMIT, DEFAULT_WEEKLY_LIMIT
 
 
@@ -86,6 +90,21 @@ def flag_extraction(
     )
 
 
+async def health(request: Request) -> JSONResponse:
+    """Unauthenticated liveness probe (plain route, bypasses token verifier)."""
+    del request
+    return JSONResponse(health_payload())
+
+
+def _attach_health_route(app: Starlette) -> Starlette:
+    """Append ``GET /health`` to a streamable-HTTP app (idempotent per app)."""
+    for route in app.routes:
+        if getattr(route, "path", None) == "/health":
+            return app
+    app.routes.append(Route("/health", endpoint=health, methods=["GET"]))
+    return app
+
+
 def create_http_app() -> Starlette:
     """Fresh streamable-HTTP Starlette app for this server (FastMCP 1.29.1 API).
 
@@ -94,12 +113,12 @@ def create_http_app() -> Starlette:
     Serve plain HTTP behind Traefik (TLS terminated at the proxy), e.g.
     `uvicorn mcp.server:http_app --port 8124`.
     """
-    return create_mcp().streamable_http_app()
+    return _attach_health_route(create_mcp().streamable_http_app())
 
 
 # ASGI entrypoint reflecting the env at process start (containers set
 # BRAIN_API_TOKEN before import, so this is the enforced app in prod).
-http_app = mcp.streamable_http_app()
+http_app = _attach_health_route(mcp.streamable_http_app())
 
 
 if __name__ == "__main__":

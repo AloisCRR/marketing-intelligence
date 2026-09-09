@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from brain import service
 from brain.auth import require_bearer
+from brain.healthcheck import health_payload  # noqa: F401  (installs access-log filter)
 from brain.service import (
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_WEEKLY_LIMIT,
@@ -22,6 +23,12 @@ from brain.service import (
 )
 
 app = FastAPI(title="Trend Intelligence Brain", version="0.1.0")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Unauthenticated liveness probe (no bearer token required)."""
+    return health_payload()
 
 
 @app.exception_handler(InvalidRequest)

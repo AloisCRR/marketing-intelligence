@@ -59,11 +59,11 @@ USER appuser
 
 EXPOSE 8123 8124
 
-# Generic probe for both processes: any HTTP status < 500 counts as healthy
-# (API `GET /` is 404, MCP has no GET health endpoint — both prove "serving").
-# Compose sets PORT=8123 (api) / 8124 (mcp) per service.
+# Liveness probe for both processes: unauthenticated GET /health must be 200
+# (api + mcp serve it without a bearer token). Python one-liner (slim image
+# has no curl). Compose sets PORT=8123 (api) / 8124 (mcp) per service.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import http.client,os;c=http.client.HTTPConnection('localhost',int(os.environ.get('PORT','8123')));c.request('GET','/');raise SystemExit(0 if c.getresponse().status<500 else 1)"
+    CMD python -c "import http.client,os;c=http.client.HTTPConnection('localhost',int(os.environ.get('PORT','8123')));c.request('GET','/health');raise SystemExit(0 if c.getresponse().status==200 else 1)"
 
 # Default: FastAPI. Compose overrides CMD for the `mcp` service (see compose.yml).
 CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8123"]
