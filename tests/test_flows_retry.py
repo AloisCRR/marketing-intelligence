@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prefect_harness import no_engine
 
 import brain.flows as flows
-from brain.flows import fetch_task, ingest_source_flow, ingest_sources_flow
+from brain.flows import fetch_task
 from brain.ingest import upsert_documents
 from brain.normalize import NormalizedDocument
 from brain.sources import get_source
@@ -127,7 +128,9 @@ def test_persistent_fetch_failure_exhausts_retries_and_raises(
 # --- propagate-inside leaf ----------------------------------------------------
 
 
-def test_source_flow_propagates_stage_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_source_flow_propagates_stage_failure(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     """No catch around task calls: a dead fetch raises out of the subflow."""
 
     def dead_fetch(url: str, source_name: str | None = None) -> bytes:
@@ -135,11 +138,11 @@ def test_source_flow_propagates_stage_failure(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(flows, "fetch_task", dead_fetch)
     with pytest.raises(RuntimeError, match="boom"):
-        ingest_source_flow(source_name=MARTECH)
+        flows.ingest_source_flow(source_name=MARTECH)
 
 
-def test_unknown_source_still_returns_explicit_error_dict() -> None:
-    result = ingest_source_flow(source_name="No Such Source")
+def test_unknown_source_still_returns_explicit_error_dict(no_engine: None) -> None:
+    result = flows.ingest_source_flow(source_name="No Such Source")
     assert result["inserted"] == 0
     assert result["skipped"] == 0
     assert "error" in result and result["error"]
@@ -149,7 +152,7 @@ def test_unknown_source_still_returns_explicit_error_dict() -> None:
 
 
 def test_batch_isolates_failed_subflow_and_records_it(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     failing_url = get_source(PJ)["rss_url"]
 
@@ -178,7 +181,7 @@ def test_batch_isolates_failed_subflow_and_records_it(
         "record_ingestion_run",
         lambda source, result, **kw: recorded.append((source, dict(result))),
     )
-    results = ingest_sources_flow(source_names=[MARTECH, PJ, INFOMONEY])
+    results = flows.ingest_sources_flow(source_names=[MARTECH, PJ, INFOMONEY])
     assert results[MARTECH] == {"inserted": 3, "skipped": 0}
     assert results[INFOMONEY] == {"inserted": 3, "skipped": 0}
     assert results[PJ]["inserted"] == 0

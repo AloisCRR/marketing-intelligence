@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_transport import FakeTransport
+from prefect_harness import no_engine
 
 import brain.flows as flows
 import brain.ingest as ingest
-from brain.flows import fetch_task, ingest_source_flow
 from brain.ingest import fetch_rss
 from brain.normalize import NormalizedDocument
 from brain.sources import get_retrieval_policy, get_source
@@ -293,7 +294,7 @@ def test_impersonated_lane_resolves_registered_url_without_policy_arg(
 
 
 def test_fetch_task_threads_source_policy_without_changing_fetch_contract(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     seen: list[tuple] = []
 
@@ -302,15 +303,15 @@ def test_fetch_task_threads_source_policy_without_changing_fetch_contract(
         return b"<rss/>"
 
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch)
-    out = fetch_task("http://example.com/feed", source_name="MarTech")
+    out = flows.fetch_task("http://example.com/feed", source_name="MarTech")
     assert out == b"<rss/>"
     assert seen == [("http://example.com/feed", 30)]  # single-arg compatible
     # Unknown sources never raise: default lane applies.
-    assert fetch_task("http://example.com/feed", source_name="No Such Source") == b"<rss/>"
+    assert flows.fetch_task("http://example.com/feed", source_name="No Such Source") == b"<rss/>"
 
 
 def test_leaf_flow_threads_source_name_into_fetch_task(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -322,42 +323,45 @@ def test_leaf_flow_threads_source_name_into_fetch_task(
     monkeypatch.setattr(flows, "fetch_task", fake_fetch_task)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    result = ingest_source_flow(source_name="MarTech")
+    result = flows.ingest_source_flow(source_name="MarTech")
     assert result == {"inserted": 3, "skipped": 0}
     assert captured["source_name"] == "MarTech"
     assert captured["url"] == get_source("MarTech")["rss_url"]
 
 
 def test_impersonated_source_flow_still_succeeds_with_stubbed_fetch(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     """Policy resolution must not break impersonated sources under the standard
     (url, timeout) fetch stub used across the suite."""
     fixture = (FIXTURES / "smt_sample.xml").read_bytes()
-    monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: fixture)
+    transport = FakeTransport({get_source("Social Media Today")["rss_url"]: fixture})
+    monkeypatch.setattr(flows, "fetch_rss", transport.fetch_rss)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    result = ingest_source_flow(source_name="Social Media Today")
+    result = flows.ingest_source_flow(source_name="Social Media Today")
     assert result["inserted"] == 3
     assert "error" not in result
+    transport.assert_no_sleep()  # RSS lane never paces
 
 
-def test_batch_keeps_shape_across_both_lanes(monkeypatch: pytest.MonkeyPatch) -> None:
-    from brain.flows import ingest_sources_flow
-
+def test_batch_keeps_shape_across_both_lanes(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     by_url = {get_source(n)["rss_url"]: n for n in ("MarTech", "InfoMoney")}
     fixtures = {
         "MarTech": (FIXTURES / "martech_sample.xml").read_bytes(),
         "InfoMoney": (FIXTURES / "infomoney_sample.xml").read_bytes(),
     }
-    monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: fixtures[by_url[url]])
+    transport = FakeTransport({rss_url: fixtures[name] for rss_url, name in by_url.items()})
+    monkeypatch.setattr(flows, "fetch_rss", transport.fetch_rss)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = ingest_sources_flow(source_names=["MarTech", "InfoMoney"])
+    results = flows.ingest_sources_flow(source_names=["MarTech", "InfoMoney"])
     assert results["MarTech"] == {"inserted": 3, "skipped": 0}
     assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
 

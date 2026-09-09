@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from prefect_harness import no_engine
 
 import brain.flows as flows
 from brain.health import get_source_health, record_ingestion_run
@@ -479,7 +480,7 @@ def test_record_ingestion_run_persists_counts_and_reasons() -> None:
 
 
 def test_flow_records_runs_without_changing_result_shapes(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     captured: list[tuple] = []
     monkeypatch.setattr(
@@ -509,7 +510,9 @@ def test_flow_records_runs_without_changing_result_shapes(
     assert captured[-1][1]["error"]
 
 
-def test_flow_records_skip_reasons_on_messy_feeds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_records_skip_reasons_on_messy_feeds(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     captured: list[tuple] = []
     monkeypatch.setattr(
         flows,

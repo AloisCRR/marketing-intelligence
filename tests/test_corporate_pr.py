@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+from prefect_harness import no_engine
 
 from brain.discovery import (
     ArticleExtractError,
@@ -33,6 +34,7 @@ from brain.normalize import NormalizedDocument
 from brain.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
 
 NJ = "National Jeweler"
 RI = "Richemont Media"
@@ -657,7 +659,9 @@ def _flow_upsert(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> None:
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
 
 
-def test_flow_ingests_nj_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_ingests_nj_with_exact_shape(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
 
     _flow_fetch(monkeypatch, _nj_fetch_map())
@@ -671,7 +675,9 @@ def test_flow_ingests_nj_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> No
     assert "error" not in result
 
 
-def test_flow_ingests_ri_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_ingests_ri_clean_shape(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
 
     _flow_fetch(monkeypatch, _ri_fetch_map())
@@ -680,7 +686,9 @@ def test_flow_ingests_ri_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert flows.ingest_source_flow(source_name=RI) == {"inserted": 3, "skipped": 0}
 
 
-def test_flow_ingests_lvmh_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_ingests_lvmh_clean_shape(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
 
     _flow_fetch(monkeypatch, _lvmh_fetch_map())
@@ -690,7 +698,7 @@ def test_flow_ingests_lvmh_clean_shape(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_batch_ingests_all_three_and_isolates_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
     from brain.discovery import ArticleFetchError

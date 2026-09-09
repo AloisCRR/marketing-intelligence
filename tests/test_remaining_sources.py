@@ -14,13 +14,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from prefect_harness import no_engine
 
-from brain.flows import ingest_source_flow, ingest_sources_flow
+import brain.flows as flows
 from brain.ingest import parse_feed, upsert_documents
 from brain.normalize import NormalizedDocument
 from brain.sources import get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
 
 SMT = "Social Media Today"
 MARTECH = "MarTech"
@@ -219,8 +221,8 @@ def test_rerun_upsert_idempotent_per_source(name: str) -> None:
 # --- flows -------------------------------------------------------------------
 
 
-def test_unknown_source_flow_returns_explicit_error() -> None:
-    result = ingest_source_flow(source_name="No Such Source")
+def test_unknown_source_flow_returns_explicit_error(no_engine: None) -> None:
+    result = flows.ingest_source_flow(source_name="No Such Source")
     assert result["inserted"] == 0
     assert result["skipped"] == 0
     assert "error" in result and result["error"]
@@ -228,7 +230,7 @@ def test_unknown_source_flow_returns_explicit_error() -> None:
 
 @pytest.mark.parametrize("name", [MARTECH, PJ, INFOMONEY])
 def test_single_source_flow_rerunnable_independently(
-    monkeypatch: pytest.MonkeyPatch, name: str
+    monkeypatch: pytest.MonkeyPatch, name: str, no_engine: None
 ) -> None:
     import brain.flows as flows
 
@@ -237,12 +239,12 @@ def test_single_source_flow_rerunnable_independently(
     _stub_enrich_identity(monkeypatch)
     conn = FakeConnection()
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
-    result = ingest_source_flow(source_name=name)
+    result = flows.ingest_source_flow(source_name=name)
     assert result == {"inserted": 3, "skipped": 0}
 
 
 def test_multi_source_flow_records_failure_without_blocking_others(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 
@@ -265,14 +267,16 @@ def test_multi_source_flow_records_failure_without_blocking_others(
         return upsert_documents(docs, conn=conn)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = ingest_sources_flow(source_names=[MARTECH, PJ, INFOMONEY])
+    results = flows.ingest_sources_flow(source_names=[MARTECH, PJ, INFOMONEY])
     assert results[MARTECH] == {"inserted": 3, "skipped": 0}
     assert results[INFOMONEY] == {"inserted": 3, "skipped": 0}
     assert results[PJ]["inserted"] == 0
     assert "error" in results[PJ] and results[PJ]["error"]
 
 
-def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_sources_flow_covers_v1_scope_default(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
     from brain.discovery import HarvestPlan
     from brain.sources import V1_SOURCES, get_source
@@ -308,7 +312,7 @@ def test_ingest_sources_flow_covers_v1_scope_default(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     _stub_enrich_identity(monkeypatch)
-    results = ingest_sources_flow()
+    results = flows.ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
     assert len(results) == 20
     for name in V1_SOURCES:
@@ -328,10 +332,9 @@ def test_no_extra_registry_sources_outside_v1() -> None:
 
 
 def test_explicit_subset_still_ingests_by_name(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
-    from brain.flows import ingest_sources_flow
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: smt_bytes)
@@ -341,7 +344,7 @@ def test_explicit_subset_still_ingests_by_name(
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     _stub_enrich_identity(monkeypatch)
-    results = ingest_sources_flow(source_names=["JCK Online"])
+    results = flows.ingest_sources_flow(source_names=["JCK Online"])
     assert set(results) == {"JCK Online"}
     assert results["JCK Online"] == {"inserted": 3, "skipped": 0}
 

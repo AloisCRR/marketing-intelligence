@@ -21,6 +21,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import pytest  # noqa: E402
+from conftest import maintenance_url  # noqa: E402
 
 import brain.db as db  # noqa: E402
 
@@ -109,34 +110,14 @@ def test_yoyo_dsn_selects_psycopg3_backend(monkeypatch: pytest.MonkeyPatch) -> N
 # --- live Postgres: real migrations dir on an isolated scratch database ------
 
 
-def _live_url() -> str | None:
-    import psycopg
-
-    url = os.environ.get("DATABASE_URL", "postgresql://brain:brain@localhost:5433/brain")
-    try:
-        conn = psycopg.connect(url, connect_timeout=3)
-        conn.close()
-        return url
-    except Exception:
-        return None
-
-
-def _maintenance_url(url: str) -> str:
-    base, _, _ = url.rpartition("/")
-    return f"{base}/postgres"
-
-
 @pytest.fixture()
-def scratch_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """Create/drop an isolated scratch DB; skip when Postgres is unreachable."""
+def scratch_db(scratch_db_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Create/drop an isolated scratch DB (probe-once URL from conftest)."""
     import psycopg
 
-    url = _live_url()
-    if url is None:
-        pytest.skip("no live Postgres reachable")
-    assert url is not None
+    url = scratch_db_url
     name = "brain_yoyo_scratch"
-    admin = psycopg.connect(_maintenance_url(url), autocommit=True)
+    admin = psycopg.connect(maintenance_url(url), autocommit=True)
     try:
         with admin.cursor() as cur:
             cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
@@ -147,7 +128,7 @@ def scratch_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     scratch_url = f"{base}/{name}"
     monkeypatch.setenv("DATABASE_URL", scratch_url)
     yield scratch_url
-    admin = psycopg.connect(_maintenance_url(url), autocommit=True)
+    admin = psycopg.connect(maintenance_url(url), autocommit=True)
     try:
         # Yoyo backends hold their connections open; terminate them so the
         # DROP below does not hit ObjectInUse.
@@ -162,6 +143,7 @@ def scratch_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
         admin.close()
 
 
+@pytest.mark.live_db
 def test_live_real_migrations_pending_only_and_rerunnable(scratch_db: str) -> None:
     applied = db.apply_migrations()
     assert applied == [
@@ -177,6 +159,7 @@ def test_live_real_migrations_pending_only_and_rerunnable(scratch_db: str) -> No
     assert db.baseline_migrations() == []  # nothing left to mark
 
 
+@pytest.mark.live_db
 def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
     import psycopg
 

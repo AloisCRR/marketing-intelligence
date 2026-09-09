@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_transport import FakeTransport
+from prefect_harness import no_engine
 
 import brain.discovery as discovery
 from brain.discovery import (
@@ -39,6 +41,7 @@ from brain.normalize import NormalizedDocument
 from brain.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
 
 MD = "MarketingDirecto"
 
@@ -407,12 +410,11 @@ def _harvest_config() -> dict[str, Any]:
 
 
 def test_harvest_end_to_end_newest_first() -> None:
-    sleeps: list[float] = []
-    fetch = _make_fetch(
+    transport = FakeTransport.from_fetch_map(
         _full_fetch_map(),
         failures={URL_BAD: ArticleFetchError(URL_BAD, "HTTP Error 403: Forbidden")},
     )
-    report = harvest_sitemap_source(_harvest_config(), MD, "es", fetch=fetch, sleep=sleeps.append)
+    report = harvest_sitemap_source(_harvest_config(), MD, "es", **transport.as_kwargs())
     # News sitemap first (newest), then index child newest-first, bounded 50.
     assert [d.url for d in report.documents] == [
         URL_IKEA,
@@ -431,24 +433,26 @@ def test_harvest_end_to_end_newest_first() -> None:
     assert report.skipped == 1
     assert len(report.causes) == 1 and URL_BAD in report.causes[0]
     # Politeness: robots Crawl-delay 10 honored (pacing 10s + jitter).
-    assert sleeps and all(s >= 10.0 for s in sleeps)
+    assert transport.sleep_recorder and all(s >= 10.0 for s in transport.sleep_recorder)
 
 
 def test_harvest_bounded_backfill() -> None:
-    fetch = _make_fetch(_full_fetch_map())
+    transport = FakeTransport.from_fetch_map(_full_fetch_map())
     config = _harvest_config()
     config["max_urls"] = 2
-    report = harvest_sitemap_source(config, MD, "es", fetch=fetch, sleep=lambda _: None)
+    report = harvest_sitemap_source(config, MD, "es", **transport.as_kwargs())
     assert [d.url for d in report.documents] == [URL_IKEA, URL_INFLUENCERS]
     assert report.skipped == 0
 
 
 def test_harvest_raises_when_nothing_discovered() -> None:
+    transport = FakeTransport()
+
     def dead(url: str) -> tuple[str, bytes]:
         raise ArticleFetchError(url, "HTTP Error 403: Forbidden")
 
     with pytest.raises(DiscoveryError, match="yielded no URLs"):
-        harvest_sitemap_source(_harvest_config(), MD, "es", fetch=dead, sleep=lambda _: None)
+        harvest_sitemap_source(_harvest_config(), MD, "es", fetch=dead, sleep=transport.sleep)
 
 
 # --- upsert / rerun / dedupe (FakeConnection mirrors the RSS lane) ------------
@@ -491,13 +495,11 @@ class FakeConnection:
 
 
 def _harvest_docs() -> list[NormalizedDocument]:
-    fetch = _make_fetch(
+    transport = FakeTransport.from_fetch_map(
         _full_fetch_map(),
         failures={URL_BAD: ArticleFetchError(URL_BAD, "HTTP Error 403: Forbidden")},
     )
-    return harvest_sitemap_source(
-        _harvest_config(), MD, "es", fetch=fetch, sleep=lambda _: None
-    ).documents
+    return harvest_sitemap_source(_harvest_config(), MD, "es", **transport.as_kwargs()).documents
 
 
 def test_rerun_upsert_is_noop() -> None:
@@ -526,7 +528,7 @@ def test_slug_change_dedupes_on_hash() -> None:
 
 
 def test_flow_ingests_sitemap_source_with_exact_shape(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 
@@ -549,7 +551,9 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
     assert "error" not in result
 
 
-def test_flow_clean_harvest_keeps_exact_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_clean_harvest_keeps_exact_shape(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
 
     mapping = {k: v for k, v in _full_fetch_map().items() if k != URL_BAD}
@@ -585,7 +589,9 @@ def test_flow_clean_harvest_keeps_exact_shape(monkeypatch: pytest.MonkeyPatch) -
     assert flows.ingest_source_flow(source_name=MD) == {"inserted": 2, "skipped": 0}
 
 
-def test_batch_isolates_sitemap_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_batch_isolates_sitemap_failure(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
     from brain.sources import get_source
 
@@ -905,12 +911,11 @@ def test_unknown_extractor_falls_back_to_generic() -> None:
 
 
 def test_jing_harvest_sitemap_first_hub_extends() -> None:
-    sleeps: list[float] = []
-    fetch = _make_fetch(
+    transport = FakeTransport.from_fetch_map(
         _jing_fetch_map(),
         failures={JD_ROULETTE: ArticleFetchError(JD_ROULETTE, "HTTP Error 403")},
     )
-    report = harvest_sitemap_source(_jing_config(), JD, "en", fetch=fetch, sleep=sleeps.append)
+    report = harvest_sitemap_source(_jing_config(), JD, "en", **transport.as_kwargs())
     # Sitemap coverage first (newest-first), then hub-only URLs in hub order.
     assert [d.url for d in report.documents] == [
         JD_DOVE,
@@ -936,17 +941,15 @@ def test_jing_harvest_sitemap_first_hub_extends() -> None:
     assert report.skipped == 1
     assert len(report.causes) == 1 and JD_ROULETTE in report.causes[0]
     # No crawl-delay declared: stanza pacing applies.
-    assert sleeps and all(s >= 1.0 for s in sleeps)
+    assert transport.sleep_recorder and all(s >= 1.0 for s in transport.sleep_recorder)
 
 
 def _jing_docs() -> list[NormalizedDocument]:
-    fetch = _make_fetch(
+    transport = FakeTransport.from_fetch_map(
         _jing_fetch_map(),
         failures={JD_ROULETTE: ArticleFetchError(JD_ROULETTE, "HTTP Error 403")},
     )
-    return harvest_sitemap_source(
-        _jing_config(), JD, "en", fetch=fetch, sleep=lambda _: None
-    ).documents
+    return harvest_sitemap_source(_jing_config(), JD, "en", **transport.as_kwargs()).documents
 
 
 def test_jing_rerun_upsert_is_noop() -> None:
@@ -1019,7 +1022,9 @@ def test_jing_metered_body_kept_with_cause_then_flaggable(
 # --- Jing flow wiring ---------------------------------------------------------
 
 
-def test_flow_ingests_jing_with_exact_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_ingests_jing_with_exact_shape(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
 
     mapping = _jing_fetch_map()
@@ -1138,7 +1143,9 @@ def test_harvest_sitemap_exclude_webstories_never_fetched_bad_urls_explicit() ->
     assert not any("/webstories/" in u for u in log)
 
 
-def test_batch_isolates_jing_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_batch_isolates_jing_failure(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     import brain.flows as flows
 
     # The whole discovery lane hard-fails: planning raises out of the

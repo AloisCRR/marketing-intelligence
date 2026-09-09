@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prefect_harness import no_engine
 
 from brain.normalize import NormalizedDocument, content_hash_for, make_document
 
@@ -300,7 +301,7 @@ def _wire_flow(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> Any:
 
 
 def test_flow_enriches_thin_only_and_skips_sufficient(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     from brain import enrich as enrich_mod
 
@@ -321,7 +322,7 @@ def test_flow_enriches_thin_only_and_skips_sufficient(
 
 
 def test_flow_failure_keeps_rss_records_cause_run_completes(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     from brain import enrich as enrich_mod
 
@@ -341,7 +342,7 @@ def test_flow_failure_keeps_rss_records_cause_run_completes(
 
 
 def test_flow_enrich_stage_never_blocks_on_unexpected_exception(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     flows = _wire_flow(monkeypatch, FakeConnection())
 
@@ -357,7 +358,7 @@ def test_flow_enrich_stage_never_blocks_on_unexpected_exception(
     assert all(c.startswith("rss:") for c in result["enrich_causes"])
 
 
-def test_flow_rerun_inserts_nothing_new(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_rerun_inserts_nothing_new(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
     from brain import enrich as enrich_mod
 
     conn = FakeConnection()

@@ -33,6 +33,7 @@ if _SRC not in sys.path:
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from prefect_harness import no_engine  # noqa: E402
 
 import brain.article as article_lane  # noqa: E402
 import brain.enrich as enrich_lane  # noqa: E402
@@ -52,6 +53,7 @@ def _load_mcp_server() -> Any:
 
 
 MCP_SERVER = _load_mcp_server()
+
 
 SEARCH_KEYS = {
     "title",
@@ -417,7 +419,7 @@ MIX_FALLBACK_MARKDOWN = (
 
 
 def test_mixed_content_run_stores_expected_bodies_and_causes(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 

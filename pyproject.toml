@@ -20,6 +20,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "pytest>=8.0",
+  "pytest-xdist>=3.6",
   "mypy>=1.0",
   "ruff>=0.14",
 ]
@@ -33,6 +34,8 @@ package-dir = {"" = "src"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["live_db: live Postgres"]
+# Parallel runs: pytest -n auto (default stays single-process safe; no -n auto in addopts).
 
 [tool.mypy]
 python_version = "3.12"
@@ -48,7 +51,9 @@ line-length = 100
 select = ["E", "F", "UP", "B", "I"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["E501"]
+# F401: pytest fixtures are imported for registration, use is implicit.
+# F811: test params named `no_engine` intentionally shadow that fixture import.
+"tests/**" = ["E501", "F401", "F811"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -18,9 +18,9 @@ import json
 from pathlib import Path
 
 import pytest
+from prefect_harness import no_engine
 
 import brain.flows as flows
-from brain.flows import ingest_source_flow, ingest_sources_flow
 from brain.ingest import (
     EmptyFeedError,
     diagnose_empty_feed,
@@ -43,6 +43,7 @@ CURATED = (
 JCK = "JCK Online"
 JCK_FEED_URL = "https://www.jckonline.com/feed/"
 JCK_FALLBACK_URL = "https://www.jckonline.com/category/news-trends/retail/feed/"
+
 
 # Shape of the live 2026-09-06 JCK payload: HTTP 200, channel skeleton, 0 items.
 EMPTY_JCK_SKELETON = b"""<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
@@ -100,7 +101,9 @@ def test_per_item_skips_still_parse_partially() -> None:
     assert report.skipped_reasons and "missing link" in report.skipped_reasons[0]
 
 
-def test_leaf_flow_empty_feed_raises_no_silent_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_leaf_flow_empty_feed_raises_no_silent_zero(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     """MarTech has no fallback route: an empty feed must raise out of the leaf
     flow (red subflow) rather than return a silent {inserted: 0, skipped: 0}."""
 
@@ -109,11 +112,11 @@ def test_leaf_flow_empty_feed_raises_no_silent_zero(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(flows, "fetch_task", empty_fetch)
     with pytest.raises(EmptyFeedError):
-        ingest_source_flow(source_name="MarTech")
+        flows.ingest_source_flow(source_name="MarTech")
 
 
 def test_batch_converts_empty_feed_to_explicit_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     martech_url = get_source("MarTech")["rss_url"]
     pj_url = get_source("Professional Jeweller")["rss_url"]
@@ -127,7 +130,7 @@ def test_batch_converts_empty_feed_to_explicit_error(
     monkeypatch.setattr(flows, "fetch_task", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    results = ingest_sources_flow(source_names=["MarTech", "Professional Jeweller"])
+    results = flows.ingest_sources_flow(source_names=["MarTech", "Professional Jeweller"])
     assert results["MarTech"] == {"inserted": 3, "skipped": 0}
     assert results["Professional Jeweller"]["inserted"] == 0
     assert results["Professional Jeweller"]["skipped"] == 0
@@ -177,7 +180,7 @@ def test_curated_jck_entry_untouched() -> None:
     assert get_source(JCK)["rss_url"] == JCK_FEED_URL
 
 
-def test_jck_flow_falls_back_and_inserts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_jck_flow_falls_back_and_inserts(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
     """Dead primary (0 entries) routes to the category fallback in code and
     the Ingestion Run inserts articles again."""
     seen: list[str] = []
@@ -194,19 +197,21 @@ def test_jck_flow_falls_back_and_inserts(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(flows, "fetch_task", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    result = ingest_source_flow(source_name=JCK)
+    result = flows.ingest_source_flow(source_name=JCK)
     assert result["inserted"] > 0
     assert "error" not in result
     assert seen == [JCK_FEED_URL, JCK_FALLBACK_URL]
 
 
-def test_jck_flow_all_candidates_empty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_jck_flow_all_candidates_empty_raises(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
     def empty_fetch(url: str, source_name: str | None = None) -> bytes:
         return EMPTY_JCK_SKELETON
 
     monkeypatch.setattr(flows, "fetch_task", empty_fetch)
     with pytest.raises(EmptyFeedError):
-        ingest_source_flow(source_name=JCK)
+        flows.ingest_source_flow(source_name=JCK)
 
 
 # --- (c) upsert with unknown source raises instead of NULL insert --------------
@@ -257,7 +262,7 @@ def test_upsert_unknown_source_raises_no_null_insert() -> None:
 
 
 def test_batch_rerunnable_with_explicit_partial_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     martech_url = get_source("MarTech")["rss_url"]
     pj_url = get_source("Professional Jeweller")["rss_url"]
@@ -272,8 +277,8 @@ def test_batch_rerunnable_with_explicit_partial_failure(
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
     names = ["MarTech", "Professional Jeweller"]
-    first = ingest_sources_flow(source_names=names)
-    second = ingest_sources_flow(source_names=names)
+    first = flows.ingest_sources_flow(source_names=names)
+    second = flows.ingest_sources_flow(source_names=names)
     assert first == second  # independently rerunnable: stable across reruns
     assert first["MarTech"] == {"inserted": 3, "skipped": 0}
     assert "error" in first["Professional Jeweller"]  # explicit partial failure

@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+from prefect_harness import no_engine
 
 from brain.discovery import (
     ArticleFetchError,
@@ -450,7 +451,7 @@ def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips() -
 
 
 def test_flow_ingests_sitemap_source_with_exact_shape(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 
@@ -476,7 +477,7 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
 
 
 def test_batch_ingests_all_seven_and_isolates_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 

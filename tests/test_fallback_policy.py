@@ -19,6 +19,9 @@ import urllib.error
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+from prefect_harness import no_engine
+
 from brain.normalize import NormalizedDocument, make_document
 
 GATED_URL = "https://example.com/articles/gated-story"
@@ -380,7 +383,7 @@ def test_source_lookup_behavior_unchanged() -> None:
 # --- policy honored by the enrichment stage --------------------------------------
 
 
-def test_threshold_override_honored_by_enrich_task(monkeypatch: Any) -> None:
+def test_threshold_override_honored_by_enrich_task(monkeypatch: Any, no_engine: None) -> None:
     import brain.flows as flows
     from brain import enrich as enrich_mod
 
@@ -403,7 +406,7 @@ def test_threshold_override_honored_by_enrich_task(monkeypatch: Any) -> None:
     assert causes == []
 
 
-def test_force_on_enriches_sufficient_rss(monkeypatch: Any) -> None:
+def test_force_on_enriches_sufficient_rss(monkeypatch: Any, no_engine: None) -> None:
     import brain.flows as flows
     from brain import enrich as enrich_mod
 
@@ -423,7 +426,7 @@ def test_force_on_enriches_sufficient_rss(monkeypatch: Any) -> None:
     assert causes == []
 
 
-def test_force_off_performs_zero_fetch(monkeypatch: Any) -> None:
+def test_force_off_performs_zero_fetch(monkeypatch: Any, no_engine: None) -> None:
     import brain.flows as flows
     from brain import enrich as enrich_mod
 
@@ -448,7 +451,7 @@ def test_force_off_performs_zero_fetch(monkeypatch: Any) -> None:
     assert causes == []
 
 
-def test_flow_force_off_has_no_enrich_keys_and_completes(monkeypatch: Any) -> None:
+def test_flow_force_off_has_no_enrich_keys_and_completes(monkeypatch: Any, no_engine: None) -> None:
     import brain.flows as flows
     from brain import enrich as enrich_mod
 

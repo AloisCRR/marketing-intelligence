@@ -18,7 +18,6 @@ import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(os.path.dirname(_HERE), "src")
@@ -26,6 +25,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import pytest  # noqa: E402
+from conftest import FakeConn, maintenance_url  # noqa: E402
 
 import brain.db as db  # noqa: E402
 
@@ -98,32 +98,6 @@ def test_007_cleans_null_ingestion_runs() -> None:
 # --- helper contract (no live DB) --------------------------------------------
 
 
-class _FakeCursor:
-    def __init__(self, rowcount: int = 1) -> None:
-        self.rowcount = rowcount
-
-    def fetchone(self) -> None:
-        return None
-
-
-class _FakeConn:
-    def __init__(self, rowcount: int = 1) -> None:
-        self.statements: list[tuple[str, Any]] = []
-        self._rowcount = rowcount
-        self.committed = False
-        self.closed = False
-
-    def execute(self, sql: str, params: Any = None) -> _FakeCursor:
-        self.statements.append((sql, params))
-        return _FakeCursor(self._rowcount)
-
-    def commit(self) -> None:
-        self.committed = True
-
-    def close(self) -> None:
-        self.closed = True
-
-
 def test_source_uuid_is_deterministic_and_unique_per_name() -> None:
     assert db.source_uuid("MarTech") == db.source_uuid("MarTech")
     assert db.source_uuid("MarTech") != db.source_uuid("Retail Dive")
@@ -137,19 +111,19 @@ def test_seed_sources_helper_covers_all_20_curated() -> None:
 
 def test_seed_sources_helper_is_idempotent_shape() -> None:
     """First run inserts; a rerun (rowcount 0, i.e. ON CONFLICT) only skips."""
-    fake = _FakeConn(rowcount=1)
+    fake = FakeConn(rowcount=1)
     assert db.seed_sources(conn=fake) == (20, 0)  # type: ignore[arg-type]
     assert fake.committed
     for sql, params in fake.statements:
         assert "ON CONFLICT (name) DO NOTHING" in sql
         assert params is not None and str(params[0]) == str(db.source_uuid(params[1]))
 
-    rerun = _FakeConn(rowcount=0)
+    rerun = FakeConn(rowcount=0)
     assert db.seed_sources(conn=rerun) == (0, 20)  # type: ignore[arg-type]
 
 
 def test_quarantine_helper_moves_null_rows() -> None:
-    fake = _FakeConn(rowcount=3)
+    fake = FakeConn(rowcount=3)
     assert db.quarantine_null_documents(conn=fake) == 3  # type: ignore[arg-type]
     blob = "\n".join(sql for sql, _ in fake.statements)
     assert "quarantined_documents" in blob
@@ -160,34 +134,14 @@ def test_quarantine_helper_moves_null_rows() -> None:
 # --- live Postgres: real yoyo path on an isolated scratch database -----------
 
 
-def _live_url() -> str | None:
-    import psycopg
-
-    url = os.environ.get("DATABASE_URL", "postgresql://brain:brain@localhost:5433/brain")
-    try:
-        conn = psycopg.connect(url, connect_timeout=3)
-        conn.close()
-        return url
-    except Exception:
-        return None
-
-
-def _maintenance_url(url: str) -> str:
-    base, _, _ = url.rpartition("/")
-    return f"{base}/postgres"
-
-
 @pytest.fixture()
-def scratch_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """Create/drop an isolated scratch DB; skip when Postgres is unreachable."""
+def scratch_db(scratch_db_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Create/drop an isolated scratch DB (probe-once URL from conftest)."""
     import psycopg
 
-    url = _live_url()
-    if url is None:
-        pytest.skip("no live Postgres reachable")
-    assert url is not None
+    url = scratch_db_url
     name = "brain_seed_scratch"
-    admin = psycopg.connect(_maintenance_url(url), autocommit=True)
+    admin = psycopg.connect(maintenance_url(url), autocommit=True)
     try:
         with admin.cursor() as cur:
             cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
@@ -198,7 +152,7 @@ def scratch_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     scratch_url = f"{base}/{name}"
     monkeypatch.setenv("DATABASE_URL", scratch_url)
     yield scratch_url
-    admin = psycopg.connect(_maintenance_url(url), autocommit=True)
+    admin = psycopg.connect(maintenance_url(url), autocommit=True)
     try:
         with admin.cursor() as cur:
             cur.execute(
@@ -217,6 +171,7 @@ def _exec_sql_file(conn: object, path: Path) -> None:
     conn.commit()  # type: ignore[union-attr]
 
 
+@pytest.mark.live_db
 def test_live_007_backfills_quarantine_and_enforces_not_null(scratch_db: str) -> None:
     """Pre-007 NULL document -> 007 quarantines it -> NOT NULL holds after."""
     import psycopg

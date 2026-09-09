@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from prefect_harness import no_engine
 
 from brain.flows import ingest_source_flow
 from brain.ingest import parse_feed, upsert_documents
@@ -206,7 +207,7 @@ def test_upsert_uses_on_conflict() -> None:
 
 
 def test_flow_importable_and_returns_counts(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 
@@ -214,6 +215,6 @@ def test_flow_importable_and_returns_counts(
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: FIXTURE.read_bytes())
     conn = FakeConnection()
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
-    result = ingest_source_flow(source_name="Social Media Today")
+    result = flows.ingest_source_flow(source_name="Social Media Today")
     assert result["inserted"] == 3
     assert result["skipped"] == 0

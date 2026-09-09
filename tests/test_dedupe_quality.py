@@ -19,8 +19,8 @@ from datetime import UTC
 from pathlib import Path
 
 import pytest
+from prefect_harness import no_engine
 
-from brain.flows import ingest_source_flow
 from brain.ingest import (
     INSERT_SQL,
     ParseReport,
@@ -197,7 +197,7 @@ def test_count_feed_entries_matches_fixture_items() -> None:
 
 
 def test_flow_surfaces_parse_skipped_without_breaking_clean_flows(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import brain.flows as flows
 
@@ -207,7 +207,7 @@ def test_flow_surfaces_parse_skipped_without_breaking_clean_flows(
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: MESSY.read_bytes())
     conn = FakeConnection()
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
-    result = ingest_source_flow(source_name="Social Media Today")
+    result = flows.ingest_source_flow(source_name="Social Media Today")
     assert result["inserted"] == 3
     assert result["parse_skipped"] == 3
 
@@ -215,7 +215,7 @@ def test_flow_surfaces_parse_skipped_without_breaking_clean_flows(
     monkeypatch.setattr(
         flows, "fetch_rss", lambda url, timeout=30: V1_FIXTURES["MarTech"].read_bytes()
     )
-    clean = ingest_source_flow(source_name="MarTech")
+    clean = flows.ingest_source_flow(source_name="MarTech")
     assert clean == {"inserted": 3, "skipped": 0}
 
 
