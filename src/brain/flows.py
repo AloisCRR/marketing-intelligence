@@ -61,6 +61,7 @@ def _retry_unless_permanent(task: Any, task_run: Any, state: Any) -> bool:
 
 
 @task(
+    name="fetch_feed",
     retries=3,
     retry_delay_seconds=[2, 5, 15],
     retry_condition_fn=_retry_unless_permanent,
@@ -83,7 +84,7 @@ def fetch_task(url: str, source_name: str | None = None) -> bytes:
     return raw
 
 
-@task(task_run_name="parse-{source}")
+@task(name="parse_feed_content", task_run_name="parse-{source}")
 def parse_task(
     xml: bytes,
     source: str = "Social Media Today",
@@ -121,7 +122,7 @@ def discovery_fetch(url: str, policy: str, gap_s: float) -> tuple[str, bytes]:
     return paced_policy_fetch(url, policy=policy, gap_s=gap_s)
 
 
-@task(task_run_name="article-fetch", cache_policy=NONE)
+@task(name="fetch_extract_article", task_run_name="article-fetch", cache_policy=NONE)
 def _article_task(job: ArticleJob) -> tuple[Any | None, str | None]:
     """Fetch → decode → extract one planned article; never raises.
 
@@ -139,6 +140,7 @@ def _article_task(job: ArticleJob) -> tuple[Any | None, str | None]:
 
 
 @flow(
+    name="marketing-intelligence.ingestion.discover",
     flow_run_name="discover-{source_name}",
     task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
 )
@@ -198,7 +200,7 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
     return (documents, skipped, causes)
 
 
-@task(task_run_name="enrich-one", cache_policy=NONE)
+@task(name="enrich_single_document", task_run_name="enrich-one", cache_policy=NONE)
 def _enrich_one_task(
     doc: NormalizedDocument, threshold: int, force: bool
 ) -> tuple[NormalizedDocument, str, str | None]:
@@ -213,6 +215,7 @@ def _enrich_one_task(
 
 
 @flow(
+    name="marketing-intelligence.ingestion.enrich",
     flow_run_name="enrich-docs",
     task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
 )
@@ -279,7 +282,7 @@ def enrich_task(
     return (enriched, skipped, causes)
 
 
-@task(task_run_name="upsert-docs")
+@task(name="upsert_documents", task_run_name="upsert-docs")
 def upsert_task(docs: list[NormalizedDocument]) -> dict[str, int]:
     """Persist documents idempotently; returns {inserted, skipped}."""
     inserted, skipped = upsert_documents(docs)
@@ -317,7 +320,7 @@ def _ensure_source_row(source_label: str) -> None:
         )
 
 
-@flow(flow_run_name="ingest-{source_name}")
+@flow(name="marketing-intelligence.ingestion.ingest_source", flow_run_name="ingest-{source_name}")
 def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any]:
     """Ingest one source end-to-end.
 
@@ -454,7 +457,7 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
 _BATCH_CHUNK = 4
 
 
-@task(task_run_name="ingest-one", cache_policy=NONE)
+@task(name="ingest_single_source", task_run_name="ingest-one", cache_policy=NONE)
 def _ingest_one_task(source_name: str, flow_run_name: str) -> dict[str, Any]:
     """Run one Ingestion Run with return_state isolation; never raises.
 
@@ -492,6 +495,7 @@ def _ingest_one_task(source_name: str, flow_run_name: str) -> dict[str, Any]:
 
 
 @flow(
+    name="marketing-intelligence.ingestion.ingest_sources",
     flow_run_name="ingest-batch",
     task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
 )
