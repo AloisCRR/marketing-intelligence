@@ -3,8 +3,8 @@
 End-to-end verification over lanes 01/02/03, hermetic (fake conns, monkeypatched
 fetch — no live Postgres, no network, no model calls):
 
-- Weekly Context and search list payloads match their pre-feature shapes
-  key-for-key at the same limits (11-key search dicts, 10-key weekly dicts +
+- Period Context and search list payloads match their pre-feature shapes
+  key-for-key at the same limits (11-key search dicts, 10-key period dicts +
   5 explicit-empty V1 trend keys).
 - One-item lookup returns identical payloads over HTTP (TestClient) and MCP
   (direct tool call + registered-tool path), including identical validation
@@ -37,9 +37,9 @@ from prefect_harness import no_engine  # noqa: E402
 
 import brain.article as article_lane  # noqa: E402
 import brain.enrich as enrich_lane  # noqa: E402
+import brain.period as period_lane  # noqa: E402
 import brain.search as search_lane  # noqa: E402
 import brain.service as service  # noqa: E402
-import brain.weekly as weekly_lane  # noqa: E402
 from api.app import app  # noqa: E402
 
 
@@ -69,7 +69,7 @@ SEARCH_KEYS = {
     "flagged_by",
 }
 
-WEEKLY_ARTICLE_KEYS = {
+PERIOD_ARTICLE_KEYS = {
     "title",
     "url",
     "canonical_url",
@@ -82,7 +82,7 @@ WEEKLY_ARTICLE_KEYS = {
     "flagged_by",
 }
 
-WEEKLY_TOP_KEYS = {
+PERIOD_TOP_KEYS = {
     "period",
     "important_articles",
     "top_stories",
@@ -161,8 +161,8 @@ class _ConnFake:
         pass
 
 
-class _WeeklyConnFake:
-    """Connection fake exposing .execute() directly (weekly lane style)."""
+class _PeriodConnFake:
+    """Connection fake exposing .execute() directly (period lane style)."""
 
     def __init__(self, rows: list[tuple]) -> None:
         self.cursor_obj = _CursorFake(rows)
@@ -249,7 +249,7 @@ SEARCH_ROWS = [
     ),
 ]
 
-WEEKLY_ROWS = [
+PERIOD_ROWS = [
     (
         "TikTok Adds Voice Notes",
         "https://www.socialmediatoday.com/news/tiktok/1/",
@@ -298,39 +298,39 @@ def test_search_list_payload_is_eleven_keys_at_same_limits() -> None:
         service.search_articles("TikTok", limit=101, conn=_ConnFake(SEARCH_ROWS))
 
 
-def test_weekly_list_payload_matches_pre_feature_shape() -> None:
-    ctx = weekly_lane.get_weekly_context(
-        date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConnFake(WEEKLY_ROWS)
+def test_period_list_payload_matches_pre_feature_shape() -> None:
+    ctx = period_lane.get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnFake(PERIOD_ROWS)
     )
-    assert set(ctx) == WEEKLY_TOP_KEYS
+    assert set(ctx) == PERIOD_TOP_KEYS
     assert set(ctx["period"]) == {"from", "to", "timezone"}
     assert len(ctx["important_articles"]) == 2
     for item in ctx["important_articles"]:
-        assert set(item) == WEEKLY_ARTICLE_KEYS
+        assert set(item) == PERIOD_ARTICLE_KEYS
     # V1: no history yet — trend keys present as explicit empties.
     for key in TREND_KEYS:
         assert ctx[key] == []
     # Same limits: limit=1 bounds the article list.
-    bounded = weekly_lane.get_weekly_context(
-        date(2026, 9, 7), date(2026, 9, 13), limit=1, conn=_WeeklyConnFake(WEEKLY_ROWS)
+    bounded = period_lane.get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), limit=1, conn=_PeriodConnFake(PERIOD_ROWS)
     )
     assert len(bounded["important_articles"]) == 1
 
 
-def test_http_search_and_weekly_match_service_shapes(
+def test_http_search_and_period_match_service_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(search_lane, "get_connection", lambda: _ConnFake(SEARCH_ROWS))
-    monkeypatch.setattr(weekly_lane, "get_connection", lambda: _WeeklyConnFake(WEEKLY_ROWS))
+    monkeypatch.setattr(period_lane, "get_connection", lambda: _PeriodConnFake(PERIOD_ROWS))
     client = TestClient(app)
     search_payload = client.get("/search", params={"q": "TikTok"}).json()
     assert set(search_payload) == {"results"}
     assert all(set(item) == SEARCH_KEYS for item in search_payload["results"])
-    weekly_payload = client.post(
-        "/weekly-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}
+    period_payload = client.post(
+        "/period-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}
     ).json()
-    assert set(weekly_payload) == WEEKLY_TOP_KEYS
-    assert all(set(item) == WEEKLY_ARTICLE_KEYS for item in weekly_payload["important_articles"])
+    assert set(period_payload) == PERIOD_TOP_KEYS
+    assert all(set(item) == PERIOD_ARTICLE_KEYS for item in period_payload["important_articles"])
 
 
 # --- one-item lookup parity: HTTP == MCP ---------------------------------------

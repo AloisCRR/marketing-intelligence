@@ -18,7 +18,7 @@ docker compose up -d db        # Postgres 18 + pgvector (DATABASE_URL=postgresql
 ## What this is
 
 Five layers (spec §Solution): Source (curated sites/feeds) → Ingestion (Prefect `@flow/@task`, RSS+HTTP V1) → Data/Knowledge (Postgres 18 + pgvector, system of record) → Semantic/Query (`brain.service` adapter → thin HTTP + MCP parity surfaces) → AI (digest consumer).
-V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), deterministic only (no LLM/embeddings/topics), search + `get_weekly_context(from, to)` only.
+V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), deterministic only (no LLM/embeddings/topics), search + `get_period_context(from, to)` only.
 
 ## How to work here
 
@@ -34,7 +34,7 @@ V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), dete
 
 ## Testing
 
-Test observable behavior and data contracts, not private helpers: upsert/dedupe by hash, rerunnable ingestion runs, `GET /search` + `POST /weekly-context` payloads and 422 paths, HTTP↔MCP parity by construction. Run `pytest` before claiming done.
+Test observable behavior and data contracts, not private helpers: upsert/dedupe by hash, rerunnable ingestion runs, `GET /search` + `POST /period-context` payloads and 422 paths, HTTP↔MCP parity by construction. Run `pytest` before claiming done.
 
 ## Out-of-scope guardrails
 

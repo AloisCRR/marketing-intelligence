@@ -9,7 +9,7 @@ No certs, no TLS config in the image or compose file.
 | Compose service | Process (container CMD) | Internal port | Purpose |
 |---|---|---|---|
 | `migrate` | `python -c "from brain.db import apply_migrations; apply_migrations()"` | — (one-shot, exits 0) | Idempotent `migrations/*.sql` before serve |
-| `api` | `uvicorn api.app:app --host 0.0.0.0 --port 8123` (image default CMD) | 8123 | FastAPI: `GET /search`, `POST /weekly-context`, `GET /article`, `POST /flag-extraction`, `/docs` |
+| `api` | `uvicorn api.app:app --host 0.0.0.0 --port 8123` (image default CMD) | 8123 | FastAPI: `GET /search`, `POST /period-context`, `GET /article`, `POST /flag-extraction`, `/docs` |
 | `mcp` | `uvicorn --app-dir src/mcp server:http_app --host 0.0.0.0 --port 8124` | 8124 | MCP streamable-HTTP app (`/mcp`) |
 
 Why `--app-dir src/mcp server:http_app` and not `mcp.server:http_app`: the

@@ -17,8 +17,8 @@ from brain import service
 from brain.auth import require_bearer
 from brain.healthcheck import health_payload  # noqa: F401  (installs access-log filter)
 from brain.service import (
+    DEFAULT_PERIOD_LIMIT,
     DEFAULT_SEARCH_LIMIT,
-    DEFAULT_WEEKLY_LIMIT,
     InvalidRequest,
 )
 
@@ -46,17 +46,17 @@ def search(
     return {"results": service.search_articles(q, limit=limit)}
 
 
-class WeeklyRequest(BaseModel):
+class PeriodRequest(BaseModel):
     from_date: str
     to_date: str
     sources: list[str] | None = None
-    limit: int = DEFAULT_WEEKLY_LIMIT
+    limit: int = DEFAULT_PERIOD_LIMIT
 
 
-@app.post("/weekly-context")
-def weekly_context(body: WeeklyRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
-    """Weekly evidence bundle for [from_date, to_date] (ISO dates)."""
-    return service.get_weekly_context(
+@app.post("/period-context")
+def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
+    """Period evidence bundle for [from_date, to_date] (ISO dates)."""
+    return service.get_period_context(
         body.from_date, body.to_date, sources=body.sources, limit=body.limit
     )
 

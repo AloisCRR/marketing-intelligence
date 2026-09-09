@@ -30,7 +30,7 @@ from brain.auth import StaticTokenVerifier, is_auth_configured  # noqa: E402
 TOKEN = "test-bearer-token-" + "x" * 32
 
 SEARCH_PAYLOAD = [{"title": "t", "url": "https://example.test/1/"}]
-WEEKLY_PAYLOAD = {"period": {}, "important_articles": []}
+PERIOD_PAYLOAD = {"period": {}, "important_articles": []}
 ARTICLE_PAYLOAD = {"title": "t", "url": "https://example.test/1/", "content": "body"}
 FLAG_PAYLOAD = {"title": "t", "url": "https://example.test/1/", "flag_reason": "thin"}
 
@@ -58,7 +58,7 @@ def authed(monkeypatch: pytest.MonkeyPatch) -> str:
         service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
     )
     monkeypatch.setattr(
-        service, "get_weekly_context", lambda from_date, to_date, **kw: WEEKLY_PAYLOAD
+        service, "get_period_context", lambda from_date, to_date, **kw: PERIOD_PAYLOAD
     )
     monkeypatch.setattr(service, "get_article", lambda identifier, conn=None: ARTICLE_PAYLOAD)
     monkeypatch.setattr(
@@ -80,7 +80,7 @@ def test_http_unauthenticated_returns_401(authed: str) -> None:
     client = TestClient(app)
     responses = [
         client.get("/search", params={"q": "TikTok"}),
-        client.post("/weekly-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}),
+        client.post("/period-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}),
         client.get("/article", params={"url": ARTICLE_URL}),
         client.post("/flag-extraction", json={"identifier": ARTICLE_URL}),
     ]
@@ -95,7 +95,7 @@ def test_http_wrong_token_returns_401(authed: str) -> None:
     assert client.get("/search", params={"q": "TikTok"}, headers=headers).status_code == 401
     assert (
         client.post(
-            "/weekly-context",
+            "/period-context",
             json={"from_date": "2026-09-07", "to_date": "2026-09-13"},
             headers=headers,
         ).status_code
@@ -118,11 +118,11 @@ def test_http_correct_token_passthrough_200(authed: str) -> None:
     }
     assert (
         client.post(
-            "/weekly-context",
+            "/period-context",
             json={"from_date": "2026-09-07", "to_date": "2026-09-13"},
             headers=headers,
         ).json()
-        == WEEKLY_PAYLOAD
+        == PERIOD_PAYLOAD
     )
     assert client.get("/article", params={"url": ARTICLE_URL}, headers=headers).json() == (
         ARTICLE_PAYLOAD
@@ -141,7 +141,7 @@ def test_http_invalid_request_still_422_when_authed(monkeypatch: pytest.MonkeyPa
     resp = live.get("/search", params={"q": "   "}, headers=headers)
     assert resp.status_code == 422
     resp = live.post(
-        "/weekly-context",
+        "/period-context",
         json={"from_date": "not-a-date", "to_date": "2026-09-13"},
         headers=headers,
     )

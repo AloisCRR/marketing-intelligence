@@ -1,8 +1,8 @@
-"""Weekly context + observability contract tests (Ticket 04).
+"""Period context + observability contract tests (Ticket 04).
 
 Semantic-interface tests with fake-DB connections (no live Postgres):
 
-- weekly period boundaries interpreted in America/Panama (Sept = UTC-5),
+- period boundaries interpreted in America/Panama (Sept = UTC-5),
   independent of server-local time
 - date-range filtering, newest-first ordering, provenance keys, empty ranges,
   invalid-input validation
@@ -26,8 +26,8 @@ import brain.flows as flows
 from brain.health import get_source_health, record_ingestion_run
 from brain.ingest import parse_feed, upsert_documents
 from brain.normalize import content_hash_for
+from brain.period import PANAMA_NAME, get_period_context
 from brain.sources import V1_SOURCES, list_v1_sources
-from brain.weekly import PANAMA_NAME, get_weekly_context
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -39,7 +39,7 @@ def _utc(*args: int) -> datetime:
 # --- fakes -------------------------------------------------------------------
 
 
-class _WeeklyCursor:
+class _PeriodCursor:
     """Serves preset document rows with real range/source/limit semantics."""
 
     def __init__(self, rows: list[tuple]) -> None:
@@ -48,7 +48,7 @@ class _WeeklyCursor:
         self.last_params: tuple | None = None
         self._result: list[tuple] = []
 
-    def execute(self, sql: str, params: tuple | None = None) -> _WeeklyCursor:
+    def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         self.last_sql = sql
         self.last_params = params
         assert params is not None
@@ -62,12 +62,12 @@ class _WeeklyCursor:
         return self._result
 
 
-class _WeeklyConnection:
+class _PeriodConnection:
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
-        self.cursor_obj = _WeeklyCursor(rows)
+        self.cursor_obj = _PeriodCursor(rows)
 
-    def execute(self, sql: str, params: tuple | None = None) -> _WeeklyCursor:
+    def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         return self.cursor_obj.execute(sql, params)
 
     def commit(self) -> None:
@@ -155,7 +155,7 @@ class _UpsertFakeConnection:
 
 
 def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep flow tests hermetic: enrichment is lane 02/03's concern, not weekly/run shape.
+    """Keep flow tests hermetic: enrichment is lane 02/03's concern, not period/run shape.
 
     Identity-enriches every document so Ingestion Runs over fixtures keep their
     pre-enrichment result shapes and skip-reason accounting (no live fetches).
@@ -259,8 +259,8 @@ WEEK_TO = date(2026, 9, 13)
 
 
 def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-untyped-def]
-    conn = _WeeklyConnection(rows)
-    return get_weekly_context(WEEK_FROM, WEEK_TO, conn=conn, **kwargs), conn
+    conn = _PeriodConnection(rows)
+    return get_period_context(WEEK_FROM, WEEK_TO, conn=conn, **kwargs), conn
 
 
 # --- V1 scope -----------------------------------------------------------------
@@ -301,7 +301,7 @@ def test_list_v1_sources_resolves_registry_entries() -> None:
     assert len(rss_entries) == 6
 
 
-def test_weekly_defaults_to_v1_sources() -> None:
+def test_period_defaults_to_v1_sources() -> None:
     ctx, conn = _context()
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
@@ -309,7 +309,7 @@ def test_weekly_defaults_to_v1_sources() -> None:
     assert {a["source"] for a in ctx["important_articles"]} <= set(V1_SOURCES)
 
 
-# --- weekly period + provenance -----------------------------------------------
+# --- period context + provenance ----------------------------------------------
 
 
 def test_response_shape_matches_spec_conceptual_contract() -> None:
@@ -382,8 +382,8 @@ def test_explicit_sources_narrow_within_v1() -> None:
 
 
 def test_empty_range_returns_empty_articles_with_period() -> None:
-    conn = _WeeklyConnection(ARTICLE_ROWS)
-    ctx = get_weekly_context(date(2026, 1, 5), date(2026, 1, 11), conn=conn)
+    conn = _PeriodConnection(ARTICLE_ROWS)
+    ctx = get_period_context(date(2026, 1, 5), date(2026, 1, 11), conn=conn)
     assert ctx["important_articles"] == []
     assert ctx["period"]["timezone"] == PANAMA_NAME
 
@@ -394,16 +394,16 @@ def test_naive_datetime_assumed_panama_not_server_local(
     monkeypatch.setenv("TZ", "Pacific/Kiritimati")  # UTC+14, far from Panama
     time.tzset()
     try:
-        conn = _WeeklyConnection([])
-        ctx = get_weekly_context(datetime(2026, 9, 7, 9, 0), datetime(2026, 9, 7, 10, 0), conn=conn)
+        conn = _PeriodConnection([])
+        ctx = get_period_context(datetime(2026, 9, 7, 9, 0), datetime(2026, 9, 7, 10, 0), conn=conn)
         assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
     finally:
         time.tzset()
 
 
 def test_aware_datetime_converted_to_panama() -> None:
-    conn = _WeeklyConnection([])
-    ctx = get_weekly_context(
+    conn = _PeriodConnection([])
+    ctx = get_period_context(
         datetime(2026, 9, 7, 14, 0, tzinfo=UTC),
         datetime(2026, 9, 8, 14, 0, tzinfo=UTC),
         conn=conn,
@@ -412,13 +412,13 @@ def test_aware_datetime_converted_to_panama() -> None:
 
 
 def test_invalid_inputs_rejected() -> None:
-    conn = _WeeklyConnection([])
+    conn = _PeriodConnection([])
     with pytest.raises(ValueError):
-        get_weekly_context(date(2026, 9, 13), date(2026, 9, 7), conn=conn)
+        get_period_context(date(2026, 9, 13), date(2026, 9, 7), conn=conn)
     with pytest.raises(TypeError):
-        get_weekly_context("2026-09-07", WEEK_TO, conn=conn)  # type: ignore[arg-type]
+        get_period_context("2026-09-07", WEEK_TO, conn=conn)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        get_weekly_context(WEEK_FROM, WEEK_TO, conn=conn, limit=0)
+        get_period_context(WEEK_FROM, WEEK_TO, conn=conn, limit=0)
 
 
 def test_limit_bounds_results() -> None:

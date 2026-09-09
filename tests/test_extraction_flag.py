@@ -3,7 +3,7 @@
 TDD vertical slices against the new seam:
 - `brain.service.flag_extraction` (validated; lane ValueError -> InvalidRequest)
 - `brain.flag.flag_extraction` (lane; ValueError/TypeError/LookupError only)
-- read-back annotation on `get_article` / `search_articles` / `get_weekly_context`
+- read-back annotation on `get_article` / `search_articles` / `get_period_context`
 
 Locked contract (ADR-0005 + CONTEXT.md Extraction Flag term):
 - FLAG_REASONS = thin | js_shell | paywall_challenge | truncated | wrong_body | other
@@ -71,7 +71,7 @@ SEARCH_EXPECTED_KEYS = {
     "flagged_by",
 }
 
-WEEKLY_EXPECTED_KEYS = {
+PERIOD_EXPECTED_KEYS = {
     "title",
     "url",
     "canonical_url",
@@ -130,7 +130,7 @@ _ARTICLE_COLS = (
     "flagged_by",
 )
 
-_WEEKLY_COLS = (
+_PERIOD_COLS = (
     "title",
     "url",
     "canonical_url",
@@ -221,7 +221,7 @@ class _FakeCursor:
 
 
 class _FakeConnection:
-    """Single fake serving cursor-style (article/search/flag) and execute-style (weekly)."""
+    """Single fake serving cursor-style (article/search/flag) and execute-style (period)."""
 
     def __init__(self, store: list[dict[str, Any]] | None = None) -> None:
         self.store = store if store is not None else _make_store()
@@ -235,7 +235,7 @@ class _FakeConnection:
         return _FakeCursor(self.store)
 
     def execute(self, sql: str, params: tuple | None = None) -> _FakeCursor:
-        """Weekly path, plus the ingest upsert path (ON CONFLICT DO NOTHING)."""
+        """Period path, plus the ingest upsert path (ON CONFLICT DO NOTHING)."""
         self.calls += 1
         head = sql.strip().upper()
         if head.startswith("SELECT ID FROM SOURCES"):
@@ -279,7 +279,7 @@ class _FakeConnection:
         ]
         kept.sort(key=lambda d: d["published_at"], reverse=True)
         cur = _FakeCursor(self.store)
-        cur._result = [tuple(d[c] for c in _WEEKLY_COLS) for d in kept[: int(limit)]]
+        cur._result = [tuple(d[c] for c in _PERIOD_COLS) for d in kept[: int(limit)]]
         return cur
 
     def commit(self) -> None:
@@ -538,7 +538,7 @@ def test_lane_bad_reason_and_detail_raise_value_error() -> None:
         )
 
 
-# --- slice 5: search/weekly annotation -------------------------------------------
+# --- slice 5: search/period annotation -------------------------------------------
 
 
 def test_search_annotates_flag_without_filtering() -> None:
@@ -566,12 +566,12 @@ def test_search_unflagged_rows_carry_none_flags() -> None:
         assert row["flagged_by"] is None
 
 
-def test_weekly_annotates_flag_without_filtering() -> None:
+def test_period_annotates_flag_without_filtering() -> None:
     conn = _FakeConnection()
     _flagged(conn)
-    ctx = service.get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
+    ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
     flagged = next(a for a in ctx["important_articles"] if a["url"] == ARTICLE_URL)
-    assert set(flagged.keys()) == WEEKLY_EXPECTED_KEYS
+    assert set(flagged.keys()) == PERIOD_EXPECTED_KEYS
     assert flagged["flag_reason"] == "thin"
     assert flagged["flag_detail"] == "body under 200 chars, looks like RSS teaser only"
     assert flagged["flagged_by"] == "digest-agent"

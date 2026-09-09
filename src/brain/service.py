@@ -15,13 +15,13 @@ from typing import Any
 
 from brain import article as _article
 from brain import flag as _flag
+from brain import period as _period
 from brain import search as _search
-from brain import weekly as _weekly
 from brain.sources import V1_SOURCES
 
 MAX_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
-DEFAULT_WEEKLY_LIMIT = _weekly.DEFAULT_LIMIT
+DEFAULT_PERIOD_LIMIT = _period.DEFAULT_LIMIT
 
 FLAG_KEYS = (
     "flag_reason",
@@ -40,7 +40,7 @@ SEARCH_RESULT_KEYS = (
     "snippet",
 ) + FLAG_KEYS
 
-WEEKLY_ARTICLE_KEYS = (
+PERIOD_ARTICLE_KEYS = (
     "title",
     "url",
     "canonical_url",
@@ -153,15 +153,15 @@ def search_articles(
     return _search.search_articles(keyword.strip(), limit=bound, conn=conn)
 
 
-def get_weekly_context(
+def get_period_context(
     from_date: date | datetime | str,
     to_date: date | datetime | str,
     *,
     sources: list[str] | None = None,
-    limit: int = DEFAULT_WEEKLY_LIMIT,
+    limit: int = DEFAULT_PERIOD_LIMIT,
     conn: Any | None = None,
 ) -> dict[str, Any]:
-    """Validated weekly evidence bundle for [from_date, to_date].
+    """Validated period evidence bundle for [from_date, to_date].
 
     Bounds accept `date`, `datetime`, or ISO strings (Panama interpretation
     downstream). Explicit `sources` must all be known names. V1 trend keys are
@@ -170,9 +170,9 @@ def get_weekly_context(
     start = _coerce_bound(from_date, label="from_date")
     end = _coerce_bound(to_date, label="to_date")
     names = _validate_sources(sources)
-    bound = _validate_limit(limit, default=DEFAULT_WEEKLY_LIMIT)
+    bound = _validate_limit(limit, default=DEFAULT_PERIOD_LIMIT)
     try:
-        return _weekly.get_weekly_context(start, end, sources=names, limit=bound, conn=conn)
+        return _period.get_period_context(start, end, sources=names, limit=bound, conn=conn)
     except InvalidRequest:
         raise
     except (ValueError, TypeError) as exc:

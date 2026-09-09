@@ -347,6 +347,6 @@ def list_v1_sources() -> list[dict[str, Any]]:
 
     V1 covers all 20 curated sources in registry order (RSS plus
     sitemap/hub/url-set lanes); explicit ``sources=[...]`` still narrows
-    weekly/flows queries to a subset.
+    period/flows queries to a subset.
     """
     return [get_source(name) for name in V1_SOURCES]

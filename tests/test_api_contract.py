@@ -33,7 +33,7 @@ SEARCH_PAYLOAD = [
     }
 ]
 
-WEEKLY_PAYLOAD = {
+PERIOD_PAYLOAD = {
     "period": {
         "from": "2026-09-07T00:00:00-05:00",
         "to": "2026-09-14T00:00:00-05:00",
@@ -78,8 +78,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     )
     monkeypatch.setattr(
         service,
-        "get_weekly_context",
-        lambda from_date, to_date, **kw: WEEKLY_PAYLOAD,
+        "get_period_context",
+        lambda from_date, to_date, **kw: PERIOD_PAYLOAD,
     )
     # raising=False: parallel-lane compatible (green before/after Lane 1 lands).
     monkeypatch.setattr(
@@ -122,27 +122,27 @@ def test_search_validation_maps_to_422() -> None:
     assert live.get("/search").status_code == 422  # missing q
 
 
-def test_weekly_returns_service_payload(client: TestClient) -> None:
+def test_period_returns_service_payload(client: TestClient) -> None:
     resp = client.post(
-        "/weekly-context",
+        "/period-context",
         json={"from_date": "2026-09-07", "to_date": "2026-09-13"},
     )
     assert resp.status_code == 200
-    assert resp.json() == WEEKLY_PAYLOAD
+    assert resp.json() == PERIOD_PAYLOAD
 
 
-def test_weekly_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_period_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
 
     def fake(from_date: object, to_date: object, **kw: object) -> dict:
         seen.update(kw)
         seen["from_date"] = from_date
         seen["to_date"] = to_date
-        return WEEKLY_PAYLOAD
+        return PERIOD_PAYLOAD
 
-    monkeypatch.setattr(service, "get_weekly_context", fake)
+    monkeypatch.setattr(service, "get_period_context", fake)
     resp = TestClient(app).post(
-        "/weekly-context",
+        "/period-context",
         json={
             "from_date": "2026-09-07",
             "to_date": "2026-09-13",
@@ -155,24 +155,24 @@ def test_weekly_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> N
     assert seen["limit"] == 5
 
 
-def test_weekly_validation_maps_to_422() -> None:
+def test_period_validation_maps_to_422() -> None:
     live = TestClient(app)
     assert (
         live.post(
-            "/weekly-context", json={"from_date": "not-a-date", "to_date": "2026-09-13"}
+            "/period-context", json={"from_date": "not-a-date", "to_date": "2026-09-13"}
         ).status_code
         == 422
     )
     assert (
         live.post(
-            "/weekly-context",
+            "/period-context",
             json={"from_date": "2026-09-07", "to_date": "2026-09-13", "sources": ["Nope"]},
         ).status_code
         == 422
     )
     assert (
         live.post(
-            "/weekly-context",
+            "/period-context",
             json={"from_date": "2026-09-07", "to_date": "2026-09-13", "limit": 101},
         ).status_code
         == 422
@@ -183,7 +183,7 @@ def test_openapi_docs_demoable(client: TestClient) -> None:
     spec = client.get("/openapi.json")
     assert spec.status_code == 200
     paths = spec.json()["paths"]
-    assert "/search" in paths and "/weekly-context" in paths
+    assert "/search" in paths and "/period-context" in paths
     assert "/flag-extraction" in paths
     assert client.get("/docs").status_code == 200
 

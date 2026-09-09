@@ -51,7 +51,7 @@ SEARCH_PAYLOAD = [
     }
 ]
 
-WEEKLY_PAYLOAD = {
+PERIOD_PAYLOAD = {
     "period": {
         "from": "2026-09-07T00:00:00-05:00",
         "to": "2026-09-14T00:00:00-05:00",
@@ -86,7 +86,7 @@ def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
         service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
     )
     monkeypatch.setattr(
-        service, "get_weekly_context", lambda from_date, to_date, **kw: WEEKLY_PAYLOAD
+        service, "get_period_context", lambda from_date, to_date, **kw: PERIOD_PAYLOAD
     )
     # raising=False: parallel-lane compatible (green before/after Lane 1 lands).
     monkeypatch.setattr(
@@ -111,7 +111,7 @@ def test_mcp_registers_exactly_four_tools() -> None:
     assert sorted(t.name for t in tools) == [
         "flag_extraction",
         "get_article",
-        "get_weekly_context",
+        "get_period_context",
         "search_articles",
     ]
 
@@ -129,16 +129,16 @@ def test_search_api_equals_mcp_tool(stubbed_service: None) -> None:
     assert api_payload["results"] == _unwrap_call_tool(out)
 
 
-def test_weekly_api_equals_mcp_tool(stubbed_service: None) -> None:
+def test_period_api_equals_mcp_tool(stubbed_service: None) -> None:
     body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
-    api_payload = TestClient(app).post("/weekly-context", json=body).json()
-    assert api_payload == WEEKLY_PAYLOAD
+    api_payload = TestClient(app).post("/period-context", json=body).json()
+    assert api_payload == PERIOD_PAYLOAD
     assert (
-        MCP_SERVER.get_weekly_context(from_date="2026-09-07", to_date="2026-09-13")
-        == WEEKLY_PAYLOAD
+        MCP_SERVER.get_period_context(from_date="2026-09-07", to_date="2026-09-13")
+        == PERIOD_PAYLOAD
     )
-    out = asyncio.run(MCP_SERVER.mcp.call_tool("get_weekly_context", dict(body, limit=50)))
-    assert _unwrap_call_tool(out) == WEEKLY_PAYLOAD
+    out = asyncio.run(MCP_SERVER.mcp.call_tool("get_period_context", dict(body, limit=50)))
+    assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
     assert api_payload == _unwrap_call_tool(out)
 
 
@@ -172,7 +172,7 @@ def test_mcp_tools_surface_service_validation(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.search_articles(keyword="   ")
     with pytest.raises(service.InvalidRequest):
-        MCP_SERVER.get_weekly_context(from_date="nope", to_date="2026-09-13")
+        MCP_SERVER.get_period_context(from_date="nope", to_date="2026-09-13")
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.flag_extraction(identifier="   ")
     with pytest.raises(service.InvalidRequest):

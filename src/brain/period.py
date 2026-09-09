@@ -1,6 +1,6 @@
-"""Weekly intelligence context (Ticket 04) — grounded evidence, no trend claims.
+"""Period intelligence context (Ticket 04) — grounded evidence, no trend claims.
 
-``get_weekly_context`` prepares the evidence bundle for weekly synthesis over
+``get_period_context`` prepares the evidence bundle for period synthesis over
 an explicit caller-supplied period interpreted in ``America/Panama``:
 
 - naive ``date``/``datetime`` inputs are assumed America/Panama (never
@@ -32,7 +32,7 @@ PANAMA_NAME = "America/Panama"
 
 DEFAULT_LIMIT = 50
 
-WEEKLY_SQL = """\
+PERIOD_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author,
        d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
@@ -67,7 +67,7 @@ def _iso_tz_aware(value: Any) -> Any:
     return value
 
 
-def get_weekly_context(
+def get_period_context(
     from_date: date | datetime,
     to_date: date | datetime,
     *,
@@ -75,10 +75,10 @@ def get_weekly_context(
     limit: int = DEFAULT_LIMIT,
     conn: Any | None = None,
 ) -> dict[str, Any]:
-    """Return the weekly evidence bundle for ``[from_date, to_date]``.
+    """Return the period evidence bundle for ``[from_date, to_date]``.
 
     (``from`` is a Python keyword, hence ``from_date``/``to_date``; positional
-    ``get_weekly_context(a, b)`` reads as (from, to). Plain dates are
+    ``get_period_context(a, b)`` reads as (from, to). Plain dates are
     day-inclusive; datetimes are half-open ``[from, to)``. Explicit
     ``sources`` must have seed rows in the ``sources`` table (the V1 twenty
     are seeded by migrations 001 + 006) or they match no articles.
@@ -106,7 +106,7 @@ def get_weekly_context(
         owns_connection = True
     assert conn is not None
     try:
-        cursor = conn.execute(WEEKLY_SQL, (start, end, names, limit))
+        cursor = conn.execute(PERIOD_SQL, (start, end, names, limit))
         rows = cursor.fetchall()
     finally:
         if owns_connection:

@@ -8,7 +8,7 @@ TDD: written FIRST (red) against the new seam:
 
 Covers: known URL returns full content + provenance, canonical-URL match,
 unknown/blank -> InvalidRequest + HTTP 422 shape + MCP tool error parity,
-search/weekly list shapes unchanged.
+search/period list shapes unchanged.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ SEARCH_RESULT_KEYS = {
     "flagged_by",
 }
 
-WEEKLY_ARTICLE_KEYS = {
+PERIOD_ARTICLE_KEYS = {
     "title",
     "url",
     "canonical_url",
@@ -289,10 +289,10 @@ def test_search_shape_unchanged() -> None:
         assert "content" not in row
 
 
-def test_weekly_shape_unchanged() -> None:
+def test_period_shape_unchanged() -> None:
     from datetime import date
 
-    ctx = service.get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConn())
+    ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConn())
     assert set(ctx) == {
         "period",
         "important_articles",
@@ -311,7 +311,7 @@ def test_weekly_shape_unchanged() -> None:
     ):
         assert ctx[key] == []
     for article in ctx["important_articles"]:
-        assert set(article) == WEEKLY_ARTICLE_KEYS
+        assert set(article) == PERIOD_ARTICLE_KEYS
         assert "content" not in article
 
 
@@ -366,12 +366,12 @@ class _SearchConnection:
         pass
 
 
-class _WeeklyCursor:
+class _PeriodCursor:
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
         self._result: list[tuple] = []
 
-    def execute(self, sql: str, params: tuple | None = None) -> _WeeklyCursor:
+    def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         assert params is not None
         start, end, names, limit = params
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
@@ -383,7 +383,7 @@ class _WeeklyCursor:
         return self._result
 
 
-class _WeeklyConn:
+class _PeriodConn:
     def __init__(self) -> None:
         self._rows = [
             (
@@ -400,8 +400,8 @@ class _WeeklyConn:
             )
         ]
 
-    def execute(self, sql: str, params: tuple | None = None) -> _WeeklyCursor:
-        return _WeeklyCursor(self._rows).execute(sql, params)
+    def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
+        return _PeriodCursor(self._rows).execute(sql, params)
 
     def commit(self) -> None:
         pass

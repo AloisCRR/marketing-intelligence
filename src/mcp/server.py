@@ -18,10 +18,12 @@ disabled (local-dev open mode).
 
 from __future__ import annotations
 
+import json
 import sys
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -30,7 +32,23 @@ from starlette.routing import Route
 from brain import service
 from brain.auth import StaticTokenVerifier, is_auth_configured, mcp_auth_settings
 from brain.healthcheck import health_payload  # noqa: F401  (installs access-log filter)
-from brain.service import DEFAULT_SEARCH_LIMIT, DEFAULT_WEEKLY_LIMIT
+from brain.service import DEFAULT_PERIOD_LIMIT, DEFAULT_SEARCH_LIMIT
+
+SERVER_INSTRUCTIONS = (
+    "Marketing Intelligence is a persistent marketing/GenZ/culture/tech intelligence platform "
+    "(not a newsletter generator): deterministic ingestion feeds a Postgres system of record, "
+    "exposed here through a semantic layer for an AI digest consumer. "
+    "You are a consumer of this layer — discover evidence with search_articles, read full text "
+    "with get_article, and never own or re-run scraping/ingestion yourself. "
+    "For any period synthesis, call get_period_context(from_date, to_date) with "
+    "ISO dates (YYYY-MM-DD) and draft only from its important_articles evidence bundle, "
+    "keeping provenance URLs attached. "
+    "A digest is just one usage of a bundle: the caller picks any range and builds "
+    "the digest from it — there is no built-in schedule. "
+    "Use flag_extraction only to report improperly extracted content (thin body, JS shell, "
+    "paywall challenge, truncated text, wrong body) — never for factual disagreements. "
+    "Prefer read-only tools for exploration; flag_extraction is the sole mutating tool."
+)
 
 
 def create_mcp() -> FastMCP:
@@ -43,50 +61,198 @@ def create_mcp() -> FastMCP:
     """
     if is_auth_configured():
         return FastMCP(
-            "trend-intelligence-brain",
+            "Marketing Intelligence",
+            instructions=SERVER_INSTRUCTIONS,
             auth=mcp_auth_settings(),
             token_verifier=StaticTokenVerifier(),
         )
-    return FastMCP("trend-intelligence-brain")
+    return FastMCP("Marketing Intelligence", instructions=SERVER_INSTRUCTIONS)
 
 
 mcp = create_mcp()
 
 
-@mcp.tool()
-def search_articles(keyword: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[dict[str, Any]]:
-    """Search articles by keyword, newest first (11 keys: 7 base + 4 flag keys)."""
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def search_articles(
+    keyword: Annotated[str, "Keyword to search in titles/bodies (non-blank)."],
+    limit: Annotated[int, "Max results, 1-100."] = DEFAULT_SEARCH_LIMIT,
+) -> list[dict[str, Any]]:
+    """Search stored articles by keyword, newest first.
+
+    Use for discovery: find candidate evidence before reading full text with
+    get_article. This is the first step of every research workflow.
+
+    Args:
+        keyword: Non-blank search term matched against titles/bodies.
+        limit: Max articles to return, 1-100 (default 20).
+
+    Returns:
+        List of article dicts (11 keys: 7 base + 4 extraction-flag keys),
+        ordered newest first; empty list when nothing matches.
+
+    Raises:
+        InvalidRequest: If keyword is blank or limit is outside 1-100.
+    """
     return service.search_articles(keyword, limit=limit)
 
 
-@mcp.tool()
-def get_weekly_context(
-    from_date: str,
-    to_date: str,
-    sources: list[str] | None = None,
-    limit: int = DEFAULT_WEEKLY_LIMIT,
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def get_period_context(
+    from_date: Annotated[str, "Range start, ISO date YYYY-MM-DD (inclusive)."],
+    to_date: Annotated[str, "Range end, ISO date YYYY-MM-DD (inclusive)."],
+    sources: Annotated[
+        list[str] | None, "Optional source filter; unknown names are rejected."
+    ] = None,
+    limit: Annotated[int, "Max articles in bundle, 1-100."] = DEFAULT_PERIOD_LIMIT,
 ) -> dict[str, Any]:
-    """Weekly evidence bundle for [from_date, to_date] (ISO dates)."""
-    return service.get_weekly_context(from_date, to_date, sources=sources, limit=limit)
+    """Fetch the evidence bundle for a date range.
+
+    Use for period synthesis: draft exclusively from the
+    returned important_articles, keeping their URLs/provenance attached and
+    separating observations from interpretations. A digest is just
+    the case where the caller picks a range (often a week).
+
+    Args:
+        from_date: Range start as ISO date (YYYY-MM-DD, inclusive).
+        to_date: Range end as ISO date (YYYY-MM-DD, inclusive).
+        sources: Optional allowlist of source names; None means all sources.
+        limit: Max articles in the bundle, 1-100 (default 50).
+
+    Returns:
+        Evidence-bundle dict with period and important_articles entries.
+
+    Raises:
+        InvalidRequest: If dates are malformed/unordered, sources unknown,
+            or limit is outside 1-100.
+    """
+    return service.get_period_context(from_date, to_date, sources=sources, limit=limit)
 
 
-@mcp.tool()
-def get_article(identifier: str) -> dict[str, Any]:
-    """One article's full stored text plus provenance, by URL/canonical URL."""
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def get_article(
+    identifier: Annotated[str, "Article URL or canonical URL of the stored document."],
+) -> dict[str, Any]:
+    """Read one article's full stored text plus provenance.
+
+    Use after search_articles (or a period bundle) when a snippet is not
+    enough and the digest/synthesis needs the full body with citations.
+
+    Args:
+        identifier: Article URL or canonical URL.
+
+    Returns:
+        Full article dict including body text and provenance fields.
+
+    Raises:
+        InvalidRequest: If the identifier is blank, unknown, or ambiguous.
+    """
     return service.get_article(identifier)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
 def flag_extraction(
-    identifier: str,
-    reason: str | None = None,
-    detail: str | None = None,
-    flagged_by: str | None = None,
-    clear: bool = False,
+    identifier: Annotated[str, "Article URL or canonical URL to flag."],
+    reason: Annotated[
+        str | None,
+        "One of thin, js_shell, paywall_challenge, truncated, wrong_body, other.",
+    ] = None,
+    detail: Annotated[
+        str | None, "Details (<=2000 chars; required when reason is 'other')."
+    ] = None,
+    flagged_by: Annotated[str | None, "Reporter label (<=100 chars)."] = None,
+    clear: Annotated[bool, "When true, clear the flag instead of setting it."] = False,
 ) -> dict[str, Any]:
-    """Flag (or clear) an extraction issue on one article; returns updated Article."""
+    """Flag (or clear) an extraction problem on one article.
+
+    Use only for improperly extracted content (thin body, JS shell,
+    paywall/bot challenge, truncated text, wrong body) — never for factual
+    disputes about an otherwise well-extracted article. This is the only
+    mutating tool on this server.
+
+    Args:
+        identifier: Article URL or canonical URL.
+        reason: One of FLAG_REASONS (thin, js_shell, paywall_challenge,
+            truncated, wrong_body, other).
+        detail: Free-text detail, max 2000 chars; required when
+            reason is "other".
+        flagged_by: Reporter label, max 100 chars.
+        clear: When True, clear the flag (NULLs flag columns) instead of
+            setting it.
+
+    Returns:
+        The updated article dict with flag columns applied or cleared.
+
+    Raises:
+        InvalidRequest: If the identifier is unknown or flag fields are
+            invalid (bad reason, missing/oversize detail, oversize
+            flagged_by).
+    """
     return service.flag_extraction(  # type: ignore[attr-defined, no-any-return]
         identifier, reason=reason, detail=detail, flagged_by=flagged_by, clear=clear
+    )
+
+
+@mcp.resource("brain://about", mime_type="application/json")
+def read_about() -> str:
+    """Static overview: coverage and recommended workflow."""
+    return json.dumps(
+        {
+            "server": "Marketing Intelligence",
+            "what": "Persistent marketing/GenZ/culture/tech intelligence platform "
+            "(not a newsletter generator): deterministic ingestion into a "
+            "Postgres system of record, served to AI digest consumers.",
+            "v1_sources": "20 curated V1 sources (RSS + sitemap/hub/url-set lanes).",
+            "workflow": "search_articles for discovery -> get_article for full text -> "
+            "get_period_context(from_date, to_date) for any period bundle "
+            "(a digest is built from a caller-chosen range) -> flag_extraction for bad content.",
+            "resources": ["brain://about", "article://{identifier}", "period://{from}/{to}"],
+            "prompts": ["period_digest", "investigate_topic"],
+        }
+    )
+
+
+@mcp.resource("article://{identifier}", mime_type="application/json")
+def read_article(identifier: str) -> str:
+    """Full stored article as JSON, by URL/canonical URL."""
+    return json.dumps(service.get_article(identifier))
+
+
+@mcp.resource("period://{from_date}/{to_date}", mime_type="application/json")
+def read_period_bundle(from_date: str, to_date: str) -> str:
+    """Evidence bundle as JSON for an ISO date range."""
+    return json.dumps(service.get_period_context(from_date, to_date))
+
+
+@mcp.prompt()
+def period_digest(period: str, focus: str | None = None) -> str:
+    """Scaffold for drafting a digest from a period evidence bundle.
+
+    Args:
+        period: Human label for the bundle range (e.g. "2026-08-31 to 2026-09-07").
+        focus: Optional theme to emphasize (e.g. "GenZ culture").
+    """
+    scope = f" with focus on {focus}" if focus else ""
+    return (
+        f"Draft a digest for {period}{scope} "
+        "from get_period_context important_articles only. "
+        "Cite every claim with its article URL/provenance, "
+        "separate observations from interpretations, "
+        "and flag (do not silently fix) any badly extracted content via flag_extraction."
+    )
+
+
+@mcp.prompt()
+def investigate_topic(keyword: str) -> str:
+    """Scaffold for a deep dive on one topic from stored evidence.
+
+    Args:
+        keyword: Search term to start the investigation.
+    """
+    return (
+        f"Investigate '{keyword}': call search_articles(keyword={keyword!r}), "
+        "then get_article for the most relevant hits, then synthesize what the "
+        "stored evidence supports with URL citations, "
+        "clearly separating observations from interpretations."
     )
 
 

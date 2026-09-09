@@ -3,8 +3,8 @@
 Covers the shared validated interface in `brain.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
 - 11-key search schema + provenance + tz-aware published_at
-- weekly bundle shape, provenance, [] trend keys, Panama tz handling
-- string coercion for weekly bounds, bounded limit (101 rejected)
+- period bundle shape, provenance, [] trend keys, Panama tz handling
+- string coercion for period bounds, bounded limit (101 rejected)
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from brain.service import (  # noqa: E402
+    DEFAULT_PERIOD_LIMIT,
     DEFAULT_SEARCH_LIMIT,
-    DEFAULT_WEEKLY_LIMIT,
     MAX_LIMIT,
     InvalidRequest,
-    get_weekly_context,
+    get_period_context,
     search_articles,
 )
 
@@ -44,7 +44,7 @@ SEARCH_EXPECTED_KEYS = {
     "flagged_by",
 }
 
-WEEKLY_EXPECTED_KEYS = {
+PERIOD_EXPECTED_KEYS = {
     "title",
     "url",
     "canonical_url",
@@ -132,7 +132,7 @@ class _SearchConnection:
         self.closed += 1
 
 
-WEEKLY_ROWS = [
+PERIOD_ROWS = [
     # (title, url, canonical_url, source, published_at, author,
     #  flag_reason, flag_detail, flagged_at, flagged_by)
     (
@@ -162,7 +162,7 @@ WEEKLY_ROWS = [
 ]
 
 
-class _WeeklyCursor:
+class _PeriodCursor:
     """Execute-style fake with real range/source/limit semantics."""
 
     def __init__(self, rows: list[tuple]) -> None:
@@ -170,7 +170,7 @@ class _WeeklyCursor:
         self.last_params: tuple | None = None
         self._result: list[tuple] = []
 
-    def execute(self, sql: str, params: tuple | None = None) -> _WeeklyCursor:
+    def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         assert params is not None
         self.last_params = params
         start, end, names, limit = params
@@ -183,14 +183,14 @@ class _WeeklyCursor:
         return self._result
 
 
-class _WeeklyConnection:
-    def __init__(self, rows: list[tuple] = WEEKLY_ROWS) -> None:
+class _PeriodConnection:
+    def __init__(self, rows: list[tuple] = PERIOD_ROWS) -> None:
         self._rows = rows
         self.calls = 0
 
-    def execute(self, sql: str, params: tuple | None = None) -> _WeeklyCursor:
+    def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         self.calls += 1
-        return _WeeklyCursor(self._rows).execute(sql, params)
+        return _PeriodCursor(self._rows).execute(sql, params)
 
     def commit(self) -> None:
         pass
@@ -240,11 +240,11 @@ def test_search_injected_conn_is_not_closed() -> None:
     assert conn.closed == 0
 
 
-# --- weekly ------------------------------------------------------------------
+# --- period ------------------------------------------------------------------
 
 
-def test_weekly_shape_provenance_and_empty_trend_keys() -> None:
-    ctx = get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConnection())
+def test_period_shape_provenance_and_empty_trend_keys() -> None:
+    ctx = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
     assert set(ctx) == {
         "period",
         "important_articles",
@@ -267,80 +267,80 @@ def test_weekly_shape_provenance_and_empty_trend_keys() -> None:
     articles = ctx["important_articles"]
     assert [a["title"] for a in articles] == ["Signal Loss Rebuild", "TikTok Adds Voice Notes"]
     for article in articles:
-        assert set(article) == WEEKLY_EXPECTED_KEYS
+        assert set(article) == PERIOD_EXPECTED_KEYS
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
 
 
-def test_weekly_panama_day_boundaries() -> None:
-    ctx = get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConnection())
+def test_period_panama_day_boundaries() -> None:
+    ctx = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
     assert ctx["period"]["from"] == "2026-09-07T00:00:00-05:00"
     assert ctx["period"]["to"] == "2026-09-14T00:00:00-05:00"
 
 
-def test_weekly_string_bounds_coerced_like_dates() -> None:
-    from_str = get_weekly_context("2026-09-07", "2026-09-13", conn=_WeeklyConnection())
-    from_dates = get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=_WeeklyConnection())
+def test_period_string_bounds_coerced_like_dates() -> None:
+    from_str = get_period_context("2026-09-07", "2026-09-13", conn=_PeriodConnection())
+    from_dates = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
     assert from_str["period"] == from_dates["period"]
     assert from_str["important_articles"] == from_dates["important_articles"]
     # Datetime strings stay exact instants.
-    ctx = get_weekly_context("2026-09-07T09:00:00", "2026-09-08T09:00:00", conn=_WeeklyConnection())
+    ctx = get_period_context("2026-09-07T09:00:00", "2026-09-08T09:00:00", conn=_PeriodConnection())
     assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
 
 
-def test_weekly_naive_datetime_assumed_panama() -> None:
-    ctx = get_weekly_context(
-        datetime(2026, 9, 7, 9, 0), datetime(2026, 9, 7, 10, 0), conn=_WeeklyConnection()
+def test_period_naive_datetime_assumed_panama() -> None:
+    ctx = get_period_context(
+        datetime(2026, 9, 7, 9, 0), datetime(2026, 9, 7, 10, 0), conn=_PeriodConnection()
     )
     assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
-    ctx2 = get_weekly_context(
+    ctx2 = get_period_context(
         datetime(2026, 9, 7, 14, 0, tzinfo=_dt.UTC),
         datetime(2026, 9, 8, 14, 0, tzinfo=_dt.UTC),
-        conn=_WeeklyConnection(),
+        conn=_PeriodConnection(),
     )
     assert ctx2["period"]["from"] == "2026-09-07T09:00:00-05:00"
 
 
-def test_weekly_unknown_source_rejected() -> None:
+def test_period_unknown_source_rejected() -> None:
     with pytest.raises(InvalidRequest):
-        get_weekly_context(
+        get_period_context(
             date(2026, 9, 7),
             date(2026, 9, 13),
             sources=["No Such Source"],
-            conn=_WeeklyConnection(),
+            conn=_PeriodConnection(),
         )
     with pytest.raises(InvalidRequest):
-        get_weekly_context(
+        get_period_context(
             date(2026, 9, 7),
             date(2026, 9, 13),
             sources="MarTech",
-            conn=_WeeklyConnection(),  # type: ignore[arg-type]
+            conn=_PeriodConnection(),  # type: ignore[arg-type]
         )
 
 
-def test_weekly_explicit_known_source_passes_through() -> None:
-    ctx = get_weekly_context(
+def test_period_explicit_known_source_passes_through() -> None:
+    ctx = get_period_context(
         date(2026, 9, 7),
         date(2026, 9, 13),
         sources=["MarTech"],
-        conn=_WeeklyConnection(),
+        conn=_PeriodConnection(),
     )
     assert [a["title"] for a in ctx["important_articles"]] == ["Signal Loss Rebuild"]
 
 
-def test_weekly_bad_bounds_and_limits_rejected() -> None:
-    conn = _WeeklyConnection()
+def test_period_bad_bounds_and_limits_rejected() -> None:
+    conn = _PeriodConnection()
     with pytest.raises(InvalidRequest):
-        get_weekly_context(date(2026, 9, 13), date(2026, 9, 7), conn=conn)
+        get_period_context(date(2026, 9, 13), date(2026, 9, 7), conn=conn)
     with pytest.raises(InvalidRequest):
-        get_weekly_context("not-a-date", date(2026, 9, 7), conn=conn)
+        get_period_context("not-a-date", date(2026, 9, 7), conn=conn)
     with pytest.raises(InvalidRequest):
-        get_weekly_context("", date(2026, 9, 7), conn=conn)
+        get_period_context("", date(2026, 9, 7), conn=conn)
     with pytest.raises(InvalidRequest):
-        get_weekly_context(123, date(2026, 9, 7), conn=conn)  # type: ignore[arg-type]
+        get_period_context(123, date(2026, 9, 7), conn=conn)  # type: ignore[arg-type]
     with pytest.raises(InvalidRequest):
-        get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=0)
+        get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=0)
     with pytest.raises(InvalidRequest):
-        get_weekly_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=MAX_LIMIT + 1)
-    assert DEFAULT_WEEKLY_LIMIT == 50
+        get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=MAX_LIMIT + 1)
+    assert DEFAULT_PERIOD_LIMIT == 50
     assert MAX_LIMIT == 100
