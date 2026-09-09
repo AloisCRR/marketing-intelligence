@@ -45,7 +45,7 @@ FULL_CONTENT = (
 )
 
 # (title, url, canonical_url, source, published_at, author, content,
-#  flag_reason, flag_detail, flagged_at, flagged_by)
+#  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
 ARTICLE_ROWS = [
     (
         "TikTok Adds Voice Notes",
@@ -55,6 +55,8 @@ ARTICLE_ROWS = [
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
         FULL_CONTENT,
+        None,
+        None,
         None,
         None,
         None,
@@ -74,6 +76,9 @@ ARTICLE_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 SEARCH_RESULT_KEYS = {
@@ -88,6 +93,9 @@ SEARCH_RESULT_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -101,6 +109,9 @@ PERIOD_ARTICLE_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 
@@ -120,7 +131,12 @@ class _ArticleCursor:
         self.last_sql = sql
         self.last_params = params
         ident = params[0] if params else None
-        if "canonical_url" in sql:
+        if sql.strip().upper().startswith("SELECT READ_AT"):
+            # Read-state fetch: params (url_key, canonical_key).
+            canon = params[1] if params and len(params) > 1 else None
+            matched = [r for r in self._rows if r[1] == ident or r[2] == canon]
+            self._result = [(r[11], r[12]) for r in matched] if matched else []
+        elif "canonical_url" in sql:
             self._result = [r for r in self._rows if r[2] == ident]
         else:
             self._result = [r for r in self._rows if r[1] == ident]
@@ -196,6 +212,10 @@ def test_known_url_returns_full_content_with_provenance() -> None:
     assert "snippet" not in article
     parsed = _dt.datetime.fromisoformat(str(article["published_at"]))
     assert parsed.tzinfo is not None
+    # Unread by default: read annotation present, all null.
+    assert article["read"] is False
+    assert article["read_at"] is None
+    assert article["read_by"] is None
 
 
 def test_canonical_url_match() -> None:
@@ -358,6 +378,8 @@ class _SearchConnection:
                     None,
                     None,
                     None,
+                    None,
+                    None,
                 )
             ]
         )
@@ -393,6 +415,8 @@ class _PeriodConn:
                 "Social Media Today",
                 _utc(2026, 9, 8, 14, 30),
                 "Andrew Hutchinson",
+                None,
+                None,
                 None,
                 None,
                 None,

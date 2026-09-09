@@ -35,12 +35,28 @@ DEFAULT_LIMIT = 50
 PERIOD_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author,
-       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
+       d.read_at, d.read_by
   FROM documents d
   JOIN sources s ON s.id = d.source_id
  WHERE d.published_at >= %s
    AND d.published_at < %s
    AND s.name = ANY(%s)
+ ORDER BY d.published_at DESC
+ LIMIT %s\
+"""
+
+PERIOD_SQL_EXCLUDE_READ = """\
+SELECT d.title, d.url, d.canonical_url, s.name AS source,
+       d.published_at, d.author,
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
+       d.read_at, d.read_by
+  FROM documents d
+  JOIN sources s ON s.id = d.source_id
+ WHERE d.published_at >= %s
+   AND d.published_at < %s
+   AND s.name = ANY(%s)
+   AND d.read_at IS NULL
  ORDER BY d.published_at DESC
  LIMIT %s\
 """
@@ -74,6 +90,7 @@ def get_period_context(
     sources: list[str] | None = None,
     limit: int = DEFAULT_LIMIT,
     conn: Any | None = None,
+    exclude_read: bool = False,
 ) -> dict[str, Any]:
     """Return the period evidence bundle for ``[from_date, to_date]``.
 
@@ -82,13 +99,21 @@ def get_period_context(
     day-inclusive; datetimes are half-open ``[from, to)``. Explicit
     ``sources`` must have seed rows in the ``sources`` table (the V1 twenty
     are seeded by migrations 001 + 006) or they match no articles.
+    ``exclude_read`` filters out marked (read) articles via
+    ``AND d.read_at IS NULL``; default False annotates without filtering.
 
     Returns ``period {from, to, timezone}`` plus ``important_articles`` —
     each with ``title, url, canonical_url, source, published_at, author``
     provenance plus the Extraction Flag annotation (``flag_reason,
-    flag_detail, flagged_at, flagged_by`` — ``None`` when unflagged),
+    flag_detail, flagged_at, flagged_by`` — ``None`` when unflagged) and the
+    Read State annotation (``read`` bool derived from ``read_at IS NOT
+    NULL``, plus ``read_at, read_by`` — ``None`` when unread),
     newest-first, bounded by ``limit`` — plus the V1-empty
     trend keys documented above.
+
+    Raises:
+        ValueError: non-bool ``exclude_read`` (alongside the existing
+            empty-period / bad-limit failures).
     """
     start = _coerce_bound(from_date, is_end=False)
     end = _coerce_bound(to_date, is_end=True)
@@ -98,7 +123,10 @@ def get_period_context(
         )
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError(f"limit must be a positive int, got {limit!r}")
+    if not isinstance(exclude_read, bool):
+        raise ValueError(f"exclude_read must be a bool, got {exclude_read!r}")
     names = list(sources) if sources is not None else list(V1_SOURCES)
+    sql = PERIOD_SQL_EXCLUDE_READ if exclude_read else PERIOD_SQL
 
     owns_connection = False
     if conn is None:
@@ -106,7 +134,7 @@ def get_period_context(
         owns_connection = True
     assert conn is not None
     try:
-        cursor = conn.execute(PERIOD_SQL, (start, end, names, limit))
+        cursor = conn.execute(sql, (start, end, names, limit))
         rows = cursor.fetchall()
     finally:
         if owns_connection:
@@ -128,7 +156,12 @@ def get_period_context(
             flag_detail = row.get("flag_detail")
             flagged_at = row.get("flagged_at")
             flagged_by = row.get("flagged_by")
+            read_at = row.get("read_at")
+            read_by = row.get("read_by")
         else:
+            # Tuple rows predate the read annotation (10 cols); newer rows
+            # carry read_at/read_by (12 cols). Both shapes are accepted.
+            items = tuple(row)
             (
                 title,
                 url,
@@ -140,7 +173,9 @@ def get_period_context(
                 flag_detail,
                 flagged_at,
                 flagged_by,
-            ) = row
+            ) = items[:10]
+            read_at = items[10] if len(items) > 10 else None
+            read_by = items[11] if len(items) > 11 else None
         articles.append(
             {
                 "title": title,
@@ -153,6 +188,9 @@ def get_period_context(
                 "flag_detail": flag_detail,
                 "flagged_at": _iso_tz_aware(flagged_at),
                 "flagged_by": flagged_by,
+                "read": read_at is not None,
+                "read_at": _iso_tz_aware(read_at),
+                "read_by": read_by,
             }
         )
     return {

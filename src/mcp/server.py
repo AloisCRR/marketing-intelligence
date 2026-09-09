@@ -49,7 +49,8 @@ SERVER_INSTRUCTIONS = (
     "the digest from it — there is no built-in schedule. "
     "Use flag_extraction only to report improperly extracted content (thin body, JS shell, "
     "paywall challenge, truncated text, wrong body) — never for factual disagreements. "
-    "Prefer read-only tools for exploration; flag_extraction is the sole mutating tool."
+    "Prefer read-only tools for exploration; flag_extraction and mark_article_read "
+    "are the mutating tools."
 )
 
 
@@ -78,6 +79,7 @@ mcp = create_mcp()
 def search_articles(
     keyword: Annotated[str, "Keyword to search in titles/bodies (non-blank)."],
     limit: Annotated[int, "Max results, 1-100."] = DEFAULT_SEARCH_LIMIT,
+    exclude_read: Annotated[bool, "When true, hide read articles."] = False,
 ) -> list[dict[str, Any]]:
     """Search stored articles by keyword, newest first.
 
@@ -87,15 +89,16 @@ def search_articles(
     Args:
         keyword: Non-blank search term matched against titles/bodies.
         limit: Max articles to return, 1-100 (default 20).
+        exclude_read: When True, hide read articles (default False annotates only).
 
     Returns:
-        List of article dicts (11 keys: 7 base + 4 extraction-flag keys),
+        List of article dicts (14 keys: 7 base + 4 extraction-flag keys + 3 read keys),
         ordered newest first; empty list when nothing matches.
 
     Raises:
         InvalidRequest: If keyword is blank or limit is outside 1-100.
     """
-    return service.search_articles(keyword, limit=limit)
+    return service.search_articles(keyword, limit=limit, exclude_read=exclude_read)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
@@ -106,6 +109,7 @@ def get_period_context(
         list[str] | None, "Optional source filter; unknown names are rejected."
     ] = None,
     limit: Annotated[int, "Max articles in bundle, 1-100."] = DEFAULT_PERIOD_LIMIT,
+    exclude_read: Annotated[bool, "When true, hide read articles."] = False,
 ) -> dict[str, Any]:
     """Fetch the evidence bundle for a date range.
 
@@ -119,6 +123,7 @@ def get_period_context(
         to_date: Range end as ISO date (YYYY-MM-DD, inclusive).
         sources: Optional allowlist of source names; None means all sources.
         limit: Max articles in the bundle, 1-100 (default 50).
+        exclude_read: When True, hide read articles (default False annotates only).
 
     Returns:
         Evidence-bundle dict with period and important_articles entries.
@@ -127,7 +132,9 @@ def get_period_context(
         InvalidRequest: If dates are malformed/unordered, sources unknown,
             or limit is outside 1-100.
     """
-    return service.get_period_context(from_date, to_date, sources=sources, limit=limit)
+    return service.get_period_context(
+        from_date, to_date, sources=sources, limit=limit, exclude_read=exclude_read
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
@@ -168,8 +175,8 @@ def flag_extraction(
 
     Use only for improperly extracted content (thin body, JS shell,
     paywall/bot challenge, truncated text, wrong body) — never for factual
-    disputes about an otherwise well-extracted article. This is the only
-    mutating tool on this server.
+    disputes about an otherwise well-extracted article. This is one of two
+    mutating tools on this server (with mark_article_read).
 
     Args:
         identifier: Article URL or canonical URL.
@@ -192,6 +199,32 @@ def flag_extraction(
     return service.flag_extraction(  # type: ignore[attr-defined, no-any-return]
         identifier, reason=reason, detail=detail, flagged_by=flagged_by, clear=clear
     )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
+def mark_article_read(
+    identifier: Annotated[str, "Article URL or canonical URL to mark."],
+    read_by: Annotated[str | None, "Reader label (<=100 chars)."] = None,
+    clear: Annotated[bool, "When true, clear the read mark instead of setting it."] = False,
+) -> dict[str, Any]:
+    """Mark (or clear) an article as read.
+
+    Use to record consuming a document; idempotent — re-marking updates
+    read_at/read_by, clearing NULLs the read columns.
+
+    Args:
+        identifier: Article URL or canonical URL.
+        read_by: Reader label, max 100 chars.
+        clear: When True, clear the read mark instead of setting it.
+
+    Returns:
+        The updated article dict with read columns applied or cleared.
+
+    Raises:
+        InvalidRequest: If the identifier is unknown/blank or read_by is
+            invalid (non-string, overlong).
+    """
+    return service.mark_article_read(identifier, read_by=read_by, clear=clear)
 
 
 @mcp.resource("brain://about", mime_type="application/json")

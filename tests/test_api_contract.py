@@ -18,6 +18,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import marketing_intelligence.flag as flag_lane  # noqa: E402
+import marketing_intelligence.read as read_lane  # noqa: E402
 import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
@@ -70,11 +71,30 @@ FLAG_PAYLOAD = {
     "flagged_by": "tester",
 }
 
+READ_PAYLOAD = {
+    "title": "TikTok Adds Voice Notes",
+    "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "source": "Social Media Today",
+    "published_at": "2026-09-08T14:30:00+00:00",
+    "author": "Andrew Hutchinson",
+    "content": "…full body…",
+    "flag_reason": None,
+    "flag_detail": None,
+    "flagged_at": None,
+    "flagged_by": None,
+    "read": True,
+    "read_at": "2026-09-14T12:00:00+00:00",
+    "read_by": "tester",
+}
+
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(
-        service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
+        service,
+        "search_articles",
+        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
     )
     monkeypatch.setattr(
         service,
@@ -90,6 +110,13 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         ),
         raising=False,
     )
+    # raising=False: read-state lane lands alongside this parity lane.
+    monkeypatch.setattr(
+        service,
+        "mark_article_read",
+        lambda identifier, read_by=None, clear=False, conn=None: READ_PAYLOAD,
+        raising=False,
+    )
     return TestClient(app)
 
 
@@ -102,15 +129,35 @@ def test_search_returns_service_payload(client: TestClient) -> None:
 def test_search_forwards_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
 
-    def fake(keyword: str, limit: int = 20, conn: object = None) -> list:
+    def fake(
+        keyword: str, limit: int = 20, conn: object = None, exclude_read: bool = False
+    ) -> list:
         seen["keyword"] = keyword
         seen["limit"] = limit
+        seen["exclude_read"] = exclude_read
         return SEARCH_PAYLOAD
 
     monkeypatch.setattr(service, "search_articles", fake)
     resp = TestClient(app).get("/search", params={"q": "TikTok", "limit": 5})
     assert resp.status_code == 200
-    assert seen == {"keyword": "TikTok", "limit": 5}
+    assert seen == {"keyword": "TikTok", "limit": 5, "exclude_read": False}
+
+
+def test_search_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(
+        keyword: str, limit: int = 20, conn: object = None, exclude_read: bool = False
+    ) -> list:
+        seen["exclude_read"] = exclude_read
+        return SEARCH_PAYLOAD
+
+    monkeypatch.setattr(service, "search_articles", fake)
+    http = TestClient(app)
+    assert http.get("/search", params={"q": "TikTok"}).status_code == 200
+    assert seen == {"exclude_read": False}  # identical default as the service
+    assert http.get("/search", params={"q": "TikTok", "exclude_read": "true"}).status_code == 200
+    assert seen == {"exclude_read": True}
 
 
 def test_search_validation_maps_to_422() -> None:
@@ -155,6 +202,34 @@ def test_period_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> N
     assert seen["limit"] == 5
 
 
+def test_period_forwards_exclude_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        seen["from_date"] = from_date
+        seen["to_date"] = to_date
+        return PERIOD_PAYLOAD
+
+    monkeypatch.setattr(service, "get_period_context", fake)
+    http = TestClient(app)
+    assert (
+        http.post(
+            "/period-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}
+        ).status_code
+        == 200
+    )
+    assert seen["exclude_read"] is False  # identical default as the service
+    assert (
+        http.post(
+            "/period-context",
+            json={"from_date": "2026-09-07", "to_date": "2026-09-13", "exclude_read": True},
+        ).status_code
+        == 200
+    )
+    assert seen["exclude_read"] is True
+
+
 def test_period_validation_maps_to_422() -> None:
     live = TestClient(app)
     assert (
@@ -185,6 +260,7 @@ def test_openapi_docs_demoable(client: TestClient) -> None:
     paths = spec.json()["paths"]
     assert "/search" in paths and "/period-context" in paths
     assert "/flag-extraction" in paths
+    assert "/mark-read" in paths
     assert client.get("/docs").status_code == 200
 
 
@@ -312,5 +388,63 @@ def test_flag_validation_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
             "/flag-extraction",
             json={"identifier": "https://unknown.example/nope/", "reason": "thin", "detail": "d"},
         ).status_code
+        == 422
+    )
+
+
+def test_mark_read_returns_service_payload(client: TestClient) -> None:
+    resp = client.post(
+        "/mark-read",
+        json={"identifier": "https://www.socialmediatoday.com/news/tiktok/1/"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == READ_PAYLOAD
+
+
+def test_mark_read_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(
+        identifier: object,
+        read_by: object = None,
+        clear: object = False,
+        conn: object = None,
+    ) -> dict:
+        seen["identifier"] = identifier
+        seen["read_by"] = read_by
+        seen["clear"] = clear
+        return READ_PAYLOAD
+
+    monkeypatch.setattr(service, "mark_article_read", fake, raising=False)
+    resp = TestClient(app).post(
+        "/mark-read",
+        json={
+            "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+            "read_by": "tester",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == READ_PAYLOAD
+    assert seen == {
+        "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+        "read_by": "tester",
+        "clear": False,
+    }
+
+
+def test_mark_read_validation_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real service (no service stubs): blank id / overlong read_by -> 422, never 500.
+    live = TestClient(app)
+    assert live.post("/mark-read", json={"identifier": "   "}).status_code == 422
+    assert live.post("/mark-read", json={}).status_code == 422  # missing identifier
+    url = "https://www.socialmediatoday.com/news/tiktok/1/"
+    # read_by over 100 chars -> 422 (100 itself is accepted, so no DB hit here).
+    assert (
+        live.post("/mark-read", json={"identifier": url, "read_by": "y" * 101}).status_code == 422
+    )
+    # Unknown URL reaches the lane (empty store) and still maps to 422.
+    monkeypatch.setattr(read_lane, "get_connection", lambda: _EmptyConn())
+    assert (
+        live.post("/mark-read", json={"identifier": "https://unknown.example/nope/"}).status_code
         == 422
     )

@@ -67,6 +67,9 @@ SEARCH_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -80,6 +83,9 @@ PERIOD_ARTICLE_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 PERIOD_TOP_KEYS = {
@@ -112,6 +118,9 @@ ARTICLE_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 

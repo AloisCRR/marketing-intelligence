@@ -55,6 +55,9 @@ ARTICLE_EXPECTED_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 SEARCH_EXPECTED_KEYS = {
@@ -69,6 +72,9 @@ SEARCH_EXPECTED_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -82,6 +88,9 @@ PERIOD_EXPECTED_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 

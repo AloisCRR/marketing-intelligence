@@ -24,10 +24,24 @@ except Exception:  # pragma: no cover - defensive fallback when absent
 _SEARCH_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
-       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
+       d.read_at, d.read_by
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
- WHERE d.title ILIKE %s OR d.content ILIKE %s
+ WHERE (d.title ILIKE %s OR d.content ILIKE %s)
+ ORDER BY d.published_at DESC
+ LIMIT %s\
+"""
+
+_SEARCH_SQL_EXCLUDE_READ = """\
+SELECT d.title, d.url, d.canonical_url, s.name AS source,
+       d.published_at, d.author, d.content,
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
+       d.read_at, d.read_by
+  FROM documents d
+  LEFT JOIN sources s ON s.id = d.source_id
+ WHERE (d.title ILIKE %s OR d.content ILIKE %s)
+   AND d.read_at IS NULL
  ORDER BY d.published_at DESC
  LIMIT %s\
 """
@@ -46,6 +60,9 @@ _RESULT_KEYS = (
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 )
 
 
@@ -97,7 +114,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         flag_detail = row.get("flag_detail")
         flagged_at = row.get("flagged_at")
         flagged_by = row.get("flagged_by")
+        read_at = row.get("read_at")
+        read_by = row.get("read_by")
     else:
+        # Tuple rows predate the read annotation (11 cols); newer rows carry
+        # read_at/read_by (13 cols). Both shapes are accepted.
+        items = tuple(row)
         (
             title,
             url,
@@ -110,7 +132,9 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
             flag_detail,
             flagged_at,
             flagged_by,
-        ) = row
+        ) = items[:11]
+        read_at = items[11] if len(items) > 11 else None
+        read_by = items[12] if len(items) > 12 else None
     return {
         "title": title,
         "url": url,
@@ -123,10 +147,15 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "flag_detail": flag_detail,
         "flagged_at": flagged_at,
         "flagged_by": flagged_by,
+        "read": read_at is not None,
+        "read_at": read_at,
+        "read_by": read_by,
     }
 
 
-def search_articles(keyword: str, limit: int = 20, conn: Any | None = None) -> list[dict[str, Any]]:
+def search_articles(
+    keyword: str, limit: int = 20, conn: Any | None = None, *, exclude_read: bool = False
+) -> list[dict[str, Any]]:
     """Search ingested articles by keyword, newest first.
 
     Args:
@@ -135,21 +164,34 @@ def search_articles(keyword: str, limit: int = 20, conn: Any | None = None) -> l
         conn: optional injected DB-API connection (fake-friendly). When None
             a connection is opened via `get_connection` and closed afterwards;
             an injected connection is never committed or closed here.
+        exclude_read: when True, marked (read) articles are filtered out via
+            ``AND d.read_at IS NULL``. Default False annotates without
+            filtering. Must be a bool.
 
     Returns:
         List of dicts with keys ``title, url, canonical_url, source,
-        published_at, author, snippet``. ``published_at`` is an isoformat
-        tz-aware string; ``author`` may be ``None``; ``snippet`` is a
-        content excerpt around the match. Empty/blank keyword returns ``[]``.
+        published_at, author, snippet`` plus the Extraction Flag annotation
+        (``flag_reason, flag_detail, flagged_at, flagged_by``) and the Read
+        State annotation (``read`` bool derived from ``read_at IS NOT NULL``,
+        plus ``read_at, read_by`` — ``None`` when unread). ``published_at``
+        is an isoformat tz-aware string; ``author`` may be ``None``;
+        ``snippet`` is a content excerpt around the match. Empty/blank
+        keyword returns ``[]``.
+
+    Raises:
+        ValueError: non-bool ``exclude_read``.
     """
     if not isinstance(keyword, str) or not keyword.strip():
         return []
     if not isinstance(limit, int) or limit <= 0:
         return []
+    if not isinstance(exclude_read, bool):
+        raise ValueError(f"exclude_read must be a bool, got {exclude_read!r}")
 
     term = keyword.strip()
     pattern = f"%{term}%"
     params = (pattern, pattern, limit)
+    sql = _SEARCH_SQL_EXCLUDE_READ if exclude_read else _SEARCH_SQL
 
     owns_connection = conn is None
     if conn is None:
@@ -158,7 +200,7 @@ def search_articles(keyword: str, limit: int = 20, conn: Any | None = None) -> l
     try:
         cursor = conn.cursor()
         try:
-            cursor.execute(_SEARCH_SQL, params)
+            cursor.execute(sql, params)
             rows = cursor.fetchall()
         finally:
             close = getattr(cursor, "close", None)
@@ -176,6 +218,7 @@ def search_articles(keyword: str, limit: int = 20, conn: Any | None = None) -> l
         content = item.pop("_content")
         item["published_at"] = _to_iso_tz_aware(item["published_at"])
         item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
+        item["read_at"] = _to_iso_tz_aware(item["read_at"])
         item["snippet"] = _snippet(content, item["title"], term)
         results.append({k: item[k] for k in _RESULT_KEYS})
     return results

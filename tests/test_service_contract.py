@@ -27,6 +27,7 @@ from marketing_intelligence.service import (  # noqa: E402
     MAX_LIMIT,
     InvalidRequest,
     get_period_context,
+    mark_article_read,
     search_articles,
 )
 
@@ -42,6 +43,9 @@ SEARCH_EXPECTED_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -55,6 +59,9 @@ PERIOD_EXPECTED_KEYS = {
     "flag_detail",
     "flagged_at",
     "flagged_by",
+    "read",
+    "read_at",
+    "read_by",
 }
 
 
@@ -66,7 +73,7 @@ def _utc(*args: int) -> datetime:
 
 SEARCH_ROWS = [
     # (title, url, canonical_url, source, published_at, author, content,
-    #  flag_reason, flag_detail, flagged_at, flagged_by)
+    #  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
     (
         "TikTok Adds Voice Notes",
         "https://www.socialmediatoday.com/news/tiktok/1/",
@@ -75,6 +82,8 @@ SEARCH_ROWS = [
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
         "TikTok rolls out voice notes and image carousels for comments globally.",
+        None,
+        None,
         None,
         None,
         None,
@@ -92,6 +101,8 @@ SEARCH_ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
 ]
 
@@ -99,18 +110,24 @@ SEARCH_ROWS = [
 class _SearchCursor:
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
+        self.last_sql: str | None = None
         self.last_params: tuple | None = None
 
     def execute(self, sql: str, params: tuple | None = None) -> None:
+        self.last_sql = sql
         self.last_params = params
 
     def fetchall(self) -> list[tuple]:
+        rows = list(self._rows)
+        # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
+        if self.last_sql is not None and "read_at is null" in self.last_sql.lower():
+            rows = [r for r in rows if not (len(r) > 11 and r[11] is not None)]
         if self.last_params:
             try:
-                return list(self._rows[: int(self.last_params[-1])])
+                return list(rows[: int(self.last_params[-1])])
             except (ValueError, TypeError):
                 pass
-        return list(self._rows)
+        return list(rows)
 
     def close(self) -> None:
         pass
@@ -134,7 +151,7 @@ class _SearchConnection:
 
 PERIOD_ROWS = [
     # (title, url, canonical_url, source, published_at, author,
-    #  flag_reason, flag_detail, flagged_at, flagged_by)
+    #  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
     (
         "TikTok Adds Voice Notes",
         "https://www.socialmediatoday.com/news/tiktok/1/",
@@ -142,6 +159,8 @@ PERIOD_ROWS = [
         "Social Media Today",
         _utc(2026, 9, 8, 14, 30),
         "Andrew Hutchinson",
+        None,
+        None,
         None,
         None,
         None,
@@ -158,6 +177,8 @@ PERIOD_ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
 ]
 
@@ -167,14 +188,19 @@ class _PeriodCursor:
 
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
+        self.last_sql: str | None = None
         self.last_params: tuple | None = None
         self._result: list[tuple] = []
 
     def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         assert params is not None
+        self.last_sql = sql
         self.last_params = params
         start, end, names, limit = params
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
+        # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
+        if "read_at is null" in sql.lower():
+            kept = [r for r in kept if not (len(r) > 10 and r[10] is not None)]
         kept.sort(key=lambda r: r[4], reverse=True)
         self._result = kept[: int(limit)]
         return self
@@ -344,3 +370,310 @@ def test_period_bad_bounds_and_limits_rejected() -> None:
         get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=MAX_LIMIT + 1)
     assert DEFAULT_PERIOD_LIMIT == 50
     assert MAX_LIMIT == 100
+
+
+# --- read state ---------------------------------------------------------------
+
+READ_URL = "https://www.socialmediatoday.com/news/tiktok/1/"
+UNREAD_URL = "https://martech.org/signal-loss/2/"
+
+READ_SEARCH_ROWS = [
+    # (title, url, canonical_url, source, published_at, author, content,
+    #  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
+    (
+        "TikTok Adds Voice Notes",
+        READ_URL,
+        READ_URL,
+        "Social Media Today",
+        _utc(2026, 9, 8, 14, 30),
+        "Andrew Hutchinson",
+        "TikTok rolls out voice notes and image carousels for comments globally.",
+        None,
+        None,
+        None,
+        None,
+        _utc(2026, 9, 10, 12, 0),
+        "reader-1",
+    ),
+    (
+        "Signal Loss Rebuild",
+        UNREAD_URL,
+        UNREAD_URL,
+        "MarTech",
+        _utc(2026, 9, 9, 13, 0),
+        None,
+        "How marketers rebuild measurement after signal loss this quarter.",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+]
+
+READ_PERIOD_ROWS = [
+    # (title, url, canonical_url, source, published_at, author,
+    #  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
+    (
+        "TikTok Adds Voice Notes",
+        READ_URL,
+        READ_URL,
+        "Social Media Today",
+        _utc(2026, 9, 8, 14, 30),
+        "Andrew Hutchinson",
+        None,
+        None,
+        None,
+        None,
+        _utc(2026, 9, 10, 12, 0),
+        "reader-1",
+    ),
+    (
+        "Signal Loss Rebuild",
+        UNREAD_URL,
+        UNREAD_URL,
+        "MarTech",
+        _utc(2026, 9, 9, 13, 0),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+]
+
+
+def test_search_annotates_read_state_by_default() -> None:
+    results = search_articles("TikTok", conn=_SearchConnection(READ_SEARCH_ROWS))
+    assert len(results) == 2
+    by_url = {r["url"]: r for r in results}
+    marked = by_url[READ_URL]
+    assert set(marked.keys()) == SEARCH_EXPECTED_KEYS
+    assert marked["read"] is True
+    assert marked["read_by"] == "reader-1"
+    assert _dt.datetime.fromisoformat(str(marked["read_at"])).tzinfo is not None
+    unread = by_url[UNREAD_URL]
+    assert unread["read"] is False
+    assert unread["read_at"] is None
+    assert unread["read_by"] is None
+
+
+def test_search_exclude_read_filters_marked() -> None:
+    included = search_articles("TikTok", conn=_SearchConnection(READ_SEARCH_ROWS))
+    assert len(included) == 2
+    filtered = search_articles(
+        "TikTok", exclude_read=True, conn=_SearchConnection(READ_SEARCH_ROWS)
+    )
+    assert [r["url"] for r in filtered] == [UNREAD_URL]
+
+
+def test_search_exclude_read_must_be_bool() -> None:
+    for bad in ("yes", 1, 0, None):
+        with pytest.raises(InvalidRequest):
+            search_articles("TikTok", exclude_read=bad, conn=_SearchConnection())  # type: ignore[arg-type]
+
+
+def test_period_annotates_read_state_by_default() -> None:
+    ctx = get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
+    )
+    by_url = {a["url"]: a for a in ctx["important_articles"]}
+    assert len(by_url) == 2
+    marked = by_url[READ_URL]
+    assert set(marked.keys()) == PERIOD_EXPECTED_KEYS
+    assert marked["read"] is True
+    assert marked["read_by"] == "reader-1"
+    assert _dt.datetime.fromisoformat(str(marked["read_at"])).tzinfo is not None
+    unread = by_url[UNREAD_URL]
+    assert unread["read"] is False
+    assert unread["read_at"] is None
+    assert unread["read_by"] is None
+
+
+def test_period_exclude_read_filters_marked() -> None:
+    ctx = get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
+    )
+    assert len(ctx["important_articles"]) == 2
+    filtered = get_period_context(
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        exclude_read=True,
+        conn=_PeriodConnection(READ_PERIOD_ROWS),
+    )
+    assert [a["url"] for a in filtered["important_articles"]] == [UNREAD_URL]
+
+
+def test_period_exclude_read_must_be_bool() -> None:
+    for bad in ("yes", 1, 0, None):
+        with pytest.raises(InvalidRequest):
+            get_period_context(
+                date(2026, 9, 7),
+                date(2026, 9, 13),
+                exclude_read=bad,  # type: ignore[arg-type]
+                conn=_PeriodConnection(),
+            )
+
+
+_READ_STORE_ARTICLE_COLS = (
+    "title",
+    "url",
+    "canonical_url",
+    "source",
+    "published_at",
+    "author",
+    "content",
+    "flag_reason",
+    "flag_detail",
+    "flagged_at",
+    "flagged_by",
+)
+
+READ_MARK_URL = "https://www.socialmediatoday.com/news/tiktok/1/?utm_source=rss#top"
+READ_MARK_CANON = "https://www.socialmediatoday.com/news/tiktok/1/"
+
+
+def _make_read_store() -> list[dict]:
+    return [
+        {
+            "title": "TikTok Adds Voice Notes",
+            "url": READ_MARK_URL,
+            "canonical_url": READ_MARK_CANON,
+            "source": "Social Media Today",
+            "published_at": _utc(2026, 9, 8, 14, 30),
+            "author": "Andrew Hutchinson",
+            "content": "TikTok rolls out voice notes and image carousels for comments globally.",
+            "flag_reason": None,
+            "flag_detail": None,
+            "flagged_at": None,
+            "flagged_by": None,
+            "read_at": None,
+            "read_by": None,
+        },
+    ]
+
+
+class _ReadCursor:
+    """Store-backed fake: read UPDATEs, read-state fetch, then article SELECTs."""
+
+    def __init__(self, store: list[dict]) -> None:
+        self._store = store
+        self._result: list[tuple] = []
+        self.rowcount = -1
+
+    def execute(self, sql: str, params: tuple | None = None) -> None:
+        params = params or ()
+        head = sql.strip().upper()
+        if head.startswith("UPDATE"):
+            if "READ_AT = NULL" in head:
+                url_key, canon_key = params[0], params[1]
+                matched = [
+                    d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key
+                ]
+                for doc in matched:
+                    doc["read_at"] = None
+                    doc["read_by"] = None
+                self.rowcount = len(matched)
+                self._result = []
+            else:
+                read_by, url_key, canon_key = params
+                matched = [
+                    d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key
+                ]
+                for doc in matched:
+                    doc["read_at"] = _dt.datetime.now(_dt.UTC)
+                    doc["read_by"] = read_by
+                self.rowcount = len(matched)
+                self._result = []
+            return
+        if head.startswith("SELECT READ_AT"):
+            url_key, canon_key = params[0], params[1]
+            matched = [
+                d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key
+            ]
+            self._result = [(matched[0]["read_at"], matched[0]["read_by"])] if matched else []
+            return
+        if "CANONICAL_URL" in head and "WHERE" in head:
+            key = params[0]
+            by_canonical = "canonical_url" in sql.lower().split("where", 1)[1]
+            if by_canonical:
+                matched = [d for d in self._store if d["canonical_url"] == key]
+            else:
+                matched = [d for d in self._store if d["url"] == key]
+            self._result = [
+                tuple(d[c] for c in _READ_STORE_ARTICLE_COLS) + (d["read_at"], d["read_by"])
+                for d in matched
+            ]
+            return
+        self._result = []
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._result)
+
+    def close(self) -> None:
+        pass
+
+
+class _ReadConnection:
+    def __init__(self, store: list[dict] | None = None) -> None:
+        self.store = store if store is not None else _make_read_store()
+        self.calls = 0
+        self.closed = 0
+
+    def cursor(self) -> _ReadCursor:
+        self.calls += 1
+        return _ReadCursor(self.store)
+
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_mark_article_read_round_trip() -> None:
+    conn = _ReadConnection()
+    article = mark_article_read(READ_MARK_URL, read_by="reader-1", conn=conn)
+    assert article["read"] is True
+    assert article["read_by"] == "reader-1"
+    assert _dt.datetime.fromisoformat(str(article["read_at"])).tzinfo is not None
+    assert article["title"] == "TikTok Adds Voice Notes"
+    assert article["url"] == READ_MARK_URL
+    assert conn.closed == 0
+
+
+def test_mark_article_read_clear_round_trip() -> None:
+    conn = _ReadConnection()
+    mark_article_read(READ_MARK_URL, read_by="reader-1", conn=conn)
+    cleared = mark_article_read(READ_MARK_URL, clear=True, conn=conn)
+    assert cleared["read"] is False
+    assert cleared["read_at"] is None
+    assert cleared["read_by"] is None
+    assert cleared["title"] == "TikTok Adds Voice Notes"
+
+
+def test_mark_article_read_blank_rejected_without_query() -> None:
+    conn = _ReadConnection()
+    for bad in ("", "   ", None, 123):
+        with pytest.raises(InvalidRequest):
+            mark_article_read(bad, read_by="r", conn=conn)  # type: ignore[arg-type]
+    assert conn.calls == 0
+
+
+def test_mark_article_read_bad_read_by_rejected_without_query() -> None:
+    conn = _ReadConnection()
+    with pytest.raises(InvalidRequest):
+        mark_article_read(READ_MARK_URL, read_by="y" * 101, conn=conn)
+    assert conn.calls == 0
+    with pytest.raises(InvalidRequest):
+        mark_article_read(READ_MARK_URL, read_by=123, conn=conn)  # type: ignore[arg-type]
+
+
+def test_mark_article_read_unknown_raises_invalid_request() -> None:
+    with pytest.raises(InvalidRequest):
+        mark_article_read(
+            "https://unknown.example/nope/", read_by="reader-1", conn=_ReadConnection()
+        )

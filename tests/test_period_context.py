@@ -54,6 +54,9 @@ class _PeriodCursor:
         assert params is not None
         start, end, names, limit = params
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
+        # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
+        if "read_at is null" in sql.lower():
+            kept = [r for r in kept if not (len(r) > 10 and r[10] is not None)]
         kept.sort(key=lambda r: r[4], reverse=True)
         self._result = kept[: int(limit)]
         return self
@@ -165,7 +168,7 @@ def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # --- seeded article rows -------------------------------------------------------
 # (title, url, canonical_url, source, published_at, author,
-#  flag_reason, flag_detail, flagged_at, flagged_by)
+#  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
 
 ARTICLE_ROWS = [
     (
@@ -179,6 +182,8 @@ ARTICLE_ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
     (
         "Signal Loss Rebuild",
@@ -186,6 +191,8 @@ ARTICLE_ROWS = [
         "https://martech.org/signal-loss/2/",
         "MarTech",
         _utc(2026, 9, 9, 13, 0),
+        None,
+        None,
         None,
         None,
         None,
@@ -203,6 +210,8 @@ ARTICLE_ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
     (
         "Casas Bahia em crise",
@@ -211,6 +220,8 @@ ARTICLE_ROWS = [
         "InfoMoney",
         _utc(2026, 9, 11, 14, 0),
         "Mariana Ribeiro",
+        None,
+        None,
         None,
         None,
         None,
@@ -227,6 +238,8 @@ ARTICLE_ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
     (
         "August History",
@@ -239,6 +252,8 @@ ARTICLE_ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
     (
         "Next-week Boundary",
@@ -247,6 +262,8 @@ ARTICLE_ROWS = [
         "MarTech",
         _utc(2026, 9, 14, 5, 0),  # exactly Mon 00:00 Panama -> exclusive
         "Kim Davis",
+        None,
+        None,
         None,
         None,
         None,
@@ -362,6 +379,9 @@ def test_range_filtering_newest_first_and_provenance() -> None:
             "flag_detail",
             "flagged_at",
             "flagged_by",
+            "read",
+            "read_at",
+            "read_by",
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
@@ -424,6 +444,30 @@ def test_invalid_inputs_rejected() -> None:
 def test_limit_bounds_results() -> None:
     ctx, _ = _context(limit=2)
     assert len(ctx["important_articles"]) == 2
+
+
+def test_unread_rows_annotate_read_false() -> None:
+    ctx, _ = _context()
+    for article in ctx["important_articles"]:
+        assert article["read"] is False
+        assert article["read_at"] is None
+        assert article["read_by"] is None
+
+
+def test_exclude_read_filters_marked_rows() -> None:
+    marked = list(ARTICLE_ROWS[0])
+    marked[10] = _utc(2026, 9, 12, 12, 0)
+    marked[11] = "reader-1"
+    rows = [tuple(marked)] + list(ARTICLE_ROWS[1:])
+    ctx, _ = _context(rows)
+    assert {a["title"] for a in ctx["important_articles"]} >= {"TikTok Adds Voice Notes"}
+    flagged = next(a for a in ctx["important_articles"] if a["title"] == "TikTok Adds Voice Notes")
+    assert flagged["read"] is True
+    assert flagged["read_by"] == "reader-1"
+    filtered, _ = _context(rows, exclude_read=True)
+    titles = {a["title"] for a in filtered["important_articles"]}
+    assert "TikTok Adds Voice Notes" not in titles
+    assert "Signal Loss Rebuild" in titles
 
 
 # --- health --------------------------------------------------------------------
@@ -546,6 +590,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "005_extraction_flag.sql",
         "006_seed_all_sources.sql",
         "007_deterministic_sources_and_not_null.sql",
+        "008_read_state.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

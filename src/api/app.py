@@ -42,10 +42,11 @@ async def _invalid_request_handler(request: Any, exc: InvalidRequest) -> JSONRes
 def search(
     q: str = Query(..., description="Keyword matched against title and content"),
     limit: int = Query(DEFAULT_SEARCH_LIMIT, description="Max results [1..100]"),
+    exclude_read: bool = Query(False, description="When true, hide read articles"),
     _: None = Depends(require_bearer),
 ) -> dict[str, Any]:
-    """Keyword search, newest first (11-key provenance dicts: 7 base + 4 flag keys)."""
-    return {"results": service.search_articles(q, limit=limit)}
+    """Keyword search, newest first (14-key dicts: 7 base + 4 flag + 3 read)."""
+    return {"results": service.search_articles(q, limit=limit, exclude_read=exclude_read)}
 
 
 class PeriodRequest(BaseModel):
@@ -53,13 +54,18 @@ class PeriodRequest(BaseModel):
     to_date: str
     sources: list[str] | None = None
     limit: int = DEFAULT_PERIOD_LIMIT
+    exclude_read: bool = False
 
 
 @app.post("/period-context")
 def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
     """Period evidence bundle for [from_date, to_date] (ISO dates)."""
     return service.get_period_context(
-        body.from_date, body.to_date, sources=body.sources, limit=body.limit
+        body.from_date,
+        body.to_date,
+        sources=body.sources,
+        limit=body.limit,
+        exclude_read=body.exclude_read,
     )
 
 
@@ -88,5 +94,21 @@ def flag_extraction(body: FlagRequest, _: None = Depends(require_bearer)) -> dic
         reason=body.reason,
         detail=body.detail,
         flagged_by=body.flagged_by,
+        clear=body.clear,
+    )
+
+
+class MarkReadRequest(BaseModel):
+    identifier: str
+    read_by: str | None = None
+    clear: bool = False
+
+
+@app.post("/mark-read")
+def mark_read(body: MarkReadRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
+    """Mark (or clear) an article as read; returns updated Article."""
+    return service.mark_article_read(  # type: ignore[attr-defined, no-any-return]
+        body.identifier,
+        read_by=body.read_by,
         clear=body.clear,
     )

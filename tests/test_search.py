@@ -27,7 +27,7 @@ def _dt_utc(*args: int) -> _dt.datetime:
 
 ROWS = [
     # (title, url, canonical_url, source, published_at, author, content,
-    #  flag_reason, flag_detail, flagged_at, flagged_by)
+    #  flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by)
     (
         "Gen Z marketing trends to watch",
         "https://socialmediatoday.com/articles/1",
@@ -37,6 +37,8 @@ ROWS = [
         "Jane Doe",
         "A longform piece about Gen Z marketing trends and creator budgets "
         "with plenty of surrounding context for the snippet window.",
+        None,
+        None,
         None,
         None,
         None,
@@ -54,6 +56,8 @@ ROWS = [
         None,
         None,
         None,
+        None,
+        None,
     ),
     (
         "Unrelated jewellery piece",
@@ -63,6 +67,8 @@ ROWS = [
         _dt_utc(2026, 8, 26, 12, 0, 0),
         "John Smith",
         "Nothing relevant here about hallmarking and retail footfall.",
+        None,
+        None,
         None,
         None,
         None,
@@ -90,14 +96,18 @@ class FakeCursor:
         self.last_params = params
 
     def fetchall(self) -> list[tuple]:
+        rows = list(self._rows)
+        # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
+        if self.last_sql is not None and "read_at is null" in self.last_sql.lower():
+            rows = [r for r in rows if not (len(r) > 11 and r[11] is not None)]
         # Honour the LIMIT param (last positional param) like Postgres would.
         if self.last_params:
             try:
                 limit = int(self.last_params[-1])
-                return list(self._rows[:limit])
+                return list(rows[:limit])
             except (ValueError, TypeError):
                 pass
-        return list(self._rows)
+        return list(rows)
 
     def close(self) -> None:
         pass
@@ -149,6 +159,9 @@ def test_keyword_match_returns_provenance(monkeypatch) -> None:
             "flag_detail",
             "flagged_at",
             "flagged_by",
+            "read",
+            "read_at",
+            "read_by",
         }
         # Provenance: every result carries its source name.
         assert r["source"] in ("Social Media Today", "Professional Jeweller")
@@ -195,3 +208,24 @@ def test_sql_is_parameterized(monkeypatch) -> None:
     assert "LIMIT" in cur.last_sql
     assert cur.last_params is not None
     assert any("Gen Z" in str(p) for p in cur.last_params)
+
+
+def test_unread_rows_annotate_read_false(monkeypatch) -> None:
+    _patch(monkeypatch, ROWS)
+    for r in search_module.search_articles("Gen Z"):
+        assert r["read"] is False
+        assert r["read_at"] is None
+        assert r["read_by"] is None
+
+
+def test_exclude_read_filters_marked_rows(monkeypatch) -> None:
+    marked = list(ROWS[0])
+    marked[11] = _dt_utc(2026, 8, 27, 12, 0, 0)
+    marked[12] = "reader-1"
+    rows = [tuple(marked), ROWS[1], ROWS[2]]
+    _patch(monkeypatch, rows)
+    included = search_module.search_articles("Gen Z")
+    assert len(included) == 3
+    assert next(r for r in included if r["url"] == ROWS[0][1])["read"] is True
+    filtered = search_module.search_articles("Gen Z", exclude_read=True)
+    assert {r["url"] for r in filtered} == {ROWS[1][1], ROWS[2][1]}

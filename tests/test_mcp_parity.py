@@ -24,6 +24,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import marketing_intelligence.flag as flag_lane  # noqa: E402
+import marketing_intelligence.read as read_lane  # noqa: E402
 import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
@@ -79,11 +80,30 @@ FLAG_PAYLOAD = {
     "flagged_by": "tester",
 }
 
+READ_PAYLOAD = {
+    "title": "TikTok Adds Voice Notes",
+    "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+    "source": "Social Media Today",
+    "published_at": "2026-09-08T14:30:00+00:00",
+    "author": "Andrew Hutchinson",
+    "content": "…full body…",
+    "flag_reason": None,
+    "flag_detail": None,
+    "flagged_at": None,
+    "flagged_by": None,
+    "read": True,
+    "read_at": "2026-09-14T12:00:00+00:00",
+    "read_by": "tester",
+}
+
 
 @pytest.fixture()
 def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
+        service,
+        "search_articles",
+        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
     )
     monkeypatch.setattr(
         service, "get_period_context", lambda from_date, to_date, **kw: PERIOD_PAYLOAD
@@ -97,6 +117,13 @@ def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         raising=False,
     )
+    # raising=False: read-state lane lands alongside this parity lane.
+    monkeypatch.setattr(
+        service,
+        "mark_article_read",
+        lambda identifier, read_by=None, clear=False, conn=None: READ_PAYLOAD,
+        raising=False,
+    )
 
 
 def _unwrap_call_tool(out: Any) -> Any:
@@ -106,14 +133,25 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_four_tools() -> None:
+def test_mcp_registers_exactly_five_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
     assert sorted(t.name for t in tools) == [
         "flag_extraction",
         "get_article",
         "get_period_context",
+        "mark_article_read",
         "search_articles",
     ]
+
+
+def test_mutating_tools_are_not_read_only() -> None:
+    tools = {t.name: t for t in asyncio.run(MCP_SERVER.mcp.list_tools())}
+    assert tools["search_articles"].annotations.readOnlyHint is True
+    assert tools["get_period_context"].annotations.readOnlyHint is True
+    assert tools["get_article"].annotations.readOnlyHint is True
+    assert tools["flag_extraction"].annotations.readOnlyHint is False
+    assert tools["mark_article_read"].annotations.readOnlyHint is False
+    assert tools["mark_article_read"].annotations.idempotentHint is False
 
 
 def test_search_api_equals_mcp_tool(stubbed_service: None) -> None:
@@ -210,3 +248,97 @@ def test_flag_api_equals_mcp_tool(stubbed_service: None) -> None:
     out = asyncio.run(MCP_SERVER.mcp.call_tool("flag_extraction", dict(body)))
     assert _unwrap_call_tool(out) == FLAG_PAYLOAD
     assert api_payload == _unwrap_call_tool(out)
+
+
+def test_search_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(
+        keyword: str, limit: int = 20, conn: object = None, exclude_read: bool = False
+    ) -> list:
+        seen["keyword"] = keyword
+        seen["exclude_read"] = exclude_read
+        return SEARCH_PAYLOAD
+
+    monkeypatch.setattr(service, "search_articles", fake)
+    assert MCP_SERVER.search_articles(keyword="TikTok") == SEARCH_PAYLOAD
+    assert seen == {"keyword": "TikTok", "exclude_read": False}
+    assert MCP_SERVER.search_articles(keyword="TikTok", exclude_read=True) == SEARCH_PAYLOAD
+    assert seen == {"keyword": "TikTok", "exclude_read": True}
+
+
+def test_period_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        return PERIOD_PAYLOAD
+
+    monkeypatch.setattr(service, "get_period_context", fake)
+    assert (
+        MCP_SERVER.get_period_context(from_date="2026-09-07", to_date="2026-09-13")
+        == PERIOD_PAYLOAD
+    )
+    assert seen["exclude_read"] is False
+    assert (
+        MCP_SERVER.get_period_context(
+            from_date="2026-09-07", to_date="2026-09-13", exclude_read=True
+        )
+        == PERIOD_PAYLOAD
+    )
+    assert seen["exclude_read"] is True
+
+
+def test_mark_read_api_equals_mcp_tool(stubbed_service: None) -> None:
+    body = {"identifier": "https://www.socialmediatoday.com/news/tiktok/1/"}
+    api_payload = TestClient(app).post("/mark-read", json=body).json()
+    assert api_payload == READ_PAYLOAD
+    # Direct tool call (same service fn) ...
+    assert (
+        MCP_SERVER.mark_article_read(identifier="https://www.socialmediatoday.com/news/tiktok/1/")
+        == READ_PAYLOAD
+    )
+    # ... and the registered-tool path agree.
+    out = asyncio.run(MCP_SERVER.mcp.call_tool("mark_article_read", dict(body)))
+    assert _unwrap_call_tool(out) == READ_PAYLOAD
+    assert api_payload == _unwrap_call_tool(out)
+
+
+def test_mark_read_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(
+        identifier: object,
+        read_by: object = None,
+        clear: object = False,
+        conn: object = None,
+    ) -> dict:
+        seen["identifier"] = identifier
+        seen["read_by"] = read_by
+        seen["clear"] = clear
+        return READ_PAYLOAD
+
+    monkeypatch.setattr(service, "mark_article_read", fake, raising=False)
+    assert (
+        MCP_SERVER.mark_article_read(
+            identifier="https://www.socialmediatoday.com/news/tiktok/1/", read_by="tester"
+        )
+        == READ_PAYLOAD
+    )
+    assert seen == {
+        "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+        "read_by": "tester",
+        "clear": False,
+    }
+
+
+def test_mcp_mark_read_surfaces_service_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.mark_article_read(identifier="   ")
+    url = "https://www.socialmediatoday.com/news/tiktok/1/"
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.mark_article_read(identifier=url, read_by="y" * 101)
+    # Unknown URL reaches the lane (empty store) and still surfaces InvalidRequest.
+    monkeypatch.setattr(read_lane, "get_connection", lambda: _EmptyConn())
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.mark_article_read(identifier="https://unknown.example/nope/")

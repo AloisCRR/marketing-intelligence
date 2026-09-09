@@ -16,6 +16,7 @@ from typing import Any
 from marketing_intelligence import article as _article
 from marketing_intelligence import flag as _flag
 from marketing_intelligence import period as _period
+from marketing_intelligence import read as _read
 from marketing_intelligence import search as _search
 from marketing_intelligence.sources import V1_SOURCES
 
@@ -30,34 +31,52 @@ FLAG_KEYS = (
     "flagged_by",
 )
 
+READ_KEYS = (
+    "read",
+    "read_at",
+    "read_by",
+)
+
 SEARCH_RESULT_KEYS = (
-    "title",
-    "url",
-    "canonical_url",
-    "source",
-    "published_at",
-    "author",
-    "snippet",
-) + FLAG_KEYS
+    (
+        "title",
+        "url",
+        "canonical_url",
+        "source",
+        "published_at",
+        "author",
+        "snippet",
+    )
+    + FLAG_KEYS
+    + READ_KEYS
+)
 
 PERIOD_ARTICLE_KEYS = (
-    "title",
-    "url",
-    "canonical_url",
-    "source",
-    "published_at",
-    "author",
-) + FLAG_KEYS
+    (
+        "title",
+        "url",
+        "canonical_url",
+        "source",
+        "published_at",
+        "author",
+    )
+    + FLAG_KEYS
+    + READ_KEYS
+)
 
 ARTICLE_KEYS = (
-    "title",
-    "url",
-    "canonical_url",
-    "source",
-    "published_at",
-    "author",
-    "content",
-) + FLAG_KEYS
+    (
+        "title",
+        "url",
+        "canonical_url",
+        "source",
+        "published_at",
+        "author",
+        "content",
+    )
+    + FLAG_KEYS
+    + READ_KEYS
+)
 
 TREND_KEYS = (
     "top_stories",
@@ -143,14 +162,38 @@ def _coerce_bound(value: date | datetime | str, *, label: str) -> date | datetim
     )
 
 
+def _validate_exclude_read(exclude_read: Any) -> bool:
+    """Validate the read filter flag: strict bool, failure is InvalidRequest."""
+    if not isinstance(exclude_read, bool):
+        raise InvalidRequest(f"exclude_read must be a bool, got {exclude_read!r}")
+    return exclude_read
+
+
 def search_articles(
-    keyword: str, limit: int = DEFAULT_SEARCH_LIMIT, conn: Any | None = None
+    keyword: str,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+    conn: Any | None = None,
+    *,
+    exclude_read: bool = False,
 ) -> list[dict[str, Any]]:
-    """Validated keyword search; returns the 11-key provenance dicts, newest first."""
+    """Validated keyword search; returns the 14-key provenance dicts, newest first.
+
+    `exclude_read=True` filters out marked (read) articles; the default
+    False annotates every result (`read`/`read_at`/`read_by`) without
+    filtering.
+    """
     if not isinstance(keyword, str) or not keyword.strip():
         raise InvalidRequest("keyword must be a non-empty string")
     bound = _validate_limit(limit, default=DEFAULT_SEARCH_LIMIT)
-    return _search.search_articles(keyword.strip(), limit=bound, conn=conn)
+    hide_read = _validate_exclude_read(exclude_read)
+    try:
+        return _search.search_articles(
+            keyword.strip(), limit=bound, conn=conn, exclude_read=hide_read
+        )
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError) as exc:
+        raise InvalidRequest(str(exc)) from None
 
 
 def get_period_context(
@@ -160,19 +203,25 @@ def get_period_context(
     sources: list[str] | None = None,
     limit: int = DEFAULT_PERIOD_LIMIT,
     conn: Any | None = None,
+    exclude_read: bool = False,
 ) -> dict[str, Any]:
     """Validated period evidence bundle for [from_date, to_date].
 
     Bounds accept `date`, `datetime`, or ISO strings (Panama interpretation
     downstream). Explicit `sources` must all be known names. V1 trend keys are
-    present as explicit `[]` (no accumulated history yet).
+    present as explicit `[]` (no accumulated history yet). `exclude_read=True`
+    filters out marked (read) articles; the default False annotates every
+    article (`read`/`read_at`/`read_by`) without filtering.
     """
     start = _coerce_bound(from_date, label="from_date")
     end = _coerce_bound(to_date, label="to_date")
     names = _validate_sources(sources)
     bound = _validate_limit(limit, default=DEFAULT_PERIOD_LIMIT)
+    hide_read = _validate_exclude_read(exclude_read)
     try:
-        return _period.get_period_context(start, end, sources=names, limit=bound, conn=conn)
+        return _period.get_period_context(
+            start, end, sources=names, limit=bound, conn=conn, exclude_read=hide_read
+        )
     except InvalidRequest:
         raise
     except (ValueError, TypeError) as exc:
@@ -232,6 +281,59 @@ def _validate_flagged_by(flagged_by: Any) -> Any:
             f"flagged_by must be at most {_flag.FLAGGED_BY_MAX_LENGTH} chars, got {len(cleaned)}"
         )
     return cleaned
+
+
+def _validate_read_by(read_by: Any) -> Any:
+    """Validate the optional reader tag: string-or-null, max 100 chars.
+
+    Mirrors the read lane (`READ_BY_MAX`); blank strings normalise to None.
+    """
+    if read_by is None:
+        return None
+    if not isinstance(read_by, str):
+        raise InvalidRequest(f"read_by must be a string or null, got {type(read_by).__name__}")
+    cleaned = read_by.strip() or None
+    if cleaned is not None and len(cleaned) > _read.READ_BY_MAX:
+        raise InvalidRequest(
+            f"read_by must be at most {_read.READ_BY_MAX} chars, got {len(cleaned)}"
+        )
+    return cleaned
+
+
+def mark_article_read(
+    identifier: str,
+    read_by: str | None = None,
+    clear: bool = False,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    """Validated Read State write; returns the updated article dict.
+
+    Blank/non-string identifiers raise `InvalidRequest` without a DB
+    round-trip, as do non-string or overlong `read_by` (>100 chars).
+    `clear=True` ignores `read_by` (no validation) and NULLs the two read
+    columns. Unknown identifiers surface from the lane as `ValueError`
+    (also `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise InvalidRequest("identifier must be a non-empty string")
+    key = identifier.strip()
+    if clear:
+        clean_by = None
+    else:
+        clean_by = _validate_read_by(read_by)
+    try:
+        result = _read.mark_article_read(key, read_by=clean_by, clear=clear, conn=conn)
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+    # The lane returns the article plus read_at/read_by; pin the derived
+    # `read` bool to the returned read_at so fakes and live rows agree.
+    try:
+        result["read"] = result.get("read_at") is not None
+    except AttributeError:
+        pass
+    return result
 
 
 def flag_extraction(

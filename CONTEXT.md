@@ -4,6 +4,7 @@
 
 - **Source**: a curated origin (site/feed) with retrieval config. V1: all 20 curated sources via RSS + sitemap/hub/url-set lanes.
 - **Document / Article**: one normalized retrieved item (title, content, URLs, timestamps, language, hash). The durable evidence unit.
+- **Read State**: whether a Document has been marked as read by a consumer (`read_at`/`read_by`, NULL = unread). Marking reflects consuming the Document, not reading a digest. _Avoid_: seen, viewed, page mark, digest consumer as actor
 - **Story / Event**: the underlying development multiple documents may cover. V1: column reserved (`story_id`, nullable) but unused — no clustering yet.
 - **Topic / Entity**: thematic and named-entity annotations. V1: deferred (no LLM enrichment).
 - **Ingestion Run**: one execution of `ingest_source_flow` for one source, independently rerunnable. Partial failure is explicit.

@@ -55,7 +55,9 @@ def authed(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("BRAIN_API_TOKEN", TOKEN)
     assert is_auth_configured()
     monkeypatch.setattr(
-        service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
+        service,
+        "search_articles",
+        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
     )
     monkeypatch.setattr(
         service, "get_period_context", lambda from_date, to_date, **kw: PERIOD_PAYLOAD
@@ -153,7 +155,9 @@ def test_http_open_mode_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BRAIN_API_TOKEN", raising=False)
     assert not is_auth_configured()
     monkeypatch.setattr(
-        service, "search_articles", lambda keyword, limit=20, conn=None: SEARCH_PAYLOAD
+        service,
+        "search_articles",
+        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
     )
     resp = TestClient(app).get("/search", params={"q": "TikTok"})
     assert resp.status_code == 200
