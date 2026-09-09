@@ -1,8 +1,8 @@
 """Extraction Flag seam tests (Lane 1) — fake conns, no live Postgres.
 
 TDD vertical slices against the new seam:
-- `brain.service.flag_extraction` (validated; lane ValueError -> InvalidRequest)
-- `brain.flag.flag_extraction` (lane; ValueError/TypeError/LookupError only)
+- `marketing_intelligence.service.flag_extraction` (validated; lane ValueError -> InvalidRequest)
+- `marketing_intelligence.flag.flag_extraction` (lane; ValueError/TypeError/LookupError only)
 - read-back annotation on `get_article` / `search_articles` / `get_period_context`
 
 Locked contract (ADR-0005 + CONTEXT.md Extraction Flag term):
@@ -27,8 +27,8 @@ _SRC = os.path.join(os.path.dirname(_HERE), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-import brain.flag as flag_lane  # noqa: E402
-import brain.service as service  # noqa: E402
+import marketing_intelligence.flag as flag_lane  # noqa: E402
+import marketing_intelligence.service as service  # noqa: E402
 
 
 def _utc(*args: int) -> _dt.datetime:
@@ -639,8 +639,8 @@ def test_flag_execute_uses_rowcount_one_reads_back_without_fetchall() -> None:
 
 
 def test_flag_survives_reingest_upsert() -> None:
-    from brain.ingest import upsert_documents
-    from brain.normalize import make_document
+    from marketing_intelligence.ingest import upsert_documents
+    from marketing_intelligence.normalize import make_document
 
     conn = _FakeConnection()
     _flagged(conn)

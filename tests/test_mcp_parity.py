@@ -2,7 +2,7 @@
 
 Loads `src/mcp/server.py` by file path (NOT `import mcp.server`: the local
 `src/mcp/` dir intentionally has no `__init__.py` so the installed `mcp`
-distribution keeps winning plain `import mcp`). Stubs `brain.service` and
+distribution keeps winning plain `import mcp`). Stubs `marketing_intelligence.service` and
 asserts the HTTP routes and the MCP tools return the same payloads.
 """
 
@@ -23,8 +23,8 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import brain.flag as flag_lane  # noqa: E402
-import brain.service as service  # noqa: E402
+import marketing_intelligence.flag as flag_lane  # noqa: E402
+import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
 

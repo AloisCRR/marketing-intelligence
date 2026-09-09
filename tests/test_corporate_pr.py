@@ -24,14 +24,14 @@ from urllib.parse import urlsplit
 import pytest
 from prefect_harness import no_engine
 
-from brain.discovery import (
+from marketing_intelligence.discovery import (
     ArticleExtractError,
     discover_urls,
     extract_article,
     harvest_sitemap_source,
 )
-from brain.normalize import NormalizedDocument
-from brain.sources import get_retrieval_config
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -296,7 +296,7 @@ def test_curated_url_set_entries_verified_live() -> None:
             (
                 FIXTURES.parent.parent
                 / ".scratch"
-                / "trend-intelligence-brain"
+                / "marketing-intelligence"
                 / "curated-sources.json"
             ).read_text(encoding="utf-8")
         )
@@ -314,7 +314,7 @@ def test_curated_url_set_entries_verified_live() -> None:
 def test_entities_unescaped_in_title_and_canonical() -> None:
     from datetime import UTC, datetime
 
-    from brain.discovery import extract_declared_canonical
+    from marketing_intelligence.discovery import extract_declared_canonical
 
     assert (
         extract_declared_canonical(
@@ -339,14 +339,14 @@ def test_entities_unescaped_in_title_and_canonical() -> None:
 
 
 def test_author_anchor_fallback_reads_byline() -> None:
-    from brain.discovery import extract_author
+    from marketing_intelligence.discovery import extract_author
 
     html = _fixture("nj_article_full.html").decode("utf-8")
     assert extract_author(html) == "Lenore Fedow"
 
 
 def test_author_anchor_rejects_contact_links() -> None:
-    from brain.discovery import extract_author
+    from marketing_intelligence.discovery import extract_author
 
     html = (
         "<html><body><p>Text.</p>"
@@ -359,7 +359,7 @@ def test_author_anchor_rejects_contact_links() -> None:
 def test_time_datetime_published() -> None:
     from datetime import UTC, datetime
 
-    from brain.discovery import extract_published_raw
+    from marketing_intelligence.discovery import extract_published_raw
 
     html = (
         "<html><head><title>T</title></head><body>"
@@ -499,7 +499,7 @@ def _nj_docs() -> list[NormalizedDocument]:
 
 
 def test_nj_rerun_upsert_is_noop() -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = _nj_docs()
     conn = FakeConnection()
@@ -531,7 +531,7 @@ def test_ri_harvest_releases_with_full_provenance() -> None:
 
 
 def test_ri_rerun_upsert_is_noop() -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = harvest_sitemap_source(
         dict(get_retrieval_config(RI)),
@@ -586,7 +586,7 @@ def test_lvmh_bounded_backfill() -> None:
 
 
 def test_lvmh_rerun_upsert_is_noop() -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = harvest_sitemap_source(
         dict(get_retrieval_config(LVMH)),
@@ -643,7 +643,7 @@ class FakeConnection:
 
 
 def _flow_fetch(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, tuple[str, bytes]]) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     # One seam for the whole concurrent path: planning + article workers
     # share `discovery_fetch`, so fixture I/O flows through real logic.
@@ -653,16 +653,14 @@ def _flow_fetch(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, tuple[str, b
 
 
 def _flow_upsert(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> None:
-    import brain.flows as flows
-    from brain.ingest import upsert_documents
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence.ingest import upsert_documents
 
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
 
 
-def test_flow_ingests_nj_with_exact_shape(
-    monkeypatch: pytest.MonkeyPatch, no_engine: None
-) -> None:
-    import brain.flows as flows
+def test_flow_ingests_nj_with_exact_shape(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
+    import marketing_intelligence.flows as flows
 
     _flow_fetch(monkeypatch, _nj_fetch_map())
     conn = FakeConnection()
@@ -675,10 +673,8 @@ def test_flow_ingests_nj_with_exact_shape(
     assert "error" not in result
 
 
-def test_flow_ingests_ri_clean_shape(
-    monkeypatch: pytest.MonkeyPatch, no_engine: None
-) -> None:
-    import brain.flows as flows
+def test_flow_ingests_ri_clean_shape(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
+    import marketing_intelligence.flows as flows
 
     _flow_fetch(monkeypatch, _ri_fetch_map())
     conn = FakeConnection()
@@ -686,10 +682,8 @@ def test_flow_ingests_ri_clean_shape(
     assert flows.ingest_source_flow(source_name=RI) == {"inserted": 3, "skipped": 0}
 
 
-def test_flow_ingests_lvmh_clean_shape(
-    monkeypatch: pytest.MonkeyPatch, no_engine: None
-) -> None:
-    import brain.flows as flows
+def test_flow_ingests_lvmh_clean_shape(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
+    import marketing_intelligence.flows as flows
 
     _flow_fetch(monkeypatch, _lvmh_fetch_map())
     conn = FakeConnection()
@@ -700,8 +694,8 @@ def test_flow_ingests_lvmh_clean_shape(
 def test_batch_ingests_all_three_and_isolates_failure(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
-    from brain.discovery import ArticleFetchError
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence.discovery import ArticleFetchError
 
     maps = {NJ: _nj_fetch_map(), RI: _ri_fetch_map(), LVMH: _lvmh_fetch_map()}
     combined: dict[str, tuple[str, bytes]] = {}
@@ -722,7 +716,7 @@ def test_batch_ingests_all_three_and_isolates_failure(
     shared: dict[str, FakeConnection] = {}
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
-        from brain.ingest import upsert_documents
+        from marketing_intelligence.ingest import upsert_documents
 
         conn = shared.setdefault(docs[0].source, FakeConnection())
         return upsert_documents(docs, conn=conn)

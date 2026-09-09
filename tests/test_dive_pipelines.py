@@ -33,8 +33,8 @@ from urllib.parse import urlsplit
 import pytest
 from prefect_harness import no_engine
 
-import brain.discovery as discovery
-from brain.discovery import (
+import marketing_intelligence.discovery as discovery
+from marketing_intelligence.discovery import (
     ArticleFetchError,
     discover_hub_urls,
     extract_hub_links,
@@ -42,8 +42,8 @@ from brain.discovery import (
     parse_sitemap,
     policy_get,
 )
-from brain.normalize import NormalizedDocument
-from brain.sources import get_retrieval_config, get_source
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_retrieval_config, get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -510,7 +510,7 @@ class FakeConnection:
 
 @pytest.mark.parametrize("label", LABELS)
 def test_rerun_upsert_is_noop(label: str) -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = _harvest(label).documents
     assert len(docs) == 4
@@ -526,7 +526,7 @@ def test_rerun_upsert_is_noop(label: str) -> None:
 def test_flow_ingests_dive_source_with_exact_shape(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     label = "Marketing Dive"
     routes = _routes(label)
@@ -538,7 +538,7 @@ def test_flow_ingests_dive_source_with_exact_shape(
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = flows.ingest_source_flow(source_name=label)
@@ -552,7 +552,7 @@ def test_flow_ingests_dive_source_with_exact_shape(
 def test_batch_ingests_both_dives_and_isolates_failure(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     maps = {label: _fetch_map(label) for label in LABELS}
     failing_host = SOURCES["Marketing Dive"]["host"]
@@ -578,7 +578,7 @@ def test_batch_ingests_both_dives_and_isolates_failure(
     shared: dict[str, FakeConnection] = {}
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
-        from brain.ingest import upsert_documents
+        from marketing_intelligence.ingest import upsert_documents
 
         conn = shared.setdefault(docs[0].source, FakeConnection())
         return upsert_documents(docs, conn=conn)

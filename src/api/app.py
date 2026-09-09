@@ -1,4 +1,4 @@
-"""Thin HTTP adapter over brain.service (Ticket 05).
+"""Thin HTTP adapter over marketing_intelligence.service (Ticket 05).
 
 Same validated payloads as the MCP tools by construction: both call the
 shared service functions. `InvalidRequest` maps to 422; FastAPI also serves
@@ -13,16 +13,18 @@ from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from brain import service
-from brain.auth import require_bearer
-from brain.healthcheck import health_payload  # noqa: F401  (installs access-log filter)
-from brain.service import (
+from marketing_intelligence import service
+from marketing_intelligence.auth import require_bearer
+from marketing_intelligence.healthcheck import (
+    health_payload,  # noqa: F401  (installs access-log filter)
+)
+from marketing_intelligence.service import (
     DEFAULT_PERIOD_LIMIT,
     DEFAULT_SEARCH_LIMIT,
     InvalidRequest,
 )
 
-app = FastAPI(title="Trend Intelligence Brain", version="0.1.0")
+app = FastAPI(title="Marketing Intelligence", version="0.1.0")
 
 
 @app.get("/health")

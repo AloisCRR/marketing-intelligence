@@ -8,7 +8,7 @@ No certs, no TLS config in the image or compose file.
 
 | Compose service | Process (container CMD) | Internal port | Purpose |
 |---|---|---|---|
-| `migrate` | `python -c "from brain.db import apply_migrations; apply_migrations()"` | — (one-shot, exits 0) | Idempotent `migrations/*.sql` before serve |
+| `migrate` | `python -c "from marketing_intelligence.db import apply_migrations; apply_migrations()"` | — (one-shot, exits 0) | Idempotent `migrations/*.sql` before serve |
 | `api` | `uvicorn api.app:app --host 0.0.0.0 --port 8123` (image default CMD) | 8123 | FastAPI: `GET /search`, `POST /period-context`, `GET /article`, `POST /flag-extraction`, `/docs` |
 | `mcp` | `uvicorn --app-dir src/mcp server:http_app --host 0.0.0.0 --port 8124` | 8124 | MCP streamable-HTTP app (`/mcp`) |
 
@@ -31,7 +31,7 @@ Startup order is wired in `compose.yml`: `api`/`mcp` wait for
 - **Image**: built by Dokploy from `Dockerfile` (multi-stage,
   `python:3.12-slim`, frozen `uv.lock` install, non-root `appuser`,
   `HEALTHCHECK` via `$PORT`). Local equivalent: `make image`
-  (`docker build -t brain-app:local .`).
+  (`docker build -t marketing-intelligence-app:local .`).
 - **Domains (Traefik, TLS automatic, outside containers)**:
   - `https://api.<domain>` → service `api`, container port **8123**
   - `https://mcp.<domain>` → service `mcp`, container port **8124**
@@ -50,7 +50,7 @@ Startup order is wired in `compose.yml`: `api`/`mcp` wait for
   so the `migrate` one-shot runs before `api`/`mcp` start. If your Dokploy
   setup skips one-shot services, run as a pre-deploy command instead:
   `docker compose run --rm migrate` (or against the built image:
-  `python -c "from brain.db import apply_migrations; apply_migrations()"`
+  `python -c "from marketing_intelligence.db import apply_migrations; apply_migrations()"`
   with `DATABASE_URL` set). No yoyo — plain `apply_migrations` hook only.
 - **Postgres**: keep the compose `db` service (data on named volume `pgdata`)
   or swap `DATABASE_URL` to a Dokploy-managed Postgres; nothing else changes.
@@ -58,7 +58,7 @@ Startup order is wired in `compose.yml`: `api`/`mcp` wait for
 ## Local check
 
 ```sh
-make image          # docker build -t brain-app:local .
+make image          # docker build -t marketing-intelligence-app:local .
 make up-db          # DB only (unchanged local flow)
 make up             # db + migrate + api + mcp
 curl localhost:8123/docs            # 200 (open mode without BRAIN_API_TOKEN)
@@ -85,7 +85,7 @@ Core rules:
   from the worker. In-cluster use the compose service name:
   `postgresql://brain:brain@db:5432/brain` (internal port **5432**, not the
   published 5433). On Dokploy the host part is whatever the Postgres service
-  is called there (`db`, `brain-db`, or the Dokploy-managed Postgres internal
+  is called there (`db`, `marketing-intelligence-db`, or the Dokploy-managed Postgres internal
   hostname) — same credentials/db as `POSTGRES_USER`/`POSTGRES_PASSWORD`/
   `POSTGRES_DB`.
 - **Name resolution via compose service name.** On the shared network `db`
@@ -107,7 +107,7 @@ prefect-worker:
   build:
     context: .
     dockerfile: Dockerfile
-  image: brain-app:local
+  image: marketing-intelligence-app:local
   profiles: ["prefect"]
   command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-default}"]
   environment:
@@ -166,6 +166,6 @@ Dokploy UI steps:
    (re)start the prefect worker. On redeploy, Dokploy follows `depends_on`;
    across two apps do it manually in that order.
 4. **Verify from inside the worker network**:
-   `docker compose exec prefect-worker python -c "from brain.db import get_engine; get_engine().connect().close(); print('db ok')"`
+   `docker compose exec prefect-worker python -c "from marketing_intelligence.db import get_engine; get_engine().connect().close(); print('db ok')"`
    (or `pg_isready -h db -p 5432`). If it says "connection refused on
    localhost", the worker's `DATABASE_URL` still points at `localhost`.

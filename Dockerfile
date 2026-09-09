@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Trend Intelligence Brain — single deploy image (Dokploy + local compose).
+# Marketing Intelligence — single deploy image (Dokploy + local compose).
 #
 # One image, two processes (plain HTTP only — Traefik terminates TLS):
 #   API (FastAPI):  uvicorn api.app:app --host 0.0.0.0 --port 8123   (default CMD)
@@ -15,7 +15,7 @@
 #
 # Migrate-on-deploy is NOT baked into the entrypoint: run the `migrate`
 # compose service (or Dokploy pre-deploy command) first:
-#   python -c "from brain.db import apply_migrations; apply_migrations()"
+#   python -c "from marketing_intelligence.db import apply_migrations; apply_migrations()"
 
 FROM python:3.12-slim AS builder
 

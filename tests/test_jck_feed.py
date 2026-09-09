@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 from prefect_harness import no_engine
 
-import brain.flows as flows
-from brain.ingest import (
+import marketing_intelligence.flows as flows
+from marketing_intelligence.ingest import (
     EmptyFeedError,
     diagnose_empty_feed,
     feed_candidate_urls,
@@ -29,14 +29,14 @@ from brain.ingest import (
     parse_feed_with_report,
     upsert_documents,
 )
-from brain.normalize import NormalizedDocument
-from brain.sources import get_source
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CURATED = (
     Path(__file__).resolve().parents[1]
     / ".scratch"
-    / "trend-intelligence-brain"
+    / "marketing-intelligence"
     / "curated-sources.json"
 )
 

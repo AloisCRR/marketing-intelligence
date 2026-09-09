@@ -1,7 +1,7 @@
-# AGENTS.md — Trend Intelligence Brain
+# AGENTS.md — Marketing Intelligence
 
 Persistent data platform (not a newsletter generator): curated sources → deterministic ingestion → PG-backed knowledge → semantic API/MCP → AI digest consumer.
-Full system spec: `.scratch/trend-intelligence-brain/spec.md`. Glossary/single source of truth: `CONTEXT.md`.
+Full system spec: `.scratch/marketing-intelligence/spec.md`. Glossary/single source of truth: `CONTEXT.md`.
 
 ## Runnable commands
 
@@ -17,7 +17,7 @@ docker compose up -d db        # Postgres 18 + pgvector (DATABASE_URL=postgresql
 
 ## What this is
 
-Five layers (spec §Solution): Source (curated sites/feeds) → Ingestion (Prefect `@flow/@task`, RSS+HTTP V1) → Data/Knowledge (Postgres 18 + pgvector, system of record) → Semantic/Query (`brain.service` adapter → thin HTTP + MCP parity surfaces) → AI (digest consumer).
+Five layers (spec §Solution): Source (curated sites/feeds) → Ingestion (Prefect `@flow/@task`, RSS+HTTP V1) → Data/Knowledge (Postgres 18 + pgvector, system of record) → Semantic/Query (`marketing_intelligence.service` adapter → thin HTTP + MCP parity surfaces) → AI (digest consumer).
 V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), deterministic only (no LLM/embeddings/topics), search + `get_period_context(from, to)` only.
 
 ## How to work here
@@ -29,8 +29,8 @@ V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), dete
 
 ## Domain context
 
-- Source of truth: `CONTEXT.md` (glossary + V1 cuts) and `docs/adr/`. Curated sources: `.scratch/trend-intelligence-brain/curated-sources.json`.
-- Boundaries: agent is a **consumer** of the semantic layer, not a scraper; callers use `brain.service` (`MAX_LIMIT=100`, `InvalidRequest` → HTTP 422), never raw SQL as primary access; ingestion stays deterministic and observable (rerunnable `ingest_source_flow` per source, explicit partial failure).
+- Source of truth: `CONTEXT.md` (glossary + V1 cuts) and `docs/adr/`. Curated sources: `.scratch/marketing-intelligence/curated-sources.json`.
+- Boundaries: agent is a **consumer** of the semantic layer, not a scraper; callers use `marketing_intelligence.service` (`MAX_LIMIT=100`, `InvalidRequest` → HTTP 422), never raw SQL as primary access; ingestion stays deterministic and observable (rerunnable `ingest_source_flow` per source, explicit partial failure).
 
 ## Testing
 

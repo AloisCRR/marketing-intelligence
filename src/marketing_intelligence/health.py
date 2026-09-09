@@ -8,7 +8,7 @@ Read/write seam over the `ingestion_runs` table (migrations/003):
   article tables — operators see ingestion status with zero documents stored.
 
 Both accept an injected DB-API connection (fakes welcome); when ``conn`` is
-None a connection is opened via ``brain.db.get_connection``.
+None a connection is opened via ``marketing_intelligence.db.get_connection``.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from brain.db import get_connection
-from brain.sources import V1_SOURCES
+from marketing_intelligence.db import get_connection
+from marketing_intelligence.sources import V1_SOURCES
 
 INSERT_RUN_SQL = """\
 INSERT INTO ingestion_runs

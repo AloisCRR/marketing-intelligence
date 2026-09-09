@@ -35,11 +35,11 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from prefect_harness import no_engine  # noqa: E402
 
-import brain.article as article_lane  # noqa: E402
-import brain.enrich as enrich_lane  # noqa: E402
-import brain.period as period_lane  # noqa: E402
-import brain.search as search_lane  # noqa: E402
-import brain.service as service  # noqa: E402
+import marketing_intelligence.article as article_lane  # noqa: E402
+import marketing_intelligence.enrich as enrich_lane  # noqa: E402
+import marketing_intelligence.period as period_lane  # noqa: E402
+import marketing_intelligence.search as search_lane  # noqa: E402
+import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
 
@@ -421,7 +421,7 @@ MIX_FALLBACK_MARKDOWN = (
 def test_mixed_content_run_stores_expected_bodies_and_causes(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: MIX_RSS)
     monkeypatch.setattr(
@@ -501,7 +501,7 @@ def test_no_model_calls_on_covered_paths() -> None:
     )
     loaded = {name.split(".")[0] for name in sys.modules}
     assert not (set(banned) & loaded), f"model libs imported: {set(banned) & loaded}"
-    roots = [Path(_SRC) / "brain", Path(_SRC) / "api", Path(_SRC) / "mcp"]
+    roots = [Path(_SRC) / "marketing_intelligence", Path(_SRC) / "api", Path(_SRC) / "mcp"]
     hits = []
     for root in roots:
         for path in root.rglob("*.py"):

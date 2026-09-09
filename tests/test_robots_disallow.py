@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from brain.discovery import (
+from marketing_intelligence.discovery import (
     harvest_sitemap_source,
     robots_disallowed_paths,
     robots_is_disallowed,

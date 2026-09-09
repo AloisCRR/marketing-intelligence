@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from prefect_harness import no_engine
 
-from brain.normalize import NormalizedDocument, content_hash_for, make_document
+from marketing_intelligence.normalize import NormalizedDocument, content_hash_for, make_document
 
 THIN_URL = "https://example.com/articles/thin-story"
 FULL_URL = "https://example.com/articles/full-story"
@@ -56,14 +56,14 @@ def _full_doc() -> NormalizedDocument:
 
 
 def test_is_thin_empty_and_whitespace_only() -> None:
-    from brain.enrich import is_thin
+    from marketing_intelligence.enrich import is_thin
 
     assert is_thin("") is True
     assert is_thin("   \n\t  ") is True
 
 
 def test_is_thin_threshold_boundary() -> None:
-    from brain.enrich import DEFAULT_THIN_THRESHOLD, is_thin
+    from marketing_intelligence.enrich import DEFAULT_THIN_THRESHOLD, is_thin
 
     assert DEFAULT_THIN_THRESHOLD == 500
     assert is_thin("x" * 499) is True
@@ -72,7 +72,7 @@ def test_is_thin_threshold_boundary() -> None:
 
 
 def test_is_thin_collapses_whitespace_before_measuring() -> None:
-    from brain.enrich import is_thin
+    from marketing_intelligence.enrich import is_thin
 
     assert is_thin("  a  b  ", threshold=10) is True  # collapses to "a b"
     assert is_thin("  a  b  ", threshold=3) is False
@@ -84,7 +84,7 @@ def test_is_thin_collapses_whitespace_before_measuring() -> None:
 
 
 def test_clean_to_markdown_strips_tags_preserves_paragraphs() -> None:
-    from brain.enrich import clean_to_markdown
+    from marketing_intelligence.enrich import clean_to_markdown
 
     html = "<article><h1>Head</h1><p>First &amp; paragraph.</p><p>Second <b>bold</b> one.</p></article>"
     md = clean_to_markdown(html, THIN_URL)
@@ -95,7 +95,7 @@ def test_clean_to_markdown_strips_tags_preserves_paragraphs() -> None:
 
 
 def test_clean_to_markdown_plain_text_passthrough() -> None:
-    from brain.enrich import clean_to_markdown
+    from marketing_intelligence.enrich import clean_to_markdown
 
     md = clean_to_markdown("Just some plain text.", THIN_URL)
     assert md == "Just some plain text."
@@ -107,7 +107,7 @@ def test_clean_to_markdown_plain_text_passthrough() -> None:
 def test_fetch_and_clean_timeout_raises_fetch_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     def _boom(request: object, timeout: object = None) -> object:
         raise urllib.error.URLError("timed out")
@@ -120,7 +120,7 @@ def test_fetch_and_clean_timeout_raises_fetch_failed(
 def test_fetch_and_clean_http_error_raises_fetch_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     def _denied(request: object, timeout: object = None) -> object:
         raise urllib.error.HTTPError(str(THIN_URL), 403, "Forbidden", {}, None)  # type: ignore[arg-type]
@@ -133,7 +133,7 @@ def test_fetch_and_clean_http_error_raises_fetch_failed(
 def test_fetch_and_clean_empty_body_raises_unparseable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     class _Resp:
         def __enter__(self) -> _Resp:
@@ -156,7 +156,7 @@ def test_fetch_and_clean_empty_body_raises_unparseable(
 def test_sufficient_rss_skips_untouched_zero_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     calls: list[str] = []
 
@@ -176,7 +176,7 @@ def test_sufficient_rss_skips_untouched_zero_fetch(
 def test_thin_item_stores_markdown_hash_over_stored_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     markdown = "# Thin Story\n\nFull article body with several sentences of real content."
     monkeypatch.setattr(enrich, "fetch_and_clean", lambda url, timeout=30: markdown)
@@ -206,7 +206,7 @@ def test_thin_item_stores_markdown_hash_over_stored_text(
 def test_each_failure_mode_keeps_rss_and_records_cause(
     monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     failure_cls: type[enrich.EnrichmentError] = (
         enrich.UnparseableBody if "unparseable" in str(failure) else enrich.FetchFailed
@@ -230,7 +230,7 @@ def test_each_failure_mode_keeps_rss_and_records_cause(
 def test_enrich_document_or_keep_never_raises_on_unexpected_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     def _boom(url: str, timeout: int = 30) -> str:
         raise RuntimeError("something bizarre")
@@ -292,8 +292,8 @@ class FakeConnection:
 
 
 def _wire_flow(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> Any:
-    import brain.flows as flows
-    from brain.ingest import upsert_documents
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence.ingest import upsert_documents
 
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: THIN_FEED)
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
@@ -303,7 +303,7 @@ def _wire_flow(monkeypatch: pytest.MonkeyPatch, conn: FakeConnection) -> Any:
 def test_flow_enriches_thin_only_and_skips_sufficient(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    from brain import enrich as enrich_mod
+    from marketing_intelligence import enrich as enrich_mod
 
     flows = _wire_flow(monkeypatch, FakeConnection())
     fetched: list[str] = []
@@ -324,7 +324,7 @@ def test_flow_enriches_thin_only_and_skips_sufficient(
 def test_flow_failure_keeps_rss_records_cause_run_completes(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    from brain import enrich as enrich_mod
+    from marketing_intelligence import enrich as enrich_mod
 
     flows = _wire_flow(monkeypatch, FakeConnection())
 
@@ -359,7 +359,7 @@ def test_flow_enrich_stage_never_blocks_on_unexpected_exception(
 
 
 def test_flow_rerun_inserts_nothing_new(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
-    from brain import enrich as enrich_mod
+    from marketing_intelligence import enrich as enrich_mod
 
     conn = FakeConnection()
     flows = _wire_flow(monkeypatch, conn)
@@ -381,7 +381,7 @@ def test_flow_rerun_inserts_nothing_new(monkeypatch: pytest.MonkeyPatch, no_engi
 def test_no_model_calls_on_enrichment_path() -> None:
     import re
 
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     source = Path(enrich.__file__).read_text(encoding="utf-8")
     for banned in ("openai", "anthropic", "transformers", "torch", "firecrawl", "crawl4ai"):
@@ -440,7 +440,7 @@ def _browser_headers_of(request: Any) -> dict[str, str]:
 def test_impersonation_backend_used_when_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     fake = _FakeCurlRequests(200, ARTICLE_HTML)
     monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
@@ -465,7 +465,7 @@ def test_impersonation_backend_used_when_available(
 def test_stdlib_fallback_when_curl_cffi_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     monkeypatch.setattr(enrich, "_curl_cffi_requests", None)
     captured: dict[str, Any] = {}
@@ -487,7 +487,7 @@ def test_stdlib_fallback_when_curl_cffi_missing(
 def test_impersonation_failure_falls_back_to_stdlib(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     fake = _FakeCurlRequests(403, b"Forbidden")
     monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
@@ -554,7 +554,7 @@ BOILERPLATE_HTML = (
 
 
 def test_cleaner_strips_script_and_style_contents() -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
     for cruft in ("NREUM", "personalization", "color:red", "function(", "track("):
@@ -563,7 +563,7 @@ def test_cleaner_strips_script_and_style_contents() -> None:
 
 
 def test_cleaner_keeps_paragraphs_and_links_as_markdown() -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
     assert "First article paragraph with substance." in markdown
@@ -572,7 +572,7 @@ def test_cleaner_keeps_paragraphs_and_links_as_markdown() -> None:
 
 
 def test_cleaner_boilerplate_much_shorter_than_regex_path() -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
     legacy = enrich._regex_to_markdown(BOILERPLATE_HTML)
@@ -586,7 +586,7 @@ def test_cleaner_boilerplate_much_shorter_than_regex_path() -> None:
 def test_cleaner_falls_back_to_regex_when_trafilatura_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     class _NoneExtractor:
         @staticmethod
@@ -602,7 +602,7 @@ def test_cleaner_falls_back_to_regex_when_trafilatura_returns_none(
 def test_cleaner_falls_back_to_regex_when_trafilatura_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     monkeypatch.setattr(enrich, "_trafilatura", None)
     assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == enrich._regex_to_markdown(

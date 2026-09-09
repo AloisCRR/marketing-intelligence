@@ -1,4 +1,4 @@
-# CONTEXT.md — Trend Intelligence Brain (V1 slice)
+# CONTEXT.md — Marketing Intelligence (V1 slice)
 
 ## Glossary
 
@@ -11,7 +11,7 @@
 - **Ingestion Stage**: one fetch / parse / upsert step inside an Ingestion Run, implemented as a Prefect task.
   _Avoid_: Task Run (Prefect implementation term for the same step)
 - **Period Context**: a prepared evidence bundle for a caller-given date range (`period`, `important_articles` with provenance). V1: no velocity, no emerging-topics (no history yet).
-- **Service Adapter**: the single validated interface (`brain.service`, `MAX_LIMIT=100`, `InvalidRequest`) behind both caller surfaces; stdlib-only, no HTTP/MCP imports.
+- **Service Adapter**: the single validated interface (`marketing_intelligence.service`, `MAX_LIMIT=100`, `InvalidRequest`) behind both caller surfaces; stdlib-only, no HTTP/MCP imports.
 - **Extraction Flag**: an agent-reported marker that a Document's content was improperly extracted, with reason + detail + reporter + timestamp.
   _Avoid_: Page mark, quality flag (factual accuracy is out of scope)
 - **API / MCP**: two thin, parity-guaranteed surfaces over the service adapter — HTTP (`GET /search` with 11-key dicts, `POST /period-context` with 10-key dicts, `GET /article`, `POST /flag-extraction`, 422 on `InvalidRequest`) and MCP (4 tools: `search_articles`, `get_period_context`, `get_article`, `flag_extraction`, same payloads by construction).

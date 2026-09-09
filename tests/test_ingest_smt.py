@@ -1,6 +1,6 @@
 """Source-adapter + ingestion tests for Social Media Today (first RSS source).
 
-Contract under test (see .scratch/trend-intelligence-brain/spec.md,
+Contract under test (see .scratch/marketing-intelligence/spec.md,
 "Testing Decisions": source adapters / ingestion / dedupe):
 - representative fixture -> normalized document contract
 - missing optional fields (author) stay nullable, never crash
@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 from prefect_harness import no_engine
 
-from brain.flows import ingest_source_flow
-from brain.ingest import parse_feed, upsert_documents
-from brain.normalize import NormalizedDocument, canonicalize_url, content_hash_for
-from brain.sources import get_source
+from marketing_intelligence.flows import ingest_source_flow
+from marketing_intelligence.ingest import parse_feed, upsert_documents
+from marketing_intelligence.normalize import NormalizedDocument, canonicalize_url, content_hash_for
+from marketing_intelligence.sources import get_source
 
 FIXTURE = Path(__file__).parent / "fixtures" / "smt_sample.xml"
 
@@ -209,7 +209,7 @@ def test_upsert_uses_on_conflict() -> None:
 def test_flow_importable_and_returns_counts(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     assert callable(ingest_source_flow)
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: FIXTURE.read_bytes())

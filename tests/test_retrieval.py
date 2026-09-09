@@ -22,17 +22,17 @@ import pytest
 from fake_transport import FakeTransport
 from prefect_harness import no_engine
 
-import brain.flows as flows
-import brain.ingest as ingest
-from brain.ingest import fetch_rss
-from brain.normalize import NormalizedDocument
-from brain.sources import get_retrieval_policy, get_source
+import marketing_intelligence.flows as flows
+import marketing_intelligence.ingest as ingest
+from marketing_intelligence.ingest import fetch_rss
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_retrieval_policy, get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CURATED = (
     Path(__file__).resolve().parents[1]
     / ".scratch"
-    / "trend-intelligence-brain"
+    / "marketing-intelligence"
     / "curated-sources.json"
 )
 
@@ -370,7 +370,7 @@ def test_batch_keeps_shape_across_both_lanes(
 
 
 def test_registry_loads_all_20_sources() -> None:
-    from brain.sources import list_sources
+    from marketing_intelligence.sources import list_sources
 
     names = [e["name"] for e in list_sources()]
     assert len(names) == 20
@@ -417,7 +417,7 @@ def test_no_rss_policies_validate_and_never_raise() -> None:
 
 
 def test_retrieval_config_fills_defaults_for_ticket_08() -> None:
-    from brain.sources import get_retrieval_config
+    from marketing_intelligence.sources import get_retrieval_config
 
     cfg = get_retrieval_config("MarketingDirecto")
     assert cfg == {
@@ -450,7 +450,7 @@ def test_retrieval_config_fills_defaults_for_ticket_08() -> None:
 def test_invalid_stanza_values_fall_back_without_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import brain.sources as sources
+    import marketing_intelligence.sources as sources
 
     real_get_source = sources.get_source
 

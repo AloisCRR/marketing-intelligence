@@ -28,11 +28,11 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from conftest import FakeConn, maintenance_url  # noqa: E402
 
-import brain.db as db  # noqa: E402
+import marketing_intelligence.db as db  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_007 = ROOT / "migrations" / "007_deterministic_sources_and_not_null.sql"
-CURATED = ROOT / ".scratch" / "trend-intelligence-brain" / "curated-sources.json"
+CURATED = ROOT / ".scratch" / "marketing-intelligence" / "curated-sources.json"
 
 _LANG_CODE = {"English": "en", "Portuguese": "pt", "Spanish": "es"}
 
@@ -65,7 +65,7 @@ def test_007_seed_is_idempotent_on_conflict_do_nothing() -> None:
 
 
 def test_007_ids_are_deterministic_uuid5() -> None:
-    """Embedded ids must equal brain.db.source_uuid(name) (stdlib uuid5, no new dep)."""
+    """Embedded ids must equal marketing_intelligence.db.source_uuid(name) (stdlib uuid5, no new dep)."""
     sql = _read_007()
     found = _UUID_RE.findall(sql)
     assert len(found) >= 20, f"expected >=20 UUID literals in 007, found {len(found)}"

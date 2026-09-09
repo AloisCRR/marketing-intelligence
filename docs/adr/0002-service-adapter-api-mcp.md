@@ -13,8 +13,8 @@ surfaces drift apart in validation or payload shape.
 
 ## Decision
 
-- Single validated interface in `src/brain/service.py` (stdlib-only: no
-  fastapi/mcp imports in `brain/`): `MAX_LIMIT=100`, `InvalidRequest`, and
+- Single validated interface in `src/marketing_intelligence/service.py` (stdlib-only: no
+  fastapi/mcp imports in `marketing_intelligence/`): `MAX_LIMIT=100`, `InvalidRequest`, and
   `search_articles(keyword, limit, conn)` + `get_weekly_context(from, to,
   sources, limit, conn)` with ISO-string coercion, unknown-source rejection,
   and V1 trend keys as explicit `[]`.
@@ -25,7 +25,7 @@ surfaces drift apart in validation or payload shape.
   collides with the installed `mcp` distribution, so a regular package here
   would shadow the dependency (or vice versa). The server module is run as a
   script (`uv run python src/mcp/server.py`) and loaded by file path in tests.
-- `brain.search.search_articles` gains an optional injected `conn`
+- `marketing_intelligence.search.search_articles` gains an optional injected `conn`
   (backward-compatible: `None` still opens/closes its own connection;
   injected conns are never closed here).
 

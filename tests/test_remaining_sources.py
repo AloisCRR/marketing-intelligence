@@ -16,10 +16,10 @@ from pathlib import Path
 import pytest
 from prefect_harness import no_engine
 
-import brain.flows as flows
-from brain.ingest import parse_feed, upsert_documents
-from brain.normalize import NormalizedDocument
-from brain.sources import get_source
+import marketing_intelligence.flows as flows
+from marketing_intelligence.ingest import parse_feed, upsert_documents
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -202,7 +202,7 @@ def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     Identity-enriches every document so Ingestion Runs over fixtures keep their
     pre-enrichment {inserted, skipped} shapes (no live article fetches).
     """
-    import brain.flows as _flows
+    import marketing_intelligence.flows as _flows
 
     monkeypatch.setattr(_flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
 
@@ -232,7 +232,7 @@ def test_unknown_source_flow_returns_explicit_error(no_engine: None) -> None:
 def test_single_source_flow_rerunnable_independently(
     monkeypatch: pytest.MonkeyPatch, name: str, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     fixture = FIXTURE_FILES[name].read_bytes()
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: fixture)
@@ -246,7 +246,7 @@ def test_single_source_flow_rerunnable_independently(
 def test_multi_source_flow_records_failure_without_blocking_others(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     by_url = {
         src["rss_url"]: name for name, src in ((n, get_source(n)) for n in (MARTECH, PJ, INFOMONEY))
@@ -277,9 +277,9 @@ def test_multi_source_flow_records_failure_without_blocking_others(
 def test_ingest_sources_flow_covers_v1_scope_default(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
-    from brain.discovery import HarvestPlan
-    from brain.sources import V1_SOURCES, get_source
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence.discovery import HarvestPlan
+    from marketing_intelligence.sources import V1_SOURCES, get_source
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
 
@@ -325,7 +325,7 @@ def test_ingest_sources_flow_covers_v1_scope_default(
 
 def test_no_extra_registry_sources_outside_v1() -> None:
     """V1 covers the full curated set: every registry name is in V1 scope."""
-    from brain.sources import V1_SOURCES, list_sources
+    from marketing_intelligence.sources import V1_SOURCES, list_sources
 
     assert {e["name"] for e in list_sources()} == set(V1_SOURCES)
     assert len(V1_SOURCES) == 20
@@ -334,7 +334,7 @@ def test_no_extra_registry_sources_outside_v1() -> None:
 def test_explicit_subset_still_ingests_by_name(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
     monkeypatch.setattr(flows, "fetch_rss", lambda url, timeout=30: smt_bytes)
@@ -371,7 +371,7 @@ def test_migration_006_seeds_all_20_sources() -> None:
     curated = {
         e["source_name"]
         for e in json.loads(
-            (root / ".scratch" / "trend-intelligence-brain" / "curated-sources.json").read_text(
+            (root / ".scratch" / "marketing-intelligence" / "curated-sources.json").read_text(
                 encoding="utf-8"
             )
         )

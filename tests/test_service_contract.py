@@ -1,6 +1,6 @@
 """Service-adapter contract tests (Ticket 05) — fake conns, no live Postgres.
 
-Covers the shared validated interface in `brain.service`:
+Covers the shared validated interface in `marketing_intelligence.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
 - 11-key search schema + provenance + tz-aware published_at
 - period bundle shape, provenance, [] trend keys, Panama tz handling
@@ -21,7 +21,7 @@ _SRC = os.path.join(os.path.dirname(_HERE), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from brain.service import (  # noqa: E402
+from marketing_intelligence.service import (  # noqa: E402
     DEFAULT_PERIOD_LIMIT,
     DEFAULT_SEARCH_LIMIT,
     MAX_LIMIT,
@@ -117,7 +117,7 @@ class _SearchCursor:
 
 
 class _SearchConnection:
-    """Cursor-style fake (matches brain.search conn usage)."""
+    """Cursor-style fake (matches marketing_intelligence.search conn usage)."""
 
     def __init__(self, rows: list[tuple] = SEARCH_ROWS) -> None:
         self._rows = rows

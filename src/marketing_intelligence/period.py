@@ -24,8 +24,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from brain.db import get_connection
-from brain.sources import V1_SOURCES
+from marketing_intelligence.db import get_connection
+from marketing_intelligence.sources import V1_SOURCES
 
 PANAMA_TZ = ZoneInfo("America/Panama")
 PANAMA_NAME = "America/Panama"

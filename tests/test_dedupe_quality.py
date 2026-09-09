@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 from prefect_harness import no_engine
 
-from brain.ingest import (
+from marketing_intelligence.ingest import (
     INSERT_SQL,
     ParseReport,
     count_feed_entries,
@@ -29,7 +29,7 @@ from brain.ingest import (
     parse_feed_with_report,
     upsert_documents,
 )
-from brain.normalize import NormalizedDocument, make_document
+from marketing_intelligence.normalize import NormalizedDocument, make_document
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MESSY = FIXTURES / "messy_sample.xml"
@@ -199,7 +199,7 @@ def test_count_feed_entries_matches_fixture_items() -> None:
 def test_flow_surfaces_parse_skipped_without_breaking_clean_flows(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     # Hermetic: enrichment is lane 02/03's concern — identity-enrich so this
     # test keeps asserting parse/dedupe shapes, never live article fetches.

@@ -113,8 +113,8 @@ def test_migration_indexes_and_seed():
 
 
 def test_config_and_db_importable():
-    from brain.config import DATABASE_URL  # noqa: F401
-    from brain.db import apply_migrations, get_connection  # noqa: F401
+    from marketing_intelligence.config import DATABASE_URL  # noqa: F401
+    from marketing_intelligence.db import apply_migrations, get_connection  # noqa: F401
 
     assert isinstance(DATABASE_URL, str) and DATABASE_URL.startswith("postgresql://")
     assert callable(get_connection)
@@ -126,7 +126,7 @@ def test_config_default_database_url():
     os.environ.pop("DATABASE_URL", None)
     import importlib
 
-    import brain.config as config
+    import marketing_intelligence.config as config
 
     importlib.reload(config)
     assert config.DATABASE_URL == "postgresql://brain:brain@localhost:5433/brain"
@@ -141,7 +141,7 @@ def test_apply_migrations_live_db():
         import pytest
 
         pytest.skip("live DB test guarded by BRAIN_RUN_DB_TESTS=1")
-    from brain.db import apply_migrations, get_connection
+    from marketing_intelligence.db import apply_migrations, get_connection
 
     apply_migrations()  # idempotent: run twice to prove rerun-safety
     apply_migrations()

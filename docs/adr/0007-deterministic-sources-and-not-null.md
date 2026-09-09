@@ -9,7 +9,7 @@ Two schemas facts collided: `documents.source_id` is nullable (001) and the
 ingest fallback writes NULL when a source name is unseeded (`ingest.py`
 upsert path), so repeated ingestions accumulated unattributed rows. Identity is
 `gen_random_uuid()` + `name UNIQUE`; dedupe is `sha256(title+content)`
-(`brain/normalize.py`). `ingestion_runs` is keyed by `source_name TEXT`
+(`marketing_intelligence/normalize.py`). `ingestion_runs` is keyed by `source_name TEXT`
 (already `NOT NULL` per 003). `documents` carries **no** `source_name` column,
 so a NULL-`source_id` row has no recoverable provenance.
 
@@ -18,7 +18,7 @@ so a NULL-`source_id` row has no recoverable provenance.
 - Migration `007_deterministic_sources_and_not_null.sql` (yoyo, idempotent):
   re-asserts all 20 curated sources with `ON CONFLICT (name) DO NOTHING`.
   New rows take stdlib `uuid5(NAMESPACE_DNS,
-  "trend-intelligence-brain:source:<name>")` ids (see `brain.db.source_uuid`);
+  "trend-intelligence-brain:source:<name>")` ids (see `marketing_intelligence.db.source_uuid`; prefix kept for stable UUIDs);
   rows seeded by 001/006 keep their random ids — identity is the name UNIQUE
   column, so no backfill of old ids. **No new dependency**: deterministic ids
   need only the stdlib `uuid` module; adding a library for this would be
@@ -39,7 +39,7 @@ so a NULL-`source_id` row has no recoverable provenance.
 
 ## Consequences
 
-- `brain.db` gains `source_uuid()`, `SEED_SOURCES`, `seed_sources()` and
+- `marketing_intelligence.db` gains `source_uuid()`, `SEED_SOURCES`, `seed_sources()` and
   `quarantine_null_documents()` (stdlib-only, fake-connection friendly).
 - `tests/test_db_seeds.py`: SQL-text contract (20 names, deterministic ids,
   quarantine-before-guard ordering) + helper idempotence + live scratch-DB

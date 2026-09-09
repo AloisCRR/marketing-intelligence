@@ -44,24 +44,24 @@ from urllib.parse import urljoin, urlsplit
 
 from dateutil import parser as date_parser
 
-from brain.enrich import clean_to_markdown
-from brain.ingest import USER_AGENT, _feed_blocked
-from brain.normalize import (
+from marketing_intelligence.enrich import clean_to_markdown
+from marketing_intelligence.ingest import USER_AGENT, _feed_blocked
+from marketing_intelligence.normalize import (
     NormalizedDocument,
     canonicalize_url,
     coerce_tz_aware,
     content_hash_for,
     normalize_text,
 )
-from brain.sources import DEFAULT_MAX_URLS, DEFAULT_PACING_MS, EXTRACTOR_FAMILIES
+from marketing_intelligence.sources import DEFAULT_MAX_URLS, DEFAULT_PACING_MS, EXTRACTOR_FAMILIES
 
-try:  # optional impersonated-retry backend (mirrors brain.ingest)
+try:  # optional impersonated-retry backend (mirrors marketing_intelligence.ingest)
     from curl_cffi import requests as _curl_cffi_requests
 except Exception:  # pragma: no cover - stdlib-only environments
     _curl_cffi_requests = None  # type: ignore[assignment]
 
 #: Explicit timeout (s) for article/discovery stdlib fetches (opt 4 split:
-#: 10s feeds in brain.ingest, 15s articles here, 30s only for the
+#: 10s feeds in marketing_intelligence.ingest, 15s articles here, 30s only for the
 #: impersonated retry leg in `_impersonated_get`).
 DEFAULT_TIMEOUT = 15
 
@@ -175,7 +175,7 @@ def _stdlib_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
 
 def _impersonated_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
     """GET `url` with curl_cffi Chrome impersonation; return (final_url, body)."""
-    from brain.enrich import BROWSER_HEADERS
+    from marketing_intelligence.enrich import BROWSER_HEADERS
 
     assert _curl_cffi_requests is not None  # guarded by policy_get
     try:
@@ -200,7 +200,7 @@ def policy_get(
 ) -> tuple[str, bytes]:
     """GET `url` under the stanza policy; return (final_url, body).
 
-    Mirrors the feed lane (`brain.ingest.fetch_rss`): stdlib first with a
+    Mirrors the feed lane (`marketing_intelligence.ingest.fetch_rss`): stdlib first with a
     15s native timeout, and only when that attempt meets 403/challenge
     evidence does ``impersonated-feed`` retry once via curl_cffi with its
     own 30s native timeout — any other failure is an explicit

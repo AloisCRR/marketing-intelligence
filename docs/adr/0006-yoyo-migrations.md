@@ -5,7 +5,7 @@
 
 ## Context
 
-`brain.db.apply_migrations()` re-executed every `migrations/*.sql` file on each
+`marketing_intelligence.db.apply_migrations()` re-executed every `migrations/*.sql` file on each
 run with no version table. Files 001, 002, 003, 005 are idempotent
 (`IF NOT EXISTS`), so this worked — but any future non-idempotent statement
 (`ALTER TABLE … DROP`, backfills) would break on rerun. Number **004 is
@@ -15,7 +15,7 @@ renumbering would fork applied-state between existing DBs).
 
 ## Decision
 
-- `yoyo-migrations>=9.0.0` backend in `src/brain/db.py` (`read_migrations` /
+- `yoyo-migrations>=9.0.0` backend in `src/marketing_intelligence/db.py` (`read_migrations` /
   `get_backend`, pending-only apply). Plain `.sql` files need no markers —
   yoyo parses them into transactional steps as-is; no migration content
   changes, no `.rollback.sql` siblings shipped (they would break the file-list

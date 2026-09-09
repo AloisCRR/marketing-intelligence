@@ -1,4 +1,4 @@
-# Local dev stack — Trend Intelligence Brain (Ticket 01).
+# Local dev stack — Marketing Intelligence (Ticket 01).
 #
 # Bring up the DB:
 #   docker compose up -d db        # start Postgres 18 + pgvector
@@ -17,7 +17,7 @@
 #
 # Deploy stack (Dokploy + local `docker compose up -d --build`): single image
 # (Dockerfile at repo root), three services sharing it —
-#   migrate  one-shot: runs brain.db.apply_migrations() (idempotent), then exits
+#   migrate  one-shot: runs marketing_intelligence.db.apply_migrations() (idempotent), then exits
 #   api      FastAPI on internal 8123 (default image CMD)
 #   mcp      MCP streamable-HTTP on internal 8124 (CMD override, see NOTE below)
 # Plain HTTP only — Traefik terminates TLS outside the containers.
@@ -33,7 +33,7 @@ services:
     # Pinned PG18 + pgvector image (verified to exist; trixie variant).
     # Fallback if trixie is ever pulled: pgvector/pgvector:0.8.6-pg18-bookworm.
     image: pgvector/pgvector:0.8.6-pg18-trixie
-    container_name: brain-db
+    container_name: marketing-intelligence-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-brain}
@@ -53,9 +53,9 @@ services:
   # Shared build definition anchor: api/mcp/migrate all run this image.
   migrate:
     build: *app-build
-    image: brain-app:local
-    container_name: brain-migrate
-    command: ["python", "-c", "from brain.db import apply_migrations; apply_migrations()"]
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-migrate
+    command: ["python", "-c", "from marketing_intelligence.db import apply_migrations; apply_migrations()"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
     depends_on:
@@ -64,8 +64,8 @@ services:
 
   api:
     build: *app-build
-    image: brain-app:local
-    container_name: brain-api
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-api
     command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8123"]
     environment:
       PORT: "8123"
@@ -86,8 +86,8 @@ services:
 
   mcp:
     build: *app-build
-    image: brain-app:local
-    container_name: brain-mcp
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-mcp
     # NOTE: NOT `mcp.server:http_app` — local src/mcp/ has no __init__.py, so
     # plain `import mcp` resolves to the installed distribution. `--app-dir`
     # imports our server.py as top-level `server` instead.
@@ -119,14 +119,14 @@ services:
       - dokploy-network
     restart: unless-stopped
 
-  # Brain worker (Dokploy: always on; local: `docker compose up -d brain-worker`).
+  # Worker (Dokploy: always on; local: `docker compose up -d worker`).
   # Runs against the VPS Prefect server (see PREFECT_API_URL) on pool `brain-pool`.
   # Shares the app image (prefect is a main dependency). `db` resolves via the
   # default compose network; `prefect-server` resolves via `dokploy-network`.
-  brain-worker:
+  worker:
     build: *app-build
-    image: brain-app:local
-    container_name: brain-worker
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-worker
     command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-brain-pool}"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}

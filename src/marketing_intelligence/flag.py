@@ -4,7 +4,7 @@ Domain contract (stable): ``flag_extraction(identifier, reason, detail,
 flagged_by, clear)`` sets (or, with ``clear=True``, NULLs) the nullable
 ``flag_reason, flag_detail, flagged_at, flagged_by`` columns on ``documents``
 and returns the updated article dict (``ARTICLE_KEYS`` + the four flag keys,
-as produced by ``brain.article.get_article``). Re-flag overwrites — no
+as produced by ``marketing_intelligence.article.get_article``). Re-flag overwrites — no
 history table V1. Flags survive re-ingest (ingestion upserts are
 ``ON CONFLICT DO NOTHING``; no flow changes here).
 
@@ -18,18 +18,18 @@ from __future__ import annotations
 from typing import Any
 
 try:  # foundation seam (preferred)
-    from brain.db import get_connection  # type: ignore[import-not-found]
+    from marketing_intelligence.db import get_connection  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - defensive fallback when absent
 
     def get_connection() -> Any:  # type: ignore[misc]
         raise RuntimeError(
-            "No database connection available: brain.db.get_connection "
+            "No database connection available: marketing_intelligence.db.get_connection "
             "is missing and no fallback is configured."
         )
 
 
-from brain import article as _article
-from brain.normalize import canonicalize_url
+from marketing_intelligence import article as _article
+from marketing_intelligence.normalize import canonicalize_url
 
 FLAG_REASONS = (
     "thin",
@@ -134,7 +134,7 @@ def flag_extraction(
             an injected connection is never committed or closed here.
 
     Returns:
-        The updated article dict (same keys as ``brain.article.get_article``,
+        The updated article dict (same keys as ``marketing_intelligence.article.get_article``,
         flag fields included).
 
     Raises:

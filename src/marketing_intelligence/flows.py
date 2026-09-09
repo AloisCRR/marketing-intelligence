@@ -14,11 +14,16 @@ from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NONE
 from prefect.task_runners import ThreadPoolTaskRunner
 
-from brain.db import get_connection
-from brain.discovery import ArticleJob, fetch_extract_one, paced_policy_fetch, plan_harvest
-from brain.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
-from brain.health import record_ingestion_run
-from brain.ingest import (
+from marketing_intelligence.db import get_connection
+from marketing_intelligence.discovery import (
+    ArticleJob,
+    fetch_extract_one,
+    paced_policy_fetch,
+    plan_harvest,
+)
+from marketing_intelligence.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
+from marketing_intelligence.health import record_ingestion_run
+from marketing_intelligence.ingest import (
     SOURCE_ID_SQL,
     EmptyFeedError,
     count_feed_entries,
@@ -28,8 +33,8 @@ from brain.ingest import (
     parse_feed_with_report,
     upsert_documents,
 )
-from brain.normalize import NormalizedDocument
-from brain.sources import (
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import (
     V1_SOURCES,
     get_enrichment_policy,
     get_retrieval_config,
@@ -127,7 +132,7 @@ def _article_task(job: ArticleJob) -> tuple[Any | None, str | None]:
     """Fetch → decode → extract one planned article; never raises.
 
     Returns ``(document, None)`` or ``(None, cause)`` per
-    :func:`brain.discovery.fetch_extract_one`, so the parent flow keeps the
+    :func:`marketing_intelligence.discovery.fetch_extract_one`, so the parent flow keeps the
     exact skipped/causes accounting. Side-effecting (network): no result
     caching. The job is an immutable value — no shared-mutable aliasing
     across workers.

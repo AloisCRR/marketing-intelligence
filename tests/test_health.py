@@ -22,8 +22,11 @@ if _SRC not in sys.path:
 from fastapi.testclient import TestClient  # noqa: E402
 
 from api.app import app  # noqa: E402
-from brain.auth import is_auth_configured  # noqa: E402
-from brain.healthcheck import QuietHealthcheckFilter, install_quiet_healthcheck_filter  # noqa: E402
+from marketing_intelligence.auth import is_auth_configured  # noqa: E402
+from marketing_intelligence.healthcheck import (  # noqa: E402
+    QuietHealthcheckFilter,
+    install_quiet_healthcheck_filter,
+)
 
 TOKEN = "test-bearer-token-" + "y" * 32
 

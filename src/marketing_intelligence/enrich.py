@@ -38,8 +38,8 @@ import urllib.error
 import urllib.request
 import zlib
 
-from brain.ingest import USER_AGENT
-from brain.normalize import NormalizedDocument, make_document, normalize_text
+from marketing_intelligence.ingest import USER_AGENT
+from marketing_intelligence.normalize import NormalizedDocument, make_document, normalize_text
 
 #: RSS bodies shorter than this (after whitespace collapse) trigger enrichment.
 DEFAULT_THIN_THRESHOLD = 500

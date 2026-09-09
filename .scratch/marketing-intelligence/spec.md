@@ -1,4 +1,4 @@
-# Trend Intelligence Brain — System Specification
+# Marketing Intelligence — System Specification
 
 ## Problem Statement
 
@@ -6,7 +6,7 @@ The user is responsible for producing recurring intelligence and newsletter cont
 
 Today, this type of work can become repetitive and difficult to scale because information retrieval, web scraping, source monitoring, normalization, deduplication, research, analysis, and summarization are all mixed together. It is also difficult to build durable institutional knowledge when the output is treated as a one-off weekly newsletter rather than as a continuously growing historical dataset.
 
-The desired system is therefore not merely a news aggregator or a newsletter generator. It is a **Trend Intelligence Brain**: a persistent data and knowledge platform that continuously collects information from a curated set of sources, preserves historical context, enriches the collected material with structured metadata and semantic representations, exposes that information through a stable semantic interface, and allows an autonomous AI agent to consume the resulting intelligence.
+The desired system is therefore not merely a news aggregator or a newsletter generator. It is a **Marketing Intelligence**: a persistent data and knowledge platform that continuously collects information from a curated set of sources, preserves historical context, enriches the collected material with structured metadata and semantic representations, exposes that information through a stable semantic interface, and allows an autonomous AI agent to consume the resulting intelligence.
 
 The immediate business outcome is a reliable weekly intelligence digest generated every Monday at 9:00 AM in the `America/Panama` timezone. The longer-term goal is to evolve the same foundation into a system capable of identifying emerging trends, measuring topic velocity, discovering repeated signals across sources, detecting changes over time, and supporting analytical and machine-learning use cases.
 
@@ -21,7 +21,7 @@ This separation is intended to prevent the AI agent from becoming simultaneously
 
 ## Solution
 
-Build a self-hosted Trend Intelligence Brain composed of five logical layers:
+Build a self-hosted Marketing Intelligence composed of five logical layers:
 
 1. **Source Layer** — a curated collection of websites, feeds, APIs, reports, PDFs, and other information sources relevant to marketing, Gen Z, trends, culture, technology, and consumer behavior.
 2. **Ingestion Layer** — scheduled workflows that retrieve source material, extract useful content, normalize it, deduplicate it, and enrich it with structured metadata.
@@ -983,7 +983,7 @@ This separation makes the overall system easier to test, debug, and trust.
 
 ### 9. Long-term product vision
 
-The eventual Trend Intelligence Brain should behave less like a newsletter backend and more like a persistent research system.
+The eventual Marketing Intelligence should behave less like a newsletter backend and more like a persistent research system.
 
 A mature version could support questions such as:
 

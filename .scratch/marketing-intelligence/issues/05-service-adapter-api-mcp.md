@@ -1,13 +1,13 @@
 # 05 — Shared service adapter + API with MCP parity
 
-**What to build:** One validated service interface (`brain.service`) with two thin, identical surfaces: HTTP (`GET /search`, `POST /weekly-context`) and MCP (2 tools). Same payloads by construction, `InvalidRequest` → 422.
+**What to build:** One validated service interface (`marketing_intelligence.service`) with two thin, identical surfaces: HTTP (`GET /search`, `POST /weekly-context`) and MCP (2 tools). Same payloads by construction, `InvalidRequest` → 422.
 
 **Blocked by:** 01–04 (verified live: sources=4, documents=10 SMT, idempotent ingest, provenance reads GO). Do NOT re-ingest; use existing rows + fake-conn tests.
 
 **Status:** ready-for-human — implemented, needs human verify + accept
 
-- [x] `src/brain/service.py` (stdlib-only): `MAX_LIMIT=100`, `InvalidRequest`, `search_articles(keyword,limit,conn)` + `get_weekly_context(from,to,sources,limit,conn)` with string coercion, unknown-source rejection, V1 trend keys `[]`, Panama tz handling
-- [x] `src/brain/search.py`: optional `conn` pass-through (backward-compatible, no behavior change)
+- [x] `src/marketing_intelligence/service.py` (stdlib-only): `MAX_LIMIT=100`, `InvalidRequest`, `search_articles(keyword,limit,conn)` + `get_weekly_context(from,to,sources,limit,conn)` with string coercion, unknown-source rejection, V1 trend keys `[]`, Panama tz handling
+- [x] `src/marketing_intelligence/search.py`: optional `conn` pass-through (backward-compatible, no behavior change)
 - [x] `src/api/app.py`: `GET /search`, `POST /weekly-context`, `InvalidRequest` → 422, `/docs` demoable
 - [x] `src/mcp/server.py`: 2 tools calling the same service fns (no `__init__.py` — see ADR-0002 for the `mcp` name-collision reason)
 - [x] `tests/test_service_contract.py` (fake conns), `tests/test_api_contract.py` (TestClient, monkeypatched service), `tests/test_mcp_parity.py` (API JSON == MCP tool result)

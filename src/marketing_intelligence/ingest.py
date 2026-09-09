@@ -21,18 +21,18 @@ from typing import Any
 import feedparser
 from dateutil import parser as date_parser
 
-from brain.db import get_connection
-from brain.normalize import NormalizedDocument, coerce_tz_aware, make_document
+from marketing_intelligence.db import get_connection
+from marketing_intelligence.normalize import NormalizedDocument, coerce_tz_aware, make_document
 
 USER_AGENT = "TrendIntelligenceBrain/1.0 (+rss-ingest; local)"
 DEFAULT_SOURCE = "Social Media Today"
 
-try:  # optional impersonated-feed backend (mirrors brain.enrich primary)
+try:  # optional impersonated-feed backend (mirrors marketing_intelligence.enrich primary)
     from curl_cffi import requests as _curl_cffi_requests
 except Exception:  # pragma: no cover - stdlib-only environments
     _curl_cffi_requests = None  # type: ignore[assignment]
 
-#: Allowed feed retrieval policies (validated in fetch_rss; see brain.sources).
+#: Allowed feed retrieval policies (validated in fetch_rss; see marketing_intelligence.sources).
 _FEED_POLICIES: tuple[str, ...] = ("stdlib-only", "impersonated-feed")
 
 #: Markers identifying bot/challenge protection in a failed feed fetch.
@@ -143,7 +143,7 @@ def _policy_for_feed_url(url: str) -> str:
     "stdlib-only". Never raises.
     """
     try:
-        from brain.sources import get_retrieval_policy, list_sources
+        from marketing_intelligence.sources import get_retrieval_policy, list_sources
 
         for entry in list_sources():
             if entry.get("rss_url") == url:
@@ -226,7 +226,7 @@ def _feed_blocked(status: int | None, snippet: str) -> bool:
 
 def _fetch_feed_impersonated(url: str, timeout: int = IMPERSONATED_TIMEOUT) -> bytes:
     """GET `url` with curl_cffi Chrome impersonation plus a browser identity."""
-    from brain.enrich import BROWSER_USER_AGENT  # canonical browser identity
+    from marketing_intelligence.enrich import BROWSER_USER_AGENT  # canonical browser identity
 
     assert _curl_cffi_requests is not None  # guarded by fetch_rss
     headers = {
@@ -318,7 +318,7 @@ def _published_at(entry: Any, fallback: datetime) -> datetime:
 def _registry_language(source: str) -> str:
     """Look up the registry language for `source`; defaults to 'en'."""
     try:
-        from brain.sources import get_source
+        from marketing_intelligence.sources import get_source
 
         lang = get_source(source).get("language") or "en"
         return str(lang).strip().lower() or "en"
@@ -436,7 +436,7 @@ def parse_feed(
 def upsert_documents(docs: list[NormalizedDocument], conn: Any | None = None) -> tuple[int, int]:
     """Persist documents idempotently. Returns (inserted, skipped).
 
-    When `conn` is None a connection is opened via `brain.db.get_connection`
+    When `conn` is None a connection is opened via `marketing_intelligence.db.get_connection`
     (caller may inject any DB-API connection — fakes welcome in tests).
 
     Fail-fast source guard: the source row must exist — an unknown source

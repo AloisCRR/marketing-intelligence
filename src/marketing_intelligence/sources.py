@@ -41,7 +41,7 @@ def normalize_language(raw: Any | None) -> str:
 SOURCE_NAME_SMT = "Social Media Today"
 
 #: Default thin threshold (chars) for the enrichment policy when a source
-#: carries no override. Mirrors `brain.enrich.DEFAULT_THIN_THRESHOLD`.
+#: carries no override. Mirrors `marketing_intelligence.enrich.DEFAULT_THIN_THRESHOLD`.
 DEFAULT_ENRICHMENT_THRESHOLD = 500
 
 #: Allowed enrichment modes: thin-only, enrich everything, enrich nothing.
@@ -127,7 +127,7 @@ _FALLBACK_SMT: dict[str, Any] = {
 def _curated_path() -> Path | None:
     # Dev override first: editable .scratch copy (never shipped in the image).
     for parent in Path(__file__).resolve().parents:
-        candidate = parent / ".scratch" / "trend-intelligence-brain" / "curated-sources.json"
+        candidate = parent / ".scratch" / "marketing-intelligence" / "curated-sources.json"
         if candidate.is_file():
             return candidate
     # Baked-in fallback: shipped inside the image via `COPY src ./src`.

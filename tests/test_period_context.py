@@ -22,12 +22,12 @@ from pathlib import Path
 import pytest
 from prefect_harness import no_engine
 
-import brain.flows as flows
-from brain.health import get_source_health, record_ingestion_run
-from brain.ingest import parse_feed, upsert_documents
-from brain.normalize import content_hash_for
-from brain.period import PANAMA_NAME, get_period_context
-from brain.sources import V1_SOURCES, list_v1_sources
+import marketing_intelligence.flows as flows
+from marketing_intelligence.health import get_source_health, record_ingestion_run
+from marketing_intelligence.ingest import parse_feed, upsert_documents
+from marketing_intelligence.normalize import content_hash_for
+from marketing_intelligence.period import PANAMA_NAME, get_period_context
+from marketing_intelligence.sources import V1_SOURCES, list_v1_sources
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -537,7 +537,7 @@ def test_flow_records_skip_reasons_on_messy_feeds(
 
 
 def test_migration_003_creates_ingestion_runs_idempotently() -> None:
-    from brain.db import MIGRATIONS_DIR
+    from marketing_intelligence.db import MIGRATIONS_DIR
 
     assert sorted(p.name for p in MIGRATIONS_DIR.glob("*.sql")) == [
         "001_init.sql",

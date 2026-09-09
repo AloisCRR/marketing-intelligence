@@ -1,6 +1,6 @@
 """HTTP-adapter contract tests (Ticket 05) — TestClient, service monkeypatched.
 
-No live Postgres: `brain.service` functions are stubbed, so these tests pin
+No live Postgres: `marketing_intelligence.service` functions are stubbed, so these tests pin
 the adapter behaviour only — same payloads, 422 mapping, /docs demoable.
 """
 
@@ -17,8 +17,8 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import brain.flag as flag_lane  # noqa: E402
-import brain.service as service  # noqa: E402
+import marketing_intelligence.flag as flag_lane  # noqa: E402
+import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
 SEARCH_PAYLOAD = [

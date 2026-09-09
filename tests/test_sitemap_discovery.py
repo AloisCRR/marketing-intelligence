@@ -25,8 +25,8 @@ import pytest
 from fake_transport import FakeTransport
 from prefect_harness import no_engine
 
-import brain.discovery as discovery
-from brain.discovery import (
+import marketing_intelligence.discovery as discovery
+from marketing_intelligence.discovery import (
     ArticleExtractError,
     ArticleFetchError,
     DiscoveryError,
@@ -37,8 +37,8 @@ from brain.discovery import (
     policy_get,
     robots_crawl_delay,
 )
-from brain.normalize import NormalizedDocument
-from brain.sources import get_retrieval_config
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -374,7 +374,7 @@ def test_thin_body_is_kept_with_cause_not_bypassed(
     """Thin threshold governs keep-vs-flag: a short body is kept, cause kept."""
     from datetime import UTC, datetime
 
-    import brain.enrich as enrich
+    import marketing_intelligence.enrich as enrich
 
     html = (
         "<html><head><title>Breve</title>"
@@ -503,7 +503,7 @@ def _harvest_docs() -> list[NormalizedDocument]:
 
 
 def test_rerun_upsert_is_noop() -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = _harvest_docs()
     conn = FakeConnection()
@@ -513,7 +513,7 @@ def test_rerun_upsert_is_noop() -> None:
 
 
 def test_slug_change_dedupes_on_hash() -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = _harvest_docs()
     conn = FakeConnection()
@@ -530,7 +530,7 @@ def test_slug_change_dedupes_on_hash() -> None:
 def test_flow_ingests_sitemap_source_with_exact_shape(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     mapping = _full_fetch_map()
     failures = {URL_BAD: ArticleFetchError(URL_BAD, "HTTP Error 403: Forbidden")}
@@ -540,7 +540,7 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = flows.ingest_source_flow(source_name=MD)
@@ -554,7 +554,7 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
 def test_flow_clean_harvest_keeps_exact_shape(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     mapping = {k: v for k, v in _full_fetch_map().items() if k != URL_BAD}
     child_new = (
@@ -582,18 +582,16 @@ def test_flow_clean_harvest_keeps_exact_shape(
     fixture_fetch = _make_fetch(mapping)
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     conn = FakeConnection()
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     assert flows.ingest_source_flow(source_name=MD) == {"inserted": 2, "skipped": 0}
 
 
-def test_batch_isolates_sitemap_failure(
-    monkeypatch: pytest.MonkeyPatch, no_engine: None
-) -> None:
-    import brain.flows as flows
-    from brain.sources import get_source
+def test_batch_isolates_sitemap_failure(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence.sources import get_source
 
     mapping = _full_fetch_map()
     fixture_fetch = _make_fetch(mapping)
@@ -602,7 +600,7 @@ def test_batch_isolates_sitemap_failure(
     shared: dict[str, FakeConnection] = {}
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
-        from brain.ingest import upsert_documents
+        from marketing_intelligence.ingest import upsert_documents
 
         conn = shared.setdefault(docs[0].source, FakeConnection())
         return upsert_documents(docs, conn=conn)
@@ -716,7 +714,7 @@ def _jing_config() -> dict[str, Any]:
 
 
 def test_hub_links_match_pattern_filter_noise() -> None:
-    from brain.discovery import extract_hub_links
+    from marketing_intelligence.discovery import extract_hub_links
 
     links = extract_hub_links(_fixture("jd_hub.html").decode("utf-8"), JD_HUB, "/posts/")
     assert links == [
@@ -729,7 +727,7 @@ def test_hub_links_match_pattern_filter_noise() -> None:
 
 
 def test_hub_links_dedupe_and_absolutize() -> None:
-    from brain.discovery import extract_hub_links
+    from marketing_intelligence.discovery import extract_hub_links
 
     # Relative hrefs absolutize against the hub; the repeated Yvmin link
     # collapses; /intels/, /tags/, and off-host anchors are excluded.
@@ -739,7 +737,7 @@ def test_hub_links_dedupe_and_absolutize() -> None:
 
 
 def test_discover_hub_urls_aggregates_pagination() -> None:
-    from brain.discovery import discover_hub_urls
+    from marketing_intelligence.discovery import discover_hub_urls
 
     fetch = _make_fetch(_jing_fetch_map())
     urls, errors = discover_hub_urls(
@@ -761,7 +759,7 @@ def test_discover_hub_urls_aggregates_pagination() -> None:
 
 
 def test_discover_hub_urls_records_bad_page_without_aborting() -> None:
-    from brain.discovery import discover_hub_urls
+    from marketing_intelligence.discovery import discover_hub_urls
 
     def failing(url: str) -> bytes:
         if url == JD_PAGE2:
@@ -841,8 +839,8 @@ def test_discover_without_prefer_pattern_keeps_legacy_order() -> None:
 
 
 def test_json_ld_body_beats_thin_generic() -> None:
-    from brain.discovery import extract_json_ld_body
-    from brain.enrich import clean_to_markdown, is_thin
+    from marketing_intelligence.discovery import extract_json_ld_body
+    from marketing_intelligence.enrich import clean_to_markdown, is_thin
 
     html = _fixture("jd_article_full.html").decode("utf-8")
     generic = clean_to_markdown(html, JD_YVMIN)
@@ -854,7 +852,7 @@ def test_json_ld_body_beats_thin_generic() -> None:
 
 
 def test_json_ld_ignores_stub_blocks_without_body() -> None:
-    from brain.discovery import extract_json_ld_body
+    from marketing_intelligence.discovery import extract_json_ld_body
 
     html = _fixture("jd_article_full.html").decode("utf-8")
     body = extract_json_ld_body(html) or ""
@@ -864,7 +862,7 @@ def test_json_ld_ignores_stub_blocks_without_body() -> None:
 
 
 def test_json_ld_missing_falls_back_to_generic() -> None:
-    from brain.discovery import extract_json_ld_body
+    from marketing_intelligence.discovery import extract_json_ld_body
 
     assert extract_json_ld_body("<html><body><p>no structured data</p></body></html>") is None
     assert extract_json_ld_body("not html at all {{{") is None
@@ -953,7 +951,7 @@ def _jing_docs() -> list[NormalizedDocument]:
 
 
 def test_jing_rerun_upsert_is_noop() -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = _jing_docs()
     conn = FakeConnection()
@@ -967,8 +965,8 @@ def test_jing_metered_body_kept_with_cause_then_flaggable(
 ) -> None:
     """Thin threshold governs keep-vs-flag: metered doc kept, cause kept,
     and the Extraction Flag path accepts it (reason + detail + reporter)."""
-    import brain.enrich as enrich
-    import brain.flag as flag_lane
+    import marketing_intelligence.enrich as enrich
+    import marketing_intelligence.flag as flag_lane
 
     docs = _jing_docs()
     velvet = next(d for d in docs if d.url == JD_VELVET)
@@ -1000,7 +998,7 @@ def test_jing_metered_body_kept_with_cause_then_flaggable(
         def cursor(self) -> _FlagCursor:
             return _FlagCursor()
 
-    import brain.article as article_mod
+    import marketing_intelligence.article as article_mod
 
     monkeypatch.setattr(
         article_mod,
@@ -1025,7 +1023,7 @@ def test_jing_metered_body_kept_with_cause_then_flaggable(
 def test_flow_ingests_jing_with_exact_shape(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     mapping = _jing_fetch_map()
     failures = {JD_ROULETTE: ArticleFetchError(JD_ROULETTE, "HTTP Error 403")}
@@ -1033,7 +1031,7 @@ def test_flow_ingests_jing_with_exact_shape(
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = flows.ingest_source_flow(source_name=JD)
@@ -1143,10 +1141,8 @@ def test_harvest_sitemap_exclude_webstories_never_fetched_bad_urls_explicit() ->
     assert not any("/webstories/" in u for u in log)
 
 
-def test_batch_isolates_jing_failure(
-    monkeypatch: pytest.MonkeyPatch, no_engine: None
-) -> None:
-    import brain.flows as flows
+def test_batch_isolates_jing_failure(monkeypatch: pytest.MonkeyPatch, no_engine: None) -> None:
+    import marketing_intelligence.flows as flows
 
     # The whole discovery lane hard-fails: planning raises out of the
     # discover subflow, and the batch records the explicit per-source error.

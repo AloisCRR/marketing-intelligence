@@ -1,7 +1,7 @@
 [project]
-name = "trend-intelligence-brain"
+name = "marketing-intelligence"
 version = "0.1.0"
-description = "Trend Intelligence Brain — curated-source intelligence platform"
+description = "Marketing Intelligence — curated-source intelligence platform"
 requires-python = ">=3.12"
 dependencies = [
   "psycopg[binary]>=3.1",

@@ -6,7 +6,7 @@ content`` plus the Extraction Flag annotation (``flag_reason, flag_detail,
 flagged_at, flagged_by`` — ``None`` when unflagged) — the full stored body
 (clean Markdown/text, never a snippet).
 Matching tries the exact URL first, then the canonical URL via
-``brain.normalize.canonicalize_url``. Unknown identifiers raise
+``marketing_intelligence.normalize.canonicalize_url``. Unknown identifiers raise
 ``ValueError`` (the service adapter maps it to ``InvalidRequest``).
 """
 
@@ -16,17 +16,17 @@ import datetime as _dt
 from typing import Any
 
 try:  # foundation seam (preferred)
-    from brain.db import get_connection  # type: ignore[import-not-found]
+    from marketing_intelligence.db import get_connection  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - defensive fallback when absent
 
     def get_connection() -> Any:  # type: ignore[misc]
         raise RuntimeError(
-            "No database connection available: brain.db.get_connection "
+            "No database connection available: marketing_intelligence.db.get_connection "
             "is missing and no fallback is configured."
         )
 
 
-from brain.normalize import canonicalize_url
+from marketing_intelligence.normalize import canonicalize_url
 
 _ARTICLE_BY_URL_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,

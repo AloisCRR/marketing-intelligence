@@ -18,11 +18,11 @@ from typing import Any
 import pytest
 from prefect_harness import no_engine
 
-import brain.flows as flows
-from brain.flows import fetch_task
-from brain.ingest import upsert_documents
-from brain.normalize import NormalizedDocument
-from brain.sources import get_source
+import marketing_intelligence.flows as flows
+from marketing_intelligence.flows import fetch_task
+from marketing_intelligence.ingest import upsert_documents
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

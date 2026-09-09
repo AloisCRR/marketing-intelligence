@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from prefect_harness import no_engine
 
-from brain.normalize import NormalizedDocument, make_document
+from marketing_intelligence.normalize import NormalizedDocument, make_document
 
 GATED_URL = "https://example.com/articles/gated-story"
 FULL_URL = "https://example.com/articles/full-story"
@@ -74,8 +74,8 @@ class _Resp:
 
 
 def test_fallback_sends_data_minimizing_headers(monkeypatch: Any) -> None:
-    from brain import enrich
-    from brain.ingest import USER_AGENT
+    from marketing_intelligence import enrich
+    from marketing_intelligence.ingest import USER_AGENT
 
     captured: dict[str, Any] = {}
 
@@ -105,7 +105,7 @@ def test_fallback_sends_data_minimizing_headers(monkeypatch: Any) -> None:
 
 
 def test_primary_bot_challenge_succeeds_via_fallback(monkeypatch: Any) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     def _blocked(url: str, timeout: int = 30) -> str:
         raise enrich.FetchFailed(
@@ -125,7 +125,7 @@ def test_primary_bot_challenge_succeeds_via_fallback(monkeypatch: Any) -> None:
 
 
 def test_primary_js_shell_succeeds_via_fallback(monkeypatch: Any) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     js_shell = (
         '<html><head><script id="__NEXT_DATA__" type="application/json">{}</script></head>'
@@ -141,7 +141,7 @@ def test_primary_js_shell_succeeds_via_fallback(monkeypatch: Any) -> None:
 
 
 def test_challenge_body_behind_429_trips_gated_fallback(monkeypatch: Any) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     fallback_calls: list[str] = []
 
@@ -169,7 +169,7 @@ def test_challenge_body_behind_429_trips_gated_fallback(monkeypatch: Any) -> Non
 
 
 def test_keywordless_403_lock_page_trips_gated_fallback(monkeypatch: Any) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     # Styled bot lock page: non-empty body, no challenge keywords at all.
     lock_html = (
@@ -227,7 +227,7 @@ def test_keywordless_403_lock_page_trips_gated_fallback(monkeypatch: Any) -> Non
 def test_plain_paywall_without_challenge_signal_keeps_rss_no_fallback(
     monkeypatch: Any,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     calls: list[str] = []
 
@@ -253,7 +253,7 @@ def test_plain_paywall_without_challenge_signal_keeps_rss_no_fallback(
 def test_fallback_429_backs_off_then_keeps_rss_with_rate_limited_cause(
     monkeypatch: Any,
 ) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     attempts: list[str] = []
     sleeps: list[float] = []
@@ -289,7 +289,7 @@ def test_fallback_429_backs_off_then_keeps_rss_with_rate_limited_cause(
 
 
 def test_fallback_failure_keeps_rss_and_chains_primary_cause(monkeypatch: Any) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     def _empty_primary(url: str, timeout: int = 30) -> str:
         raise enrich.UnparseableBody(f"unparseable body for {url}: empty after cleaning")
@@ -311,7 +311,7 @@ def test_fallback_failure_keeps_rss_and_chains_primary_cause(monkeypatch: Any) -
 
 
 def test_thin_fallback_output_counts_as_miss_and_keeps_rss(monkeypatch: Any) -> None:
-    from brain import enrich
+    from marketing_intelligence import enrich
 
     monkeypatch.setattr(
         enrich,
@@ -332,13 +332,13 @@ def test_thin_fallback_output_counts_as_miss_and_keeps_rss(monkeypatch: Any) -> 
 
 
 def test_unknown_source_returns_default_policy_never_raises() -> None:
-    from brain.sources import get_enrichment_policy
+    from marketing_intelligence.sources import get_enrichment_policy
 
     assert get_enrichment_policy("No Such Source") == {"threshold": 500, "mode": "auto"}
 
 
 def test_policy_defaults_when_registry_entry_has_no_override(monkeypatch: Any) -> None:
-    import brain.sources as sources
+    import marketing_intelligence.sources as sources
 
     monkeypatch.setattr(
         sources, "get_source", lambda name: {"name": name, "rss_url": "https://example.com/rss"}
@@ -347,7 +347,7 @@ def test_policy_defaults_when_registry_entry_has_no_override(monkeypatch: Any) -
 
 
 def test_policy_threshold_override_and_modes(monkeypatch: Any) -> None:
-    import brain.sources as sources
+    import marketing_intelligence.sources as sources
 
     def _entry(overrides: Any) -> dict[str, Any]:
         return {"name": "X", "rss_url": "https://example.com/rss", "enrichment": overrides}
@@ -368,7 +368,7 @@ def test_policy_threshold_override_and_modes(monkeypatch: Any) -> None:
 
 
 def test_source_lookup_behavior_unchanged() -> None:
-    import brain.sources as sources
+    import marketing_intelligence.sources as sources
 
     ora_before = sources.list_sources()
     assert isinstance(ora_before, list) and len(ora_before) >= 1
@@ -384,8 +384,8 @@ def test_source_lookup_behavior_unchanged() -> None:
 
 
 def test_threshold_override_honored_by_enrich_task(monkeypatch: Any, no_engine: None) -> None:
-    import brain.flows as flows
-    from brain import enrich as enrich_mod
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence import enrich as enrich_mod
 
     monkeypatch.setattr(
         flows,
@@ -407,8 +407,8 @@ def test_threshold_override_honored_by_enrich_task(monkeypatch: Any, no_engine: 
 
 
 def test_force_on_enriches_sufficient_rss(monkeypatch: Any, no_engine: None) -> None:
-    import brain.flows as flows
-    from brain import enrich as enrich_mod
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence import enrich as enrich_mod
 
     monkeypatch.setattr(
         flows, "get_enrichment_policy", lambda name: {"threshold": 500, "mode": "force_on"}
@@ -427,8 +427,8 @@ def test_force_on_enriches_sufficient_rss(monkeypatch: Any, no_engine: None) -> 
 
 
 def test_force_off_performs_zero_fetch(monkeypatch: Any, no_engine: None) -> None:
-    import brain.flows as flows
-    from brain import enrich as enrich_mod
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence import enrich as enrich_mod
 
     monkeypatch.setattr(
         flows, "get_enrichment_policy", lambda name: {"threshold": 500, "mode": "force_off"}
@@ -452,8 +452,8 @@ def test_force_off_performs_zero_fetch(monkeypatch: Any, no_engine: None) -> Non
 
 
 def test_flow_force_off_has_no_enrich_keys_and_completes(monkeypatch: Any, no_engine: None) -> None:
-    import brain.flows as flows
-    from brain import enrich as enrich_mod
+    import marketing_intelligence.flows as flows
+    from marketing_intelligence import enrich as enrich_mod
 
     feed = (
         b'<?xml version="1.0" encoding="utf-8"?>'

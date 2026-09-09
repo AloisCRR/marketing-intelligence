@@ -26,14 +26,14 @@ from urllib.parse import urlsplit
 import pytest
 from prefect_harness import no_engine
 
-from brain.discovery import (
+from marketing_intelligence.discovery import (
     ArticleFetchError,
     DiscoveryError,
     discover_urls,
     harvest_sitemap_source,
 )
-from brain.normalize import NormalizedDocument
-from brain.sources import get_retrieval_config, get_source
+from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.sources import get_retrieval_config, get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -374,7 +374,7 @@ class FakeConnection:
 
 @pytest.mark.parametrize("label", LABELS)
 def test_rerun_upsert_is_noop(label: str) -> None:
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     docs = _harvest(label).documents
     assert len(docs) == 2
@@ -399,8 +399,8 @@ def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips() -
     """Ticket 14 end-to-end on the registry stanza: webstories (newest in the
     urlset) are excluded before the budget applies, the genuine article still
     inserts, and the 404 + title-less page are explicit per-URL skips."""
-    from brain.discovery import ArticleFetchError as _FetchError
-    from brain.discovery import harvest_sitemap_source as _harvest
+    from marketing_intelligence.discovery import ArticleFetchError as _FetchError
+    from marketing_intelligence.discovery import harvest_sitemap_source as _harvest
 
     ws_new = "https://exame.com/webstories/resumo-do-dia-novo/"
     ws_old = "https://exame.com/webstories/resumo-do-dia-antigo/"
@@ -453,7 +453,7 @@ def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips() -
 def test_flow_ingests_sitemap_source_with_exact_shape(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     label = "Propmark"
     spec = SOURCES[label]
@@ -465,7 +465,7 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
-    from brain.ingest import upsert_documents
+    from marketing_intelligence.ingest import upsert_documents
 
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=conn))
     result = flows.ingest_source_flow(source_name=label)
@@ -479,7 +479,7 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
 def test_batch_ingests_all_seven_and_isolates_failure(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    import brain.flows as flows
+    import marketing_intelligence.flows as flows
 
     maps = {label: _fetch_map(label) for label in LABELS}
     exame_host = _host("Exame")
@@ -505,7 +505,7 @@ def test_batch_ingests_all_seven_and_isolates_failure(
     shared: dict[str, FakeConnection] = {}
 
     def fake_upsert(docs: list[NormalizedDocument]) -> tuple[int, int]:
-        from brain.ingest import upsert_documents
+        from marketing_intelligence.ingest import upsert_documents
 
         conn = shared.setdefault(docs[0].source, FakeConnection())
         return upsert_documents(docs, conn=conn)

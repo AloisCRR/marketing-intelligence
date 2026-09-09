@@ -9,7 +9,7 @@ Consumer agents reading via `get_article` / `search_articles` hit improperly ext
 
 ## Decision
 
-- New noun **Extraction Flag** (verb `flag_extraction(identifier, reason, detail, flagged_by, clear)`), full parity: `brain.service` + `POST /flag-extraction` + MCP tool (tools 3→4).
+- New noun **Extraction Flag** (verb `flag_extraction(identifier, reason, detail, flagged_by, clear)`), full parity: `marketing_intelligence.service` + `POST /flag-extraction` + MCP tool (tools 3→4).
 - Storage: nullable columns on `documents` (`flag_reason, flag_detail, flagged_at, flagged_by`), overwrite on re-flag — no history table V1.
 - Read-back: annotate `search` + `weekly` + `get_article` with flag fields, filter nowhere V1.
 - Lifecycle: flag survives re-ingest (`ON CONFLICT DO NOTHING`); only `clear=true` nulls columns. Returns updated Article dict. Unknown URL / bad reason / overlong detail (>2000) → `InvalidRequest` → 422.

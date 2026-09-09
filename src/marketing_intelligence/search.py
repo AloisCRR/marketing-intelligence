@@ -11,12 +11,12 @@ import datetime as _dt
 from typing import Any
 
 try:  # foundation seam (preferred)
-    from brain.db import get_connection  # type: ignore[import-not-found]
+    from marketing_intelligence.db import get_connection  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - defensive fallback when absent
 
     def get_connection() -> Any:  # type: ignore[misc]
         raise RuntimeError(
-            "No database connection available: brain.db.get_connection "
+            "No database connection available: marketing_intelligence.db.get_connection "
             "is missing and no fallback is configured."
         )
 

@@ -1,4 +1,4 @@
-"""Thin MCP adapter over brain.service (Ticket 05).
+"""Thin MCP adapter over marketing_intelligence.service (Ticket 05).
 
 Same validated payloads as the HTTP API by construction: both tools call the
 shared service functions. Run directly (never `python -m mcp.server` — the
@@ -29,10 +29,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from brain import service
-from brain.auth import StaticTokenVerifier, is_auth_configured, mcp_auth_settings
-from brain.healthcheck import health_payload  # noqa: F401  (installs access-log filter)
-from brain.service import DEFAULT_PERIOD_LIMIT, DEFAULT_SEARCH_LIMIT
+from marketing_intelligence import service
+from marketing_intelligence.auth import StaticTokenVerifier, is_auth_configured, mcp_auth_settings
+from marketing_intelligence.healthcheck import (
+    health_payload,  # noqa: F401  (installs access-log filter)
+)
+from marketing_intelligence.service import DEFAULT_PERIOD_LIMIT, DEFAULT_SEARCH_LIMIT
 
 SERVER_INSTRUCTIONS = (
     "Marketing Intelligence is a persistent marketing/GenZ/culture/tech intelligence platform "

@@ -18,7 +18,7 @@ unchanged except where noted below.
 - (a) Lookup surface added beyond the "search + weekly only / 2 tools" V1 cut:
   `GET /article` plus a third MCP tool `get_article` (full stored body plus
   provenance, by URL/canonical URL). Both stay thin adapters over the shared
-  `brain.service` adapter, so HTTP↔MCP parity holds by construction and the
+  `marketing_intelligence.service` adapter, so HTTP↔MCP parity holds by construction and the
   ADR-0002 consequence (validation once in the service) is extended, not
   broken. Weekly/search list payloads, limits, and ranking are unchanged.
 - (b) Jina-reader gated fallback under the thin-trigger, inside the

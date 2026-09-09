@@ -24,7 +24,7 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from conftest import maintenance_url  # noqa: E402
 
-import brain.db as db  # noqa: E402
+import marketing_intelligence.db as db  # noqa: E402
 
 SQL_001 = "CREATE TABLE t1 (id INTEGER PRIMARY KEY, v TEXT);\n"
 SQL_002 = "CREATE TABLE t2 (id INTEGER PRIMARY KEY, v TEXT);\n"
@@ -33,7 +33,7 @@ ROLLBACK_001 = "DROP TABLE t1;\n"
 
 @pytest.fixture()
 def sqlite_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point brain.db at a tmp migrations dir + sqlite backend."""
+    """Point marketing_intelligence.db at a tmp migrations dir + sqlite backend."""
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "001_a.sql").write_text(SQL_001, encoding="utf-8")

@@ -13,11 +13,11 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from brain import article as _article
-from brain import flag as _flag
-from brain import period as _period
-from brain import search as _search
-from brain.sources import V1_SOURCES
+from marketing_intelligence import article as _article
+from marketing_intelligence import flag as _flag
+from marketing_intelligence import period as _period
+from marketing_intelligence import search as _search
+from marketing_intelligence.sources import V1_SOURCES
 
 MAX_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
@@ -86,7 +86,7 @@ def _known_source_names() -> set[str]:
     """V1 names plus every registry name (V1 covers all 20; kept union for safety)."""
     names = set(V1_SOURCES)
     try:
-        from brain.sources import list_sources
+        from marketing_intelligence.sources import list_sources
 
         for entry in list_sources():
             name = entry.get("name")

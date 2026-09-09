@@ -7,7 +7,7 @@ call the wrapped function via ``.fn()`` inside ``disable_run_logger()`` so
 ``MissingContextError`` — with zero engine startup.
 
 The thin sync adapter below (``_PlainCall``/``_SyncFuture``/``_SyncState``)
-exists only because ``src/brain/flows.py`` re-enters orchestration in its
+exists only because ``src/marketing_intelligence/flows.py`` re-enters orchestration in its
 interior, so a naive top-level-only ``.fn()`` swap would re-enter the engine
 on nested calls and lose the speed gain:
 
@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 from prefect.logging import disable_run_logger
 
-import brain.flows as flows
+import marketing_intelligence.flows as flows
 
 
 class _SyncState:
@@ -103,7 +103,7 @@ _TARGETS = "fetch_task parse_task upsert_task discover_task enrich_task _article
 
 
 def disable_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch `brain.flows` tasks/flows to plain calls (auto-undone)."""
+    """Patch `marketing_intelligence.flows` tasks/flows to plain calls (auto-undone)."""
     for name in _TARGETS:
         target = getattr(flows, name)
         if isinstance(target, _PlainCall):

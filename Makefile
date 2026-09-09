@@ -10,7 +10,7 @@ help:
 	@echo "migrate-baseline - one-time: mark applied without executing (pre-yoyo DBs)"
 	@echo "ingest   - ingest all sources (20) (SOURCE=\"MarTech\" for one source; requires local Prefect server)"
 	@echo "prefect-up - start local Prefect server (http://127.0.0.1:4200)"
-	@echo "image    - docker build deploy image (IMAGE=brain-app:local)"
+	@echo "image    - docker build deploy image (IMAGE=marketing-intelligence-app:local)"
 	@echo "up       - docker compose up -d --build (db+migrate+api+mcp)"
 	@echo "up-db    - docker compose up -d db (local DB only)"
 	@echo "down     - docker compose down (keeps pgdata volume)"
@@ -38,7 +38,7 @@ fmt:
 db-up:
 	docker compose up -d db
 
-IMAGE ?= brain-app:local
+IMAGE ?= marketing-intelligence-app:local
 
 image:
 	docker build -t $(IMAGE) .
@@ -59,10 +59,10 @@ migrate-compose:
 	docker compose run --rm migrate
 
 migrate:
-	PYTHONPATH=src uv run --frozen python -c "from brain.db import apply_migrations; print(apply_migrations())"
+	PYTHONPATH=src uv run --frozen python -c "from marketing_intelligence.db import apply_migrations; print(apply_migrations())"
 
 migrate-baseline:
-	PYTHONPATH=src uv run --frozen python -c "from brain.db import baseline_migrations; print(baseline_migrations())"
+	PYTHONPATH=src uv run --frozen python -c "from marketing_intelligence.db import baseline_migrations; print(baseline_migrations())"
 
 PREFECT_API_URL ?= http://127.0.0.1:4200/api
 
@@ -71,4 +71,4 @@ prefect-up:
 
 ingest:
 	@scripts/check-prefect.sh
-	PREFECT_API_URL="$(PREFECT_API_URL)" PYTHONPATH=src uv run --frozen python -c "from brain.flows import ingest_sources_flow; print(ingest_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"
+	PREFECT_API_URL="$(PREFECT_API_URL)" PYTHONPATH=src uv run --frozen python -c "from marketing_intelligence.flows import ingest_sources_flow; print(ingest_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"

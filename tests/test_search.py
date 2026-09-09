@@ -1,7 +1,7 @@
-"""Contract tests for brain.search.search_articles (keyword search + provenance).
+"""Contract tests for marketing_intelligence.search.search_articles (keyword search + provenance).
 
 TDD: written FIRST against the foundation seam
-(`brain.db.get_connection`, tables sources(name) + documents(...)).
+(`marketing_intelligence.db.get_connection`, tables sources(name) + documents(...)).
 Uses a fake DB-API connection via monkeypatch — no live Postgres needed.
 """
 
@@ -11,14 +11,14 @@ import datetime as _dt
 import os
 import sys
 
-# Make `brain.*` (src layout) importable without packaging config,
+# Make `marketing_intelligence.*` (src layout) importable without packaging config,
 # so this single file runs greenfield via `pytest tests/test_search.py`.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(os.path.dirname(_HERE), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-import brain.search as search_module  # noqa: E402
+import marketing_intelligence.search as search_module  # noqa: E402
 
 
 def _dt_utc(*args: int) -> _dt.datetime:
@@ -118,7 +118,7 @@ class FakeConnection:
 
 
 def _patch(monkeypatch, rows: list[tuple]) -> dict:
-    """Monkeypatch brain.search.get_connection with a fake; return holder."""
+    """Monkeypatch marketing_intelligence.search.get_connection with a fake; return holder."""
     holder: dict = {}
     calls: list[int] = []
 

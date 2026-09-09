@@ -33,7 +33,7 @@ import psycopg
 from psycopg import Connection
 from yoyo import get_backend, read_migrations
 
-from brain.config import get_database_url
+from marketing_intelligence.config import get_database_url
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
@@ -41,6 +41,7 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 #: stdlib `uuid5` only — no new dependency. Mirrors the UUID literals embedded
 #: in migrations/007_deterministic_sources_and_not_null.sql.
 SOURCE_SEED_NAMESPACE = uuid.NAMESPACE_DNS
+# Legacy prefix kept for stable source UUIDs after rename
 SOURCE_SEED_KEY_PREFIX = "trend-intelligence-brain:source:"
 
 

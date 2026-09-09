@@ -1,8 +1,8 @@
 """One-item article lookup tests (Ticket 01) — fake conns, no live Postgres.
 
 TDD: written FIRST (red) against the new seam:
-- `brain.article.get_article` (SELECT single row by url OR canonical_url)
-- `brain.service.get_article` (validated; ValueError -> InvalidRequest)
+- `marketing_intelligence.article.get_article` (SELECT single row by url OR canonical_url)
+- `marketing_intelligence.service.get_article` (validated; ValueError -> InvalidRequest)
 - `GET /article?url=...` (thin HTTP adapter, InvalidRequest -> 422)
 - `get_article` MCP tool (parity by construction)
 
@@ -29,8 +29,8 @@ if _SRC not in sys.path:
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import brain.article as article_module  # noqa: E402
-import brain.service as service  # noqa: E402
+import marketing_intelligence.article as article_module  # noqa: E402
+import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
 
 
@@ -147,7 +147,7 @@ class _ArticleConnection:
 
 
 def _patch_lane(monkeypatch: pytest.MonkeyPatch, rows: list[tuple]) -> _ArticleConnection:
-    """Point brain.article.get_connection at a fake; return the connection."""
+    """Point marketing_intelligence.article.get_connection at a fake; return the connection."""
     conn = _ArticleConnection(rows)
 
     def fake_get_connection() -> _ArticleConnection:

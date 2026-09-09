@@ -3,7 +3,7 @@
 Covers: unauthenticated -> 401 (+ `WWW-Authenticate: Bearer`), wrong token ->
 401, correct token -> 200 passthrough on all 4 HTTP routes, `InvalidRequest`
 still 422 when authed, and the MCP `StaticTokenVerifier` + streamable-HTTP app
-behaviour. `brain.service` is stubbed (no live Postgres).
+behaviour. `marketing_intelligence.service` is stubbed (no live Postgres).
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ if _SRC not in sys.path:
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import brain.service as service  # noqa: E402
+import marketing_intelligence.service as service  # noqa: E402
 from api.app import app  # noqa: E402
-from brain.auth import StaticTokenVerifier, is_auth_configured  # noqa: E402
+from marketing_intelligence.auth import StaticTokenVerifier, is_auth_configured  # noqa: E402
 
 TOKEN = "test-bearer-token-" + "x" * 32
 

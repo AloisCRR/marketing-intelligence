@@ -1,6 +1,6 @@
 """Shared Document-store seam: fakes + one-shot live-Postgres probe.
 
-Candidate 1 seam over ``brain.db.get_connection``: fast fakes for the
+Candidate 1 seam over ``marketing_intelligence.db.get_connection``: fast fakes for the
 deterministic lane, live PG kept as source of truth behind opt-in
 (``live_db`` marker + session-scoped probe that skips fast when
 Postgres is unreachable). See ADR-0001.
