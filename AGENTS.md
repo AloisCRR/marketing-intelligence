@@ -9,7 +9,7 @@ Grounded in `pyproject.toml` (`src/` layout, Python >=3.12) and `compose.yml` (`
 
 ```sh
 uv sync --frozen              # create/update .venv from uv.lock (this venv has no pip — use uv sync / uv pip, never pip install)
-uv run --frozen pytest        # testpaths = tests/ (add -n auto for parallel xdist run)
+uv run --frozen pytest -n auto        # testpaths = tests/
 uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
 uv run --frozen mypy src
 docker compose up -d db        # Postgres 18 + pgvector (DATABASE_URL=postgresql://brain:brain@localhost:5433/brain)
@@ -34,7 +34,7 @@ V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), dete
 
 ## Testing
 
-Test observable behavior and data contracts, not private helpers: upsert/dedupe by hash, rerunnable ingestion runs, `GET /search` + `POST /period-context` payloads and 422 paths, HTTP↔MCP parity by construction. Run `pytest` before claiming done.
+Test observable behavior and data contracts, not private helpers: upsert/dedupe by hash, rerunnable ingestion runs, `GET /search` + `POST /period-context` payloads and 422 paths, HTTP↔MCP parity by construction. Run `pytest -n auto` before claiming done.
 
 ## Out-of-scope guardrails
 
