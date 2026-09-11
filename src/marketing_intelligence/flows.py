@@ -219,17 +219,19 @@ def _enrich_one_task(
     return enrich_document_or_keep(doc, threshold, force=force)
 
 
-@flow(
-    name="marketing-intelligence.ingestion.enrich",
-    flow_run_name="enrich-docs",
-    task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
-)
-def enrich_task(
+def _enrich_docs(
     docs: list[NormalizedDocument],
     threshold: int = DEFAULT_THIN_THRESHOLD,
     source_name: str | None = None,
 ) -> tuple[list[NormalizedDocument], int, list[str]]:
     """Enrich RSS bodies to Markdown; returns (docs, skipped, causes).
+
+    Plain (undecorated) helper: it must be called from inside a flow context
+    and fans out to `_enrich_one_task.submit(deepcopy(doc), ...)`, so every
+    task run still receives exactly one small document as params — the full
+    `docs` list never rides a flow-run/task-run payload. `enrich_task` wraps
+    it as a flow for direct callers; `ingest_source_flow` calls it directly so
+    the Ingestion Run ships no oversized enrichment params.
 
     Honors the per-source enrichment policy for `source_name` (its threshold
     override threads into the thin check): `force_off` passes every document
@@ -237,8 +239,8 @@ def enrich_task(
     item regardless of thin; `auto` (or no source) keeps the thin-only
     behavior. Sufficient bodies pass through untouched (zero fetch). Any
     per-item failure keeps the RSS body and records `"<method>: <cause>"`
-    (method is `rss` whenever the stored body stayed RSS) — the task never
-    raises, so enrichment can never block an Ingestion Run. Delegates to the
+    (method is `rss` whenever the stored body stayed RSS) — it never raises,
+    so enrichment can never block an Ingestion Run. Delegates to the
     module-global `enrich_document_or_keep` so tests can substitute fakes.
     """
     mode = "auto"
@@ -285,6 +287,27 @@ def enrich_task(
         "enrich docs=%d enriched=%d skipped=%d", len(docs), len(docs) - skipped, skipped
     )
     return (enriched, skipped, causes)
+
+
+@flow(
+    name="marketing-intelligence.ingestion.enrich",
+    flow_run_name="enrich-docs",
+    task_runner=ThreadPoolTaskRunner(max_workers=4),  # type: ignore[arg-type]
+)
+def enrich_task(
+    docs: list[NormalizedDocument],
+    threshold: int = DEFAULT_THIN_THRESHOLD,
+    source_name: str | None = None,
+) -> tuple[list[NormalizedDocument], int, list[str]]:
+    """Enrich RSS bodies to Markdown; returns (docs, skipped, causes).
+
+    Thin flow wrapper over the plain `_enrich_docs` helper, kept for direct
+    callers and tests. `ingest_source_flow` calls the helper directly: passing
+    the full `docs` list as flow-run params put it in the `POST
+    /api/flow_runs/` body, which Prefect caps at 524,288 bytes (a large Exame
+    run was 705,221 bytes → HTTP 422).
+    """
+    return _enrich_docs(docs, threshold, source_name)
 
 
 @task(name="upsert_documents", task_run_name="upsert-docs")
@@ -425,9 +448,19 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
         docs, discovery_skipped, discovery_causes = discover_task(source_label)
         xml = b""
     # Enrichment never raises (per-item fallback keeps the RSS body), so it
-    # can never block an Ingestion Run; no guard needed here.
-    docs, enrich_skipped, enrich_causes = enrich_task(docs, source_name=source_label)
-    result = upsert_task.with_options(task_run_name=f"upsert-{source_label}-{len(docs)}-docs")(docs)
+    # can never block an Ingestion Run; no guard needed here. Called as the
+    # plain `_enrich_docs` helper inside this Ingestion Run, not as the
+    # `enrich_task` subflow: shipping the whole `docs` list as flow-run params
+    # overflowed Prefect's 524,288-byte `POST /api/flow_runs/` body on large
+    # sources (Exame: 705,221 bytes → 422). The helper still fans out one
+    # small `_enrich_one_task.submit(deepcopy(doc), ...)` per document.
+    docs, enrich_skipped, enrich_causes = _enrich_docs(docs, DEFAULT_THIN_THRESHOLD, source_label)
+    # Persist via the plain `upsert_documents` helper for the same reason (the
+    # full list must never ride a task-run param payload); the log line and
+    # {inserted, skipped} shape match the old `upsert_task` call exactly.
+    inserted, upsert_skipped = upsert_documents(docs)
+    logger.info("upsert docs=%d inserted=%d skipped=%d", len(docs), inserted, upsert_skipped)
+    result = {"inserted": inserted, "skipped": upsert_skipped}
     reasons: list[str] | None = None
     if retrieval_type == "rss" or source.get("rss_url"):
         try:
