@@ -3,9 +3,10 @@
 Observable behavior (not privates), reusing the proven machinery:
 - hub-anchor fallback (12): hub listings yield /news/ URLs, noise filtered
 - sitemap index + news sitemap with publication_date (08): extend coverage
-- impersonated retry via policy_get: stdlib-first everywhere, retry only
-  where the plain fetch is refused (live-verified 2026-09-06: plain 403 on
-  every Dive route, impersonated 200 with full bodies)
+- policy_get fetch chain: impersonated primary everywhere (curl_cffi Chrome
+  + browser headers), then the Jina reader, then Firecrawl on any primary
+  failure (live-verified 2026-09-06: the old plain fetch was 403 on every
+  Dive route; the impersonated primary returns 200 with full bodies)
 - generic extraction, substantive bodies (500-char threshold governs
   keep-vs-flag; no structured-data dependency, no bypass)
 - per-source rerun is a no-op; one bad URL / one dead Source never aborts
@@ -22,10 +23,7 @@ news route is proven before lane 10 lands it.
 
 from __future__ import annotations
 
-import io
-import urllib.error
 from collections.abc import Mapping
-from email.message import Message
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -404,69 +402,72 @@ def test_dive_robots_crawl_delay_honored() -> None:
     assert sleeps and all(s >= 5.0 for s in sleeps)
 
 
-# --- impersonated retry: plain-first, retry only on refusal ------------------
+# --- fetch chain: impersonated primary, graceful fallback --------------------
 
 
-def _http_error(url: str, code: int, body: bytes) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(url, code, "Forbidden", Message(), io.BytesIO(body))
+def _jina_must_not_fire(seen: list[str]) -> Any:
+    def _jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen.append("jina")
+        raise AssertionError("jina fallback must not fire")
+
+    return _jina
 
 
-def test_plain_first_no_retry_when_plain_succeeds(
+def test_primary_success_never_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[str] = []
-
-    def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        seen.append(url)
-        raise AssertionError("impersonated retry must not fire")
-
-    monkeypatch.setattr(discovery, "_stdlib_get", lambda url, timeout=30: (url, b"<urlset/>"))
-    monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
+    monkeypatch.setattr(
+        discovery,
+        "_impersonated_get",
+        lambda url, timeout=30: (url, b"<urlset/>"),
+    )
+    monkeypatch.setattr(discovery, "_jina_reader_get", _jina_must_not_fire(seen))
     final_url, body = policy_get(_routes("Retail Dive")["aug"], policy="impersonated-feed")
+    assert final_url == _routes("Retail Dive")["aug"]
     assert body == b"<urlset/>"
     assert seen == []
 
 
-def test_news_sitemap_403_retries_once_impersonated(
+def test_primary_403_falls_back_to_jina_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     news_url = _routes("Retail Dive")["news"]
 
-    def fake_stdlib(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        raise _http_error(url, 403, b"")
+    def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(url, f"fetch failed for {url}: HTTP Error 403")
 
-    monkeypatch.setattr(discovery, "_stdlib_get", fake_stdlib)
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
     monkeypatch.setattr(
         discovery,
-        "_impersonated_get",
+        "_jina_reader_get",
         lambda url, timeout=30: (url, b"<urlset>news</urlset>"),
     )
-    monkeypatch.setattr(discovery, "_curl_cffi_requests", object())
     final_url, body = policy_get(news_url, policy="impersonated-feed")
     assert final_url == news_url
     assert body == b"<urlset>news</urlset>"
 
 
-def test_article_lane_under_stdlib_only_never_retries(
+def test_article_lane_under_stdlib_only_alias_falls_back_to_jina(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """``stdlib-only`` is a dead alias: the article lane still uses the chain."""
     seen: list[str] = []
-
-    def fake_stdlib(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        raise _http_error(url, 403, b"")
+    article_url = SOURCES["Marketing Dive"]["articles"]["A"]["url"]
 
     def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        seen.append(url)
-        return (url, b"<html/>")
+        raise ArticleFetchError(url, f"fetch failed for {url}: HTTP Error 403")
 
-    monkeypatch.setattr(discovery, "_stdlib_get", fake_stdlib)
+    def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen.append("jina")
+        return (url, b"<html>via jina</html>")
+
     monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
-    with pytest.raises(ArticleFetchError, match="HTTP Error 403"):
-        policy_get(
-            SOURCES["Marketing Dive"]["articles"]["A"]["url"],
-            policy="stdlib-only",
-        )
-    assert seen == []
+    monkeypatch.setattr(discovery, "_jina_reader_get", fake_jina)
+    final_url, body = policy_get(article_url, policy="stdlib-only")
+    assert final_url == article_url
+    assert body == b"<html>via jina</html>"
+    assert seen == ["jina"]
 
 
 # --- upsert / rerun (FakeConnection mirrors the RSS lane) ---------------------

@@ -14,7 +14,6 @@ All I/O is faked (monkeypatch, no network, no Postgres).
 
 from __future__ import annotations
 
-import io
 import urllib.error
 from datetime import UTC, datetime
 from typing import Any
@@ -68,6 +67,34 @@ class _Resp:
 
     def read(self) -> bytes:
         return self._body
+
+
+class _CurlResponse:
+    def __init__(self, status_code: int, body: bytes) -> None:
+        self.status_code = status_code
+        self.content = body
+
+
+class _FakeCurlRequests:
+    """curl_cffi.requests double for the impersonated-Chrome primary leg."""
+
+    def __init__(self, status_code: int = 200, body: bytes = b"") -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.status_code = status_code
+        self.body = body
+
+    def get(self, url: str, **kwargs: Any) -> _CurlResponse:
+        self.calls.append({"url": url, **kwargs})
+        return _CurlResponse(self.status_code, self.body)
+
+
+def _failing(exc: Exception) -> Any:
+    """Stub that always raises `exc` (fakes one leg of the fetch chain down)."""
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise exc
+
+    return _raise
 
 
 # --- fallback reader: privacy headers ----------------------------------------
@@ -143,25 +170,22 @@ def test_primary_js_shell_succeeds_via_fallback(monkeypatch: Any) -> None:
 def test_challenge_body_behind_429_trips_gated_fallback(monkeypatch: Any) -> None:
     from marketing_intelligence import enrich
 
-    fallback_calls: list[str] = []
+    fake_curl = _FakeCurlRequests(
+        status_code=429, body=b"Attention Required! ... cloudflare captcha challenge"
+    )
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake_curl)
 
-    def _challenge_429(request: Any, timeout: Any = None) -> Any:
-        raise urllib.error.HTTPError(
-            request.full_url,
-            429,
-            "Too Many Requests",
-            {},  # type: ignore[arg-type]
-            io.BytesIO(b"Attention Required! ... cloudflare captcha challenge"),
-        )
+    fallback_calls: list[str] = []
 
     def _fallback(url: str, timeout: int = 30) -> str:
         fallback_calls.append(url)
         return LONG_MARKDOWN
 
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", _challenge_429)
     monkeypatch.setattr(enrich, "try_fallback_reader", _fallback)
 
     new_doc, method, cause = enrich.enrich_document_or_keep(_thin_doc())
+    assert [call["url"] for call in fake_curl.calls] == [GATED_URL]
+    assert fake_curl.calls[0]["impersonate"] == "chrome"
     assert fallback_calls == [GATED_URL]  # body signal survived the 429: fallback ran
     assert cause is None
     assert method == "enriched"
@@ -182,30 +206,8 @@ def test_keywordless_403_lock_page_trips_gated_fallback(monkeypatch: Any) -> Non
         "test premise: lock page carries no challenge keywords"
     )
 
-    class _FakeCurlRequests:
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-
-        def get(self, url: str, **kwargs: Any) -> Any:
-            self.calls.append(url)
-
-            class _Resp:
-                status_code = 403
-                content = lock_html
-
-            return _Resp()
-
-    fake_curl = _FakeCurlRequests()
+    fake_curl = _FakeCurlRequests(status_code=403, body=lock_html)
     monkeypatch.setattr(enrich, "_curl_cffi_requests", fake_curl)
-
-    def _locked(request: Any, timeout: Any = None) -> Any:
-        raise urllib.error.HTTPError(
-            request.full_url,
-            403,
-            "Forbidden",
-            {},  # type: ignore[arg-type]
-            io.BytesIO(lock_html),
-        )
 
     fallback_calls: list[str] = []
 
@@ -213,11 +215,10 @@ def test_keywordless_403_lock_page_trips_gated_fallback(monkeypatch: Any) -> Non
         fallback_calls.append(url)
         return LONG_MARKDOWN
 
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", _locked)
     monkeypatch.setattr(enrich, "try_fallback_reader", _fallback)
 
     new_doc, method, cause = enrich.enrich_document_or_keep(_thin_doc())
-    assert fake_curl.calls == [GATED_URL]
+    assert [call["url"] for call in fake_curl.calls] == [GATED_URL]
     assert fallback_calls == [GATED_URL]  # thin-rendered 403 counts as a miss
     assert cause is None
     assert method == "enriched"
@@ -227,7 +228,7 @@ def test_keywordless_403_lock_page_trips_gated_fallback(monkeypatch: Any) -> Non
 def test_plain_paywall_without_challenge_signal_keeps_rss_no_fallback(
     monkeypatch: Any,
 ) -> None:
-    from marketing_intelligence import enrich
+    from marketing_intelligence import enrich, firecrawl
 
     calls: list[str] = []
 
@@ -240,9 +241,10 @@ def test_plain_paywall_without_challenge_signal_keeps_rss_no_fallback(
 
     monkeypatch.setattr(enrich, "fetch_and_clean", _paywalled)
     monkeypatch.setattr(enrich, "try_fallback_reader", _must_not_run)
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _must_not_run)
 
     kept, method, cause = enrich.enrich_document_or_keep(_thin_doc())
-    assert calls == []
+    assert calls == []  # neither fallback leg ran
     assert method == "rss"
     assert cause is not None and "403" in cause
 
@@ -253,7 +255,7 @@ def test_plain_paywall_without_challenge_signal_keeps_rss_no_fallback(
 def test_fallback_429_backs_off_then_keeps_rss_with_rate_limited_cause(
     monkeypatch: Any,
 ) -> None:
-    from marketing_intelligence import enrich
+    from marketing_intelligence import enrich, firecrawl
 
     attempts: list[str] = []
     sleeps: list[float] = []
@@ -278,40 +280,52 @@ def test_fallback_429_backs_off_then_keeps_rss_with_rate_limited_cause(
     monkeypatch.setattr(enrich, "fetch_and_clean", _rate_limited)
     monkeypatch.setattr(enrich.urllib.request, "urlopen", _always_429)
     monkeypatch.setattr(enrich.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(
+        firecrawl, "fetch_via_firecrawl", _failing(firecrawl.FirecrawlFailed("firecrawl down"))
+    )
 
     doc = _thin_doc()
     kept, method, cause = enrich.enrich_document_or_keep(doc)
     assert kept is doc
     assert method == "rss"
     assert cause is not None and "rate-limited" in cause
+    assert "firecrawl down" in cause  # last leg's cause chained, not swallowed
     assert len(attempts) == 3  # initial attempt + 2 retries, then give up
     assert sleeps == [2.0, 0.0]  # Retry-After honored per attempt
 
 
 def test_fallback_failure_keeps_rss_and_chains_primary_cause(monkeypatch: Any) -> None:
-    from marketing_intelligence import enrich
+    from marketing_intelligence import enrich, firecrawl
 
     def _empty_primary(url: str, timeout: int = 30) -> str:
         raise enrich.UnparseableBody(f"unparseable body for {url}: empty after cleaning")
 
-    def _fallback_down(url: str, timeout: int = 30) -> str:
+    def _reader_down(url: str, timeout: int = 30) -> str:
         raise enrich.FetchFailed(f"fallback fetch failed for {url}: HTTP Error 403")
 
+    def _firecrawl_down(url: str, timeout: int = 30) -> bytes:
+        raise firecrawl.FirecrawlFailed(f"firecrawl scrape failed for {url}: HTTP Error 500")
+
     monkeypatch.setattr(enrich, "fetch_and_clean", _empty_primary)
-    monkeypatch.setattr(enrich, "try_fallback_reader", _fallback_down)
+    monkeypatch.setattr(enrich, "try_fallback_reader", _reader_down)
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _firecrawl_down)
 
     doc = _thin_doc()
-    with __import__("pytest").raises(enrich.EnrichmentError):
+    with pytest.raises(enrich.EnrichmentError) as info:
         enrich.enrich_document(doc)
+    message = str(info.value)
+    assert "unparseable body" in message  # primary cause preserved, not swallowed
+    assert "reader: " in message and "403" in message  # Jina leg cause named
+    assert "firecrawl: " in message and "500" in message  # paid leg cause named
+
     kept, method, cause = enrich.enrich_document_or_keep(doc)
     assert kept is doc
     assert method == "rss"
-    assert cause is not None
-    assert "unparseable body" in cause  # primary cause preserved, not swallowed
+    assert cause is not None and "unparseable body" in cause
 
 
 def test_thin_fallback_output_counts_as_miss_and_keeps_rss(monkeypatch: Any) -> None:
-    from marketing_intelligence import enrich
+    from marketing_intelligence import enrich, firecrawl
 
     monkeypatch.setattr(
         enrich,
@@ -322,10 +336,73 @@ def test_thin_fallback_output_counts_as_miss_and_keeps_rss(monkeypatch: Any) -> 
     )
     # A reader stub / error page carries no substance: must not become canonical.
     monkeypatch.setattr(enrich, "try_fallback_reader", lambda url, timeout=30: "Not found.")
+    monkeypatch.setattr(
+        firecrawl, "fetch_via_firecrawl", _failing(firecrawl.FirecrawlFailed("firecrawl down"))
+    )
 
     kept, method, cause = enrich.enrich_document_or_keep(_thin_doc())
     assert method == "rss"
     assert cause is not None
+    assert "delivered no substantive text" in cause
+
+
+def test_reader_miss_firecrawl_success_stores_enriched(monkeypatch: Any) -> None:
+    from marketing_intelligence import enrich, firecrawl
+
+    monkeypatch.setattr(
+        enrich,
+        "fetch_and_clean",
+        lambda url, timeout=30: (_ for _ in ()).throw(
+            enrich.FetchFailed(f"fetch failed for {url}: cloudflare captcha challenge")
+        ),
+    )
+    reader_calls: list[str] = []
+    monkeypatch.setattr(
+        enrich,
+        "try_fallback_reader",
+        lambda url, timeout=30: (reader_calls.append(url), "Not found.")[1],
+    )
+    scrape_calls: list[str] = []
+    monkeypatch.setattr(
+        firecrawl,
+        "fetch_via_firecrawl",
+        lambda url, timeout=30: (scrape_calls.append(url), LONG_MARKDOWN.encode())[1],
+    )
+
+    doc = _thin_doc()
+    new_doc, method, cause = enrich.enrich_document_or_keep(doc)
+    assert cause is None
+    assert method == "enriched"
+    assert reader_calls == [GATED_URL]  # Jina reader tried first
+    assert scrape_calls == [GATED_URL]  # Firecrawl only after the reader missed
+    assert new_doc.content == LONG_MARKDOWN
+    assert new_doc.url == doc.url
+
+
+def test_missing_firecrawl_key_is_explicit_skipped_cause_never_leaks_key(
+    monkeypatch: Any,
+) -> None:
+    from marketing_intelligence import enrich
+
+    # Blank key (the real ambient key is masked): the chain must record the
+    # explicit skipped cause, never key-derived material of any kind.
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "   ")
+    monkeypatch.setattr(
+        enrich,
+        "fetch_and_clean",
+        lambda url, timeout=30: (_ for _ in ()).throw(
+            enrich.FetchFailed(f"fetch failed for {url}: cloudflare captcha challenge")
+        ),
+    )
+    monkeypatch.setattr(enrich, "try_fallback_reader", _failing(enrich.FetchFailed("reader down")))
+
+    doc = _thin_doc()
+    kept, method, cause = enrich.enrich_document_or_keep(doc)
+    assert kept is doc
+    assert method == "rss"
+    assert cause is not None
+    assert "firecrawl skipped: missing FIRECRAWL_API_KEY" in cause
+    assert "Bearer" not in cause and "<redacted>" not in cause
 
 
 # --- per-source policy ----------------------------------------------------------

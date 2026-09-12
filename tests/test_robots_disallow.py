@@ -73,7 +73,7 @@ def _make_fetch(mapping: dict[str, tuple[str, bytes]], log: list[str] | None = N
 def _sitemap_config(**overrides: Any) -> dict[str, Any]:
     config: dict[str, Any] = {
         "type": "sitemap",
-        "policy": "stdlib-only",
+        "policy": "impersonated-feed",
         "extractor": "generic",
         "pacing_ms": 1000,
         "max_urls": 50,

@@ -14,10 +14,7 @@ All network is fixture-backed (FIXTURES); no live HTTP in tests.
 
 from __future__ import annotations
 
-import io
-import urllib.error
 from collections.abc import Mapping
-from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +23,7 @@ from fake_transport import FakeTransport
 from prefect_harness import no_engine
 
 import marketing_intelligence.discovery as discovery
+import marketing_intelligence.firecrawl as firecrawl
 from marketing_intelligence.discovery import (
     ArticleExtractError,
     ArticleFetchError,
@@ -202,68 +200,176 @@ def test_robots_crawl_delay_honored() -> None:
     assert robots_crawl_delay("") == 0.0
 
 
-def _http_error(url: str, code: int, body: bytes) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(url, code, "Forbidden", Message(), io.BytesIO(body))
+def _forbid_fallbacks(monkeypatch: pytest.MonkeyPatch, seen: list[str]) -> None:
+    """Stub Jina + Firecrawl to record and fail loudly if the chain reaches them."""
+
+    def _jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen.append("jina")
+        raise AssertionError("jina fallback must not fire")
+
+    def _firecrawl(url: str, timeout: int = 30) -> bytes:
+        seen.append("firecrawl")
+        raise AssertionError("firecrawl fallback must not fire")
+
+    monkeypatch.setattr(discovery, "_jina_reader_get", _jina)
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _firecrawl)
 
 
-def test_policy_get_stdlib_success_tracks_final_url(
+def test_policy_get_primary_success_never_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    seen: list[str] = []
+    _forbid_fallbacks(monkeypatch, seen)
     monkeypatch.setattr(
-        discovery, "_stdlib_get", lambda url, timeout=30: (url + "?final=1", b"<html/>")
+        discovery,
+        "_impersonated_get",
+        lambda url, timeout=30: (url + "?final=1", b"<html/>"),
     )
-    final_url, body = policy_get("http://example.com/a", policy="stdlib-only")
+    final_url, body = policy_get("http://example.com/a", policy="impersonated-feed")
     assert final_url == "http://example.com/a?final=1"
     assert body == b"<html/>"
+    assert seen == []
 
 
-def test_policy_get_plain_404_never_retries(
+def test_policy_get_stdlib_only_alias_falls_back_to_jina(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stdlib-only`` is a dead alias: a primary error still runs the chain."""
+    seen: list[str] = []
+
+    def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(url, f"fetch failed for {url}: HTTP Error 404")
+
+    def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen.append("jina")
+        return (url, b"<html>via jina</html>")
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
+    monkeypatch.setattr(discovery, "_jina_reader_get", fake_jina)
+    monkeypatch.setattr(
+        firecrawl,
+        "fetch_via_firecrawl",
+        lambda url, timeout=30: pytest.fail("firecrawl must not fire when jina succeeds"),
+    )
+    final_url, body = policy_get("http://example.com/a", policy="stdlib-only")
+    assert final_url == "http://example.com/a"
+    assert body == b"<html>via jina</html>"
+    assert seen == ["jina"]
+
+
+def test_policy_get_stdlib_only_alias_falls_back_to_firecrawl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Jina also fails, ``stdlib-only`` reaches Firecrawl like any policy."""
+    seen: list[str] = []
+
+    def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(url, f"fetch failed for {url}: HTTP Error 404")
+
+    def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen.append("jina")
+        raise ArticleFetchError(url, f"jina reader failed for {url}: HTTP Error 429")
+
+    def fake_firecrawl(url: str, timeout: int = 30) -> bytes:
+        seen.append("firecrawl")
+        return b"<urlset/>"
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
+    monkeypatch.setattr(discovery, "_jina_reader_get", fake_jina)
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", fake_firecrawl)
+    assert policy_get("http://example.com/a", policy="stdlib-only") == (
+        "http://example.com/a",
+        b"<urlset/>",
+    )
+    assert seen == ["jina", "firecrawl"]
+
+
+def test_policy_get_primary_403_falls_back_to_jina(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[str] = []
 
-    def fake_stdlib(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        raise _http_error(url, 404, b"not found")
-
     def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        seen.append(url)
-        return (url, b"<html/>")
+        raise ArticleFetchError(url, f"fetch failed for {url}: HTTP Error 403")
 
-    monkeypatch.setattr(discovery, "_stdlib_get", fake_stdlib)
+    def forbidden_firecrawl(url: str, timeout: int = 30) -> bytes:
+        seen.append("firecrawl")
+        raise AssertionError("firecrawl fallback must not fire")
+
     monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
-    with pytest.raises(ArticleFetchError, match="HTTP Error 404"):
-        policy_get("http://example.com/a", policy="impersonated-feed")
-    assert seen == []
-
-
-def test_policy_get_403_retries_once_under_impersonated_feed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_stdlib(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        raise _http_error(url, 403, b"")
-
-    monkeypatch.setattr(discovery, "_stdlib_get", fake_stdlib)
     monkeypatch.setattr(
         discovery,
-        "_impersonated_get",
+        "_jina_reader_get",
         lambda url, timeout=30: (url, b"<html>retry</html>"),
     )
-    monkeypatch.setattr(discovery, "_curl_cffi_requests", object())
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", forbidden_firecrawl)
     final_url, body = policy_get("http://example.com/a", policy="impersonated-feed")
     assert body == b"<html>retry</html>"
     assert final_url == "http://example.com/a"
+    assert seen == []
 
 
-def test_policy_get_403_without_curl_is_explicit(
+def test_policy_get_full_chain_falls_back_to_firecrawl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_stdlib(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        raise _http_error(url, 403, b"")
+    def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(url, f"fetch failed for {url}: HTTP Error 403")
 
-    monkeypatch.setattr(discovery, "_stdlib_get", fake_stdlib)
-    monkeypatch.setattr(discovery, "_curl_cffi_requests", None)
-    with pytest.raises(ArticleFetchError, match="impersonated retry"):
+    def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(url, f"jina reader failed for {url}: HTTP Error 429")
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
+    monkeypatch.setattr(discovery, "_jina_reader_get", fake_jina)
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", lambda url, timeout=30: b"<urlset/>")
+    assert policy_get("http://example.com/a", policy="impersonated-feed") == (
+        "http://example.com/a",
+        b"<urlset/>",
+    )
+
+
+def test_policy_get_chain_detail_lists_legs_and_redacts_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(url, f"fetch failed for {url}: 403 Bearer sk-live-abc123")
+
+    def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        raise ArticleFetchError(
+            url, f"jina reader failed for {url}: HTTP Error 403 fc-abcdefgh1234"
+        )
+
+    def fake_firecrawl(url: str, timeout: int = 30) -> bytes:
+        raise RuntimeError(f"firecrawl failed for {url}: rejected fc-deadbeef00")
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_impersonated)
+    monkeypatch.setattr(discovery, "_jina_reader_get", fake_jina)
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", fake_firecrawl)
+    with pytest.raises(ArticleFetchError) as excinfo:
         policy_get("http://example.com/a", policy="impersonated-feed")
+    detail = excinfo.value.detail
+    assert "| jina:" in detail
+    assert "| firecrawl:" in detail
+    assert "Bearer" not in detail
+    assert "fc-" not in detail
+    assert "[redacted]" in detail
+
+
+def test_policy_get_stdlib_only_without_curl_cffi_falls_back_to_jina(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken primary (no curl_cffi) still hands off to the Jina leg."""
+    seen: list[str] = []
+    monkeypatch.setattr(discovery, "_curl_cffi_requests", None)
+
+    def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen.append("jina")
+        return (url, b"<html>via jina</html>")
+
+    monkeypatch.setattr(discovery, "_jina_reader_get", fake_jina)
+    final_url, body = policy_get("http://example.com/a", policy="stdlib-only")
+    assert final_url == "http://example.com/a"
+    assert body == b"<html>via jina</html>"
+    assert seen == ["jina"]
 
 
 # --- article extraction -------------------------------------------------------
@@ -1126,7 +1232,7 @@ def test_harvest_sitemap_exclude_webstories_never_fetched_bad_urls_explicit() ->
     )
     config: dict[str, Any] = {
         "type": "sitemap",
-        "policy": "stdlib-only",
+        "policy": "impersonated-feed",
         "extractor": "generic",
         "sitemaps": [EX_SITEMAP],
         "sitemap_exclude": ["/webstories/"],

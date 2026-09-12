@@ -176,7 +176,7 @@ def test_jck_fallback_routing_declared_in_code() -> None:
 def test_curated_jck_entry_untouched() -> None:
     entries = {e["source_name"]: e for e in json.loads(CURATED.read_text(encoding="utf-8"))}
     assert entries[JCK]["rss_url"] == JCK_FEED_URL
-    assert entries[JCK]["retrieval"] == {"type": "rss", "policy": "stdlib-only"}
+    assert entries[JCK]["retrieval"] == {"type": "rss", "policy": "impersonated-feed"}
     assert get_source(JCK)["rss_url"] == JCK_FEED_URL
 
 

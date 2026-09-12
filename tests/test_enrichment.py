@@ -109,12 +109,11 @@ def test_fetch_and_clean_timeout_raises_fetch_failed(
 ) -> None:
     from marketing_intelligence import enrich
 
-    def _boom(request: object, timeout: object = None) -> object:
-        raise urllib.error.URLError("timed out")
-
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", _boom)
+    fake = _FakeCurlRequests(error=urllib.error.URLError("timed out"))
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
     with pytest.raises(enrich.FetchFailed, match="(?i)timed out|fetch failed"):
         enrich.fetch_and_clean(THIN_URL, timeout=1)
+    assert fake.calls[0]["timeout"] == 1
 
 
 def test_fetch_and_clean_http_error_raises_fetch_failed(
@@ -122,10 +121,8 @@ def test_fetch_and_clean_http_error_raises_fetch_failed(
 ) -> None:
     from marketing_intelligence import enrich
 
-    def _denied(request: object, timeout: object = None) -> object:
-        raise urllib.error.HTTPError(str(THIN_URL), 403, "Forbidden", {}, None)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", _denied)
+    fake = _FakeCurlRequests(403, b"")
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
     with pytest.raises(enrich.FetchFailed, match="(?i)403|forbidden|fetch failed"):
         enrich.fetch_and_clean(THIN_URL)
 
@@ -135,17 +132,8 @@ def test_fetch_and_clean_empty_body_raises_unparseable(
 ) -> None:
     from marketing_intelligence import enrich
 
-    class _Resp:
-        def __enter__(self) -> _Resp:
-            return self
-
-        def __exit__(self, *args: object) -> bool:
-            return False
-
-        def read(self) -> bytes:
-            return b"<html><body>   </body></html>"
-
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    fake = _FakeCurlRequests(200, b"<html><body>   </body></html>")
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
     with pytest.raises(enrich.UnparseableBody):
         enrich.fetch_and_clean(THIN_URL)
 
@@ -206,7 +194,7 @@ def test_thin_item_stores_markdown_hash_over_stored_text(
 def test_each_failure_mode_keeps_rss_and_records_cause(
     monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    from marketing_intelligence import enrich
+    from marketing_intelligence import enrich, firecrawl
 
     failure_cls: type[enrich.EnrichmentError] = (
         enrich.UnparseableBody if "unparseable" in str(failure) else enrich.FetchFailed
@@ -216,6 +204,13 @@ def test_each_failure_mode_keeps_rss_and_records_cause(
         raise failure_cls(str(failure))
 
     monkeypatch.setattr(enrich, "fetch_and_clean", _fail)
+    # UnparseableBody is a primary-miss signal: the fallback chain runs, so
+    # both legs are faked down (no live Jina/Firecrawl traffic in unit tests).
+    monkeypatch.setattr(enrich, "try_fallback_reader", _failing(enrich.FetchFailed("reader down")))
+    monkeypatch.setattr(
+        firecrawl, "fetch_via_firecrawl", _failing(firecrawl.FirecrawlFailed("firecrawl down"))
+    )
+
     doc = _thin_doc()
     # raising API surfaces the typed error for callers that catch ...
     with pytest.raises(enrich.EnrichmentError):
@@ -391,7 +386,7 @@ def test_no_model_calls_on_enrichment_path() -> None:
         assert mod not in sys.modules, f"model library {mod!r} must not be imported"
 
 
-# --- primary fetch backend: impersonation first, stdlib fallback ----------------
+# --- primary fetch backend: impersonated Chrome (hard dep), then the fallback chain
 
 
 ARTICLE_HTML = (
@@ -409,32 +404,28 @@ class _CurlResponse:
 class _FakeCurlRequests:
     """curl_cffi.requests double: records calls, replays one canned response."""
 
-    def __init__(self, status_code: int = 200, body: bytes = b"") -> None:
+    def __init__(
+        self, status_code: int = 200, body: bytes = b"", error: Exception | None = None
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.status_code = status_code
         self.body = body
+        self.error = error
 
     def get(self, url: str, **kwargs: Any) -> _CurlResponse:
         self.calls.append({"url": url, **kwargs})
+        if self.error is not None:
+            raise self.error
         return _CurlResponse(self.status_code, self.body)
 
 
-class _Resp:
-    def __init__(self, body: bytes) -> None:
-        self._body = body
+def _failing(exc: Exception) -> Any:
+    """Stub that always raises `exc` (fakes one leg of the fetch chain down)."""
 
-    def __enter__(self) -> _Resp:
-        return self
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise exc
 
-    def __exit__(self, *args: object) -> bool:
-        return False
-
-    def read(self) -> bytes:
-        return self._body
-
-
-def _browser_headers_of(request: Any) -> dict[str, str]:
-    return {k.lower(): v for k, v in request.header_items()}
+    return _raise
 
 
 def test_impersonation_backend_used_when_available(
@@ -446,7 +437,7 @@ def test_impersonation_backend_used_when_available(
     monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
 
     def _must_not_open(request: object, timeout: object = None) -> object:
-        raise AssertionError("impersonation success must not touch stdlib")
+        raise AssertionError("primary success must not touch any fallback lane")
 
     monkeypatch.setattr(enrich.urllib.request, "urlopen", _must_not_open)
     markdown = enrich.fetch_and_clean(THIN_URL)
@@ -456,52 +447,81 @@ def test_impersonation_backend_used_when_available(
     assert call["url"] == THIN_URL
     assert call["impersonate"] == "chrome"  # Chrome impersonation, never a crawler
     headers = call["headers"]
+    assert headers == enrich.BROWSER_HEADERS  # genuine browser identity, verbatim
     ua = headers["User-Agent"]
     assert ua.startswith("Mozilla/5.0") and "Chrome/" in ua
     assert "Googlebot" not in ua and "bot" not in ua.lower()
     assert "Cookie" not in headers and "Authorization" not in headers
 
 
-def test_stdlib_fallback_when_curl_cffi_missing(
+def test_missing_curl_cffi_raises_explicit_fetch_failed_no_stdlib_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from marketing_intelligence import enrich
 
     monkeypatch.setattr(enrich, "_curl_cffi_requests", None)
-    captured: dict[str, Any] = {}
 
-    def _open(request: Any, timeout: Any = None) -> _Resp:
-        captured["request"] = request
-        return _Resp(ARTICLE_HTML)
+    def _must_not_open(request: object, timeout: object = None) -> object:
+        raise AssertionError("curl_cffi is a hard dep: no stdlib fetch lane exists")
 
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", _open)
-    markdown = enrich.fetch_and_clean(THIN_URL)
-    assert "Full article body" in markdown
-    sent = _browser_headers_of(captured["request"])
-    assert sent["user-agent"].startswith("Mozilla/5.0") and "Chrome/" in sent["user-agent"]
-    assert "googlebot" not in sent["user-agent"]
-    assert sent["sec-fetch-mode"] == "navigate"  # genuine browser headers
-    assert "cookie" not in sent and "authorization" not in sent
+    monkeypatch.setattr(enrich.urllib.request, "urlopen", _must_not_open)
+    with pytest.raises(enrich.FetchFailed, match="(?i)curl_cffi"):
+        enrich.fetch_and_clean(THIN_URL)
 
 
-def test_impersonation_failure_falls_back_to_stdlib(
+def test_impersonation_failure_falls_back_reader_then_firecrawl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from marketing_intelligence import enrich
+    from marketing_intelligence import enrich, firecrawl
 
-    fake = _FakeCurlRequests(403, b"Forbidden")
+    # Challenge evidence in the 403 body is what gates the fallback chain.
+    fake = _FakeCurlRequests(403, b"Attention Required! cloudflare captcha challenge")
     monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
-    stdlib_calls: list[Any] = []
 
-    def _open(request: Any, timeout: Any = None) -> _Resp:
-        stdlib_calls.append(request)
-        return _Resp(ARTICLE_HTML)
+    reader_calls: list[str] = []
+    monkeypatch.setattr(
+        enrich,
+        "try_fallback_reader",
+        lambda url, timeout=30: (reader_calls.append(url), "Not found.")[1],
+    )
 
-    monkeypatch.setattr(enrich.urllib.request, "urlopen", _open)
-    markdown = enrich.fetch_and_clean(THIN_URL)
-    assert "Full article body" in markdown  # legacy attempt outcome is final
-    assert len(fake.calls) == 1
-    assert len(stdlib_calls) == 1
+    scrape_calls: list[str] = []
+    monkeypatch.setattr(
+        firecrawl,
+        "fetch_via_firecrawl",
+        lambda url, timeout=30: (scrape_calls.append(url), ARTICLE_HTML)[1],
+    )
+
+    doc = _thin_doc()
+    new_doc, method, cause = enrich.enrich_document_or_keep(doc)
+    assert cause is None
+    assert method == "enriched"
+    assert fake.calls[0]["impersonate"] == "chrome"
+    assert reader_calls == [THIN_URL]  # Jina reader leg first
+    assert scrape_calls == [THIN_URL]  # Firecrawl only after the reader miss
+    assert "Full article body" in new_doc.content
+    assert new_doc.url == doc.url
+
+
+def test_reader_success_short_circuits_firecrawl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from marketing_intelligence import enrich, firecrawl
+
+    fake = _FakeCurlRequests(403, b"cloudflare captcha challenge")
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", fake)
+    monkeypatch.setattr(
+        enrich, "try_fallback_reader", lambda url, timeout=30: "# Story\n\n" + "body " * 200
+    )
+
+    def _must_not_scrape(url: str, timeout: int = 30) -> bytes:
+        raise AssertionError("Firecrawl must stay paid-last-resort: reader succeeded")
+
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _must_not_scrape)
+    new_doc, method, cause = enrich.enrich_document_or_keep(_thin_doc())
+    assert cause is None
+    assert method == "enriched"
+    assert "body body" in new_doc.content
 
 
 # --- clean_to_markdown: trafilatura extraction -----------------------------------

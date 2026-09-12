@@ -220,7 +220,7 @@ def test_registry_carries_correct_language_code(label: str) -> None:
 def test_registry_sitemap_stanza_is_live_verified_route(label: str) -> None:
     config = get_retrieval_config(label)
     assert config["type"] == "sitemap"
-    assert config["policy"] == "stdlib-only"
+    assert config["policy"] == "impersonated-feed"
     assert config["extractor"] == "generic"
     assert config["sitemaps"] == SOURCES[label]["sitemaps"]
 
@@ -229,7 +229,7 @@ def test_modaes_tracker_label_corrected_to_cookie_consent_wall() -> None:
     raw = get_source("Modaes")["raw"]
     assert "cookie-consent" in raw["extractability"]
     assert "Paywall blocks body" not in raw["extractability"]
-    assert get_retrieval_config("Modaes")["policy"] == "stdlib-only"
+    assert get_retrieval_config("Modaes")["policy"] == "impersonated-feed"
 
 
 # --- harvest ----------------------------------------------------------------
