@@ -90,7 +90,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(
         service,
         "search_articles",
-        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
+        lambda keyword, limit=20, conn=None, exclude_read=False, min_importance=None, topics=None: (
+            SEARCH_PAYLOAD
+        ),
     )
     monkeypatch.setattr(
         service,
@@ -126,7 +128,12 @@ def test_search_forwards_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
 
     def fake(
-        keyword: str, limit: int = 20, conn: object = None, exclude_read: bool = False
+        keyword: str,
+        limit: int = 20,
+        conn: object = None,
+        exclude_read: bool = False,
+        min_importance: float | None = None,
+        topics: list[str] | None = None,
     ) -> list:
         seen["keyword"] = keyword
         seen["limit"] = limit
@@ -143,7 +150,12 @@ def test_search_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> Non
     seen: dict = {}
 
     def fake(
-        keyword: str, limit: int = 20, conn: object = None, exclude_read: bool = False
+        keyword: str,
+        limit: int = 20,
+        conn: object = None,
+        exclude_read: bool = False,
+        min_importance: float | None = None,
+        topics: list[str] | None = None,
     ) -> list:
         seen["exclude_read"] = exclude_read
         return SEARCH_PAYLOAD
@@ -154,6 +166,34 @@ def test_search_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> Non
     assert seen == {"exclude_read": False}  # identical default as the service
     assert http.get("/search", params={"q": "TikTok", "exclude_read": "true"}).status_code == 200
     assert seen == {"exclude_read": True}
+
+
+def test_search_forwards_annotation_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP passes the annotation filters straight through to the adapter."""
+    seen: dict = {}
+
+    def fake(
+        keyword: str,
+        limit: int = 20,
+        conn: object = None,
+        exclude_read: bool = False,
+        min_importance: float | None = None,
+        topics: list[str] | None = None,
+    ) -> list:
+        seen.update(min_importance=min_importance, topics=topics)
+        return SEARCH_PAYLOAD
+
+    monkeypatch.setattr(service, "search_articles", fake)
+    http = TestClient(app)
+    assert http.get("/search", params={"q": "TikTok"}).status_code == 200
+    assert seen == {"min_importance": None, "topics": None}
+    resp = http.get(
+        "/search",
+        params=[("q", "TikTok"), ("min_importance", "0.7"), ("topics", "jewellery")],
+    )
+    assert resp.status_code == 200
+    # The vocabulary lane owns canonicalization; HTTP forwards the raw tag.
+    assert seen == {"min_importance": 0.7, "topics": ["jewellery"]}
 
 
 def test_search_validation_maps_to_422() -> None:
@@ -242,6 +282,32 @@ def test_period_forwards_exclude_read(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["exclude_read"] is True
 
 
+def test_period_forwards_annotation_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP passes the importance floor + Topic filter straight to the adapter."""
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        return PERIOD_PAYLOAD
+
+    monkeypatch.setattr(service, "get_period_context", fake)
+    http = TestClient(app)
+    body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
+    assert http.post("/period-context", json=body).status_code == 200
+    assert seen["min_importance"] is None
+    assert seen["topics"] is None
+    assert (
+        http.post(
+            "/period-context",
+            json=dict(body, min_importance=0.7, topics=["jewellery"], per_source_limit=2),
+        ).status_code
+        == 200
+    )
+    assert seen["min_importance"] == 0.7
+    assert seen["topics"] == ["jewellery"]  # canonicalization happens in the adapter
+    assert seen["per_source_limit"] == 2
+
+
 def test_period_validation_maps_to_422() -> None:
     live = TestClient(app)
     assert (
@@ -276,6 +342,43 @@ def test_period_validation_maps_to_422() -> None:
             ).status_code
             == 422
         )
+    for bad in (-0.01, 1.5, "high"):
+        assert (
+            live.post(
+                "/period-context",
+                json={
+                    "from_date": "2026-09-07",
+                    "to_date": "2026-09-13",
+                    "min_importance": bad,
+                },
+            ).status_code
+            == 422
+        )
+    assert (
+        live.post(
+            "/period-context",
+            json={
+                "from_date": "2026-09-07",
+                "to_date": "2026-09-13",
+                "topics": ["quantum-jewelry"],
+            },
+        ).status_code
+        == 422
+    )
+    assert (
+        live.get(
+            "/search",
+            params=[("q", "TikTok"), ("min_importance", "1.5")],
+        ).status_code
+        == 422
+    )
+    assert (
+        live.get(
+            "/search",
+            params=[("q", "TikTok"), ("topics", "quantum-jewelry")],
+        ).status_code
+        == 422
+    )
 
 
 def test_openapi_docs_demoable(client: TestClient) -> None:

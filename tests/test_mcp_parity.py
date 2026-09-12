@@ -98,7 +98,9 @@ def stubbed_service(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         service,
         "search_articles",
-        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
+        lambda keyword, limit=20, conn=None, exclude_read=False, min_importance=None, topics=None: (
+            SEARCH_PAYLOAD
+        ),
     )
     monkeypatch.setattr(
         service, "get_period_context", lambda from_date, to_date, **kw: PERIOD_PAYLOAD
@@ -215,7 +217,19 @@ def test_mcp_tools_surface_service_validation(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.search_articles(keyword="   ")
     with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.search_articles(keyword="TikTok", min_importance=1.5)
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.search_articles(keyword="TikTok", topics=["quantum-jewelry"])
+    with pytest.raises(service.InvalidRequest):
         MCP_SERVER.get_period_context(from_date="nope", to_date="2026-09-13")
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.get_period_context(
+            from_date="2026-09-07", to_date="2026-09-13", min_importance=-0.1
+        )
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.get_period_context(
+            from_date="2026-09-07", to_date="2026-09-13", topics=["quantum-jewelry"]
+        )
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.flag_extraction(identifier="   ")
     with pytest.raises(service.InvalidRequest):
@@ -259,7 +273,12 @@ def test_search_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> Non
     seen: dict = {}
 
     def fake(
-        keyword: str, limit: int = 20, conn: object = None, exclude_read: bool = False
+        keyword: str,
+        limit: int = 20,
+        conn: object = None,
+        exclude_read: bool = False,
+        min_importance: float | None = None,
+        topics: list[str] | None = None,
     ) -> list:
         seen["keyword"] = keyword
         seen["exclude_read"] = exclude_read
@@ -270,6 +289,54 @@ def test_search_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> Non
     assert seen == {"keyword": "TikTok", "exclude_read": False}
     assert MCP_SERVER.search_articles(keyword="TikTok", exclude_read=True) == SEARCH_PAYLOAD
     assert seen == {"keyword": "TikTok", "exclude_read": True}
+
+
+def test_search_annotation_filters_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(
+        keyword: str,
+        limit: int = 20,
+        conn: object = None,
+        exclude_read: bool = False,
+        min_importance: float | None = None,
+        topics: list[str] | None = None,
+    ) -> list:
+        seen.update(min_importance=min_importance, topics=topics)
+        return SEARCH_PAYLOAD
+
+    monkeypatch.setattr(service, "search_articles", fake)
+    assert MCP_SERVER.search_articles(keyword="TikTok") == SEARCH_PAYLOAD
+    assert seen == {"min_importance": None, "topics": None}
+    assert (
+        MCP_SERVER.search_articles(keyword="TikTok", min_importance=0.7, topics=["jewellery"])
+        == SEARCH_PAYLOAD
+    )
+    assert seen == {"min_importance": 0.7, "topics": ["jewellery"]}
+
+
+def test_period_annotation_filters_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        return PERIOD_PAYLOAD
+
+    monkeypatch.setattr(service, "get_period_context", fake)
+    body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
+    assert MCP_SERVER.get_period_context(**body) == PERIOD_PAYLOAD
+    assert seen["min_importance"] is None
+    assert seen["topics"] is None
+    out = asyncio.run(
+        MCP_SERVER.mcp.call_tool(
+            "get_period_context",
+            dict(body, min_importance=0.7, topics=["jewellery"], per_source_limit=2),
+        )
+    )
+    assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
+    assert seen["min_importance"] == 0.7
+    assert seen["topics"] == ["jewellery"]
+    assert seen["per_source_limit"] == 2
 
 
 def test_period_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:

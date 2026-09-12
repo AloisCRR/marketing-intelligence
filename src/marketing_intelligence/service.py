@@ -193,12 +193,53 @@ def _validate_exclude_read(exclude_read: Any) -> bool:
     return exclude_read
 
 
+def _validate_min_importance(value: Any) -> float | None:
+    """Validate the optional Importance floor: None, or a number in [0, 1]."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InvalidRequest(
+            f"min_importance must be a number in [0, 1] or null, got {type(value).__name__}"
+        )
+    number = float(value)
+    if not (_importance.IMPORTANCE_MIN <= number <= _importance.IMPORTANCE_MAX):
+        raise InvalidRequest(f"min_importance must be in [0, 1] or null, got {value!r}")
+    return number
+
+
+def _validate_topic_filter(topics: Any) -> list[str] | None:
+    """Validate + canonicalize the optional Topic filter; unknown tags are 422.
+
+    Caller synonyms, case/whitespace variants and retired aliases resolve to
+    their canonical slug via the vocabulary lane; an unknown tag raises
+    `InvalidRequest` before any query. Duplicates collapse, order is kept. An
+    empty list is accepted and adds no constraint.
+    """
+    if topics is None:
+        return None
+    if isinstance(topics, (str, bytes)) or not isinstance(topics, (list, tuple)):
+        raise InvalidRequest("topics must be a list of topic tags or null")
+    slugs: list[str] = []
+    for item in topics:
+        if not isinstance(item, str) or not item.strip():
+            raise InvalidRequest(f"topic tags must be non-empty strings, got {item!r}")
+        try:
+            slug = _topics.canonicalize_topic(item)
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequest(str(exc)) from None
+        if slug not in slugs:
+            slugs.append(slug)
+    return slugs
+
+
 def search_articles(
     keyword: str,
     limit: int = DEFAULT_SEARCH_LIMIT,
     conn: Any | None = None,
     *,
     exclude_read: bool = False,
+    min_importance: float | None = None,
+    topics: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Validated keyword search; returns the 19-key provenance dicts, newest first.
 
@@ -208,14 +249,32 @@ def search_articles(
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
     unannotated) and `topics` — the Document's effective canonical Topic
     slugs (sorted, ``[]`` when unannotated).
+
+    `min_importance` (None default) keeps only Documents whose latest score is
+    `>=` the floor, ordered by importance (descending, ties by recency); with
+    no floor ordering stays purely recency-first. Unannotated Documents (NULL
+    score) are excluded **only** when a floor is set — they are never silently
+    dropped from an unfiltered search and never silently top-ranked.
+    `topics` (None default) keeps only Documents carrying at least one of the
+    given tags — synonyms/case variants/retired aliases are canonicalized
+    server-side, unknown tags raise `InvalidRequest` (422), and an empty list
+    adds no constraint; unannotated Documents (no topics) are excluded only
+    when a non-empty filter is set.
     """
     if not isinstance(keyword, str) or not keyword.strip():
         raise InvalidRequest("keyword must be a non-empty string")
     bound = _validate_limit(limit, default=DEFAULT_SEARCH_LIMIT)
     hide_read = _validate_exclude_read(exclude_read)
+    floor = _validate_min_importance(min_importance)
+    topic_filter = _validate_topic_filter(topics)
     try:
         return _search.search_articles(
-            keyword.strip(), limit=bound, conn=conn, exclude_read=hide_read
+            keyword.strip(),
+            limit=bound,
+            conn=conn,
+            exclude_read=hide_read,
+            min_importance=floor,
+            topics=topic_filter,
         )
     except InvalidRequest:
         raise
@@ -232,14 +291,16 @@ def get_period_context(
     conn: Any | None = None,
     exclude_read: bool = False,
     per_source_limit: int | None = None,
+    min_importance: float | None = None,
+    topics: list[str] | None = None,
 ) -> dict[str, Any]:
     """Validated period evidence bundle for [from_date, to_date].
 
     Bounds accept `date`, `datetime`, or ISO strings (Panama interpretation
     downstream). Explicit `sources` must all be known names. The bundle
-    contains only real data: a recency-ordered `recent_articles` list whose
-    items each carry a 1-based `rank` ordering signal (its position in the
-    final returned list), with no empty analytics placeholders.
+    contains only real data: a `recent_articles` list whose items each carry a
+    1-based `rank` ordering signal (its position in the final returned list),
+    with no empty analytics placeholders.
     `exclude_read=True` filters out marked (read) articles; the default False
     annotates every article (`read`/`read_at`/`read_by`) without filtering.
     Every article also carries the latest Importance annotation
@@ -250,6 +311,23 @@ def get_period_context(
     one source may contribute — `limit` still bounds the bundle overall, slots
     a capped source cannot fill go to other sources, and both compose with
     `sources`. It must be an int in [1, 100] or None.
+
+    `min_importance` (None default) keeps only Documents whose latest score is
+    `>=` the floor and orders the bundle by importance (descending, ties by
+    recency); without a floor the bundle stays purely recency-ordered.
+    `topics` (None default) keeps only Documents carrying at least one of the
+    given tags (array overlap). Tags are canonicalized server-side (synonyms,
+    case/whitespace variants and retired aliases resolve to the canonical
+    slug); unknown tags raise `InvalidRequest` (422); an empty list adds no
+    constraint. All filters compose with `sources`, `per_source_limit` and
+    `exclude_read` in one call.
+
+    Unannotated Documents (no importance row / no topics): a NULL score is
+    excluded only when an importance floor is set (never silently top-ranked —
+    unfiltered order is recency-first, floored order is importance-first with
+    NULLS LAST), and a Document with no topics is excluded only when a
+    non-empty topic filter is set. So the annotations sharpen filtered queries
+    without ever silently dropping unannotated evidence from unfiltered ones.
     """
     start = _coerce_bound(from_date, label="from_date")
     end = _coerce_bound(to_date, label="to_date")
@@ -257,6 +335,8 @@ def get_period_context(
     bound = _validate_limit(limit, default=DEFAULT_PERIOD_LIMIT)
     hide_read = _validate_exclude_read(exclude_read)
     per_source = _validate_per_source_limit(per_source_limit)
+    floor = _validate_min_importance(min_importance)
+    topic_filter = _validate_topic_filter(topics)
     try:
         return _period.get_period_context(
             start,
@@ -266,6 +346,8 @@ def get_period_context(
             conn=conn,
             exclude_read=hide_read,
             per_source_limit=per_source,
+            min_importance=floor,
+            topics=topic_filter,
         )
     except InvalidRequest:
         raise

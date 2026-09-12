@@ -57,7 +57,9 @@ def authed(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setattr(
         service,
         "search_articles",
-        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
+        lambda keyword, limit=20, conn=None, exclude_read=False, min_importance=None, topics=None: (
+            SEARCH_PAYLOAD
+        ),
     )
     monkeypatch.setattr(
         service, "get_period_context", lambda from_date, to_date, **kw: PERIOD_PAYLOAD
@@ -157,7 +159,9 @@ def test_http_open_mode_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         service,
         "search_articles",
-        lambda keyword, limit=20, conn=None, exclude_read=False: SEARCH_PAYLOAD,
+        lambda keyword, limit=20, conn=None, exclude_read=False, min_importance=None, topics=None: (
+            SEARCH_PAYLOAD
+        ),
     )
     resp = TestClient(app).get("/search", params={"q": "TikTok"})
     assert resp.status_code == 200

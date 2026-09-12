@@ -43,13 +43,29 @@ def search(
     q: str = Query(..., description="Keyword matched against title and content"),
     limit: int = Query(DEFAULT_SEARCH_LIMIT, description="Max results [1..100]"),
     exclude_read: bool = Query(False, description="When true, hide read articles"),
+    min_importance: float | None = Query(
+        None,
+        description=("Importance floor in [0,1]; unannotated articles are excluded only when set"),
+    ),
+    topics: list[str] | None = Query(  # noqa: B008 - FastAPI Query idiom, same as above
+        None,
+        description="Topic filter (canonical slugs or synonyms); repeat for several",
+    ),
     _: None = Depends(require_bearer),
 ) -> dict[str, Any]:
-    """Keyword search, newest first.
+    """Keyword search, newest first (importance-first when a floor is set).
 
     19-key dicts: 7 base + 4 flag + 3 read + 4 importance + 1 topics.
     """
-    return {"results": service.search_articles(q, limit=limit, exclude_read=exclude_read)}
+    return {
+        "results": service.search_articles(
+            q,
+            limit=limit,
+            exclude_read=exclude_read,
+            min_importance=min_importance,
+            topics=topics,
+        )
+    }
 
 
 class PeriodRequest(BaseModel):
@@ -59,14 +75,18 @@ class PeriodRequest(BaseModel):
     limit: int = DEFAULT_PERIOD_LIMIT
     exclude_read: bool = False
     per_source_limit: int | None = None
+    min_importance: float | None = None
+    topics: list[str] | None = None
 
 
 @app.post("/period-context")
 def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
-    """Recency-ordered period evidence bundle for [from_date, to_date] (ISO dates).
+    """Evidence bundle for [from_date, to_date] (ISO dates), filtered on request.
 
-    `per_source_limit` optionally caps how many items any one source
-    contributes (slots go to other sources); `limit` still bounds the bundle.
+    `min_importance`/`topics` select on the annotation layer (importance-first
+    ordering when a floor is set); `per_source_limit` caps how many items any
+    one source contributes (freed slots go to other sources); `limit` still
+    bounds the bundle.
     """
     return service.get_period_context(
         body.from_date,
@@ -75,6 +95,8 @@ def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> di
         limit=body.limit,
         exclude_read=body.exclude_read,
         per_source_limit=body.per_source_limit,
+        min_importance=body.min_importance,
+        topics=body.topics,
     )
 
 

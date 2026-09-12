@@ -66,26 +66,56 @@ _PERIOD_FROM = """\
    AND d.published_at < %s
    AND s.name = ANY(%s)"""
 
-_PERIOD_EXCLUDE_READ = "\n   AND d.read_at IS NULL"
-
-#: Newest-first, total-bounded bundle (the default; no per-source cap).
-PERIOD_SQL = f"{_PERIOD_SELECT}\n{_PERIOD_FROM}\n ORDER BY d.published_at DESC\n LIMIT %s"
-
-PERIOD_SQL_EXCLUDE_READ = (
-    f"{_PERIOD_SELECT}\n{_PERIOD_FROM}{_PERIOD_EXCLUDE_READ}"
-    "\n ORDER BY d.published_at DESC\n LIMIT %s"
-)
+#: Recency-first ordering — the default: annotations never re-order a bundle.
+_ORDER_RECENCY = "d.published_at DESC"
+#: Importance-first ordering, used only when an importance floor is supplied.
+#: ``NULLS LAST`` is defensive: a NULL score never satisfies a floor anyway,
+#: so an unannotated Document can never be sorted above annotated evidence.
+_ORDER_IMPORTANCE = "imp.score DESC NULLS LAST, d.published_at DESC"
 
 
-def _capped_sql(*, exclude_read: bool) -> str:
-    """Bundle SQL that keeps at most ``per_source_limit`` rows per source first.
+def _annotation_filters(
+    *, exclude_read: bool, min_importance: float | None, topics: list[str] | None
+) -> tuple[str, list[Any]]:
+    """Compose the optional WHERE additions and their parameters, in order.
 
-    A window rank is computed over the filtered, newest-first rows per source;
-    only ranks within the cap survive, then the overall newest ``limit`` rows
-    are taken. That way a single prolific source cannot monopolise the bundle
-    — slots it is not allowed to fill go to the next sources in recency order.
+    The fixed order — read, importance, topics — matches the parameter order
+    used by :func:`get_period_context`. Unannotated Documents fail the
+    annotation predicates, which is exactly the documented filter semantics:
+    with no importance row ``imp.score >= %s`` is never true (NULL), and with
+    no topic rows ``tps.topics && %s`` is never true.
     """
-    read_filter = _PERIOD_EXCLUDE_READ if exclude_read else ""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if exclude_read:
+        clauses.append("   AND d.read_at IS NULL")
+    if min_importance is not None:
+        clauses.append("   AND imp.score >= %s")
+        params.append(min_importance)
+    if topics:
+        clauses.append("   AND tps.topics && %s::text[]")
+        params.append(list(topics))
+    return (("\n" + "\n".join(clauses)) if clauses else ""), params
+
+
+def _bundle_sql(*, where: str, importance_first: bool, per_source_limit: int | None) -> str:
+    """Bundle SQL for the composed filter clause.
+
+    Without ``per_source_limit`` this is one flat, bounded SELECT ordered by
+    recency (or by importance when a floor is set). With a cap, a per-source
+    window rank is computed over the *filtered* rows using the same ordering,
+    only ranks within the cap survive, and the outer query takes the overall
+    ``limit`` rows — so slots a capped source cannot fill go to the next
+    sources under that ordering.
+    """
+    order = _ORDER_IMPORTANCE if importance_first else _ORDER_RECENCY
+    if per_source_limit is None:
+        return f"{_PERIOD_SELECT}\n{_PERIOD_FROM}{where}\n ORDER BY {order}\n LIMIT %s"
+    outer_order = (
+        "ranked.importance_score DESC NULLS LAST, ranked.published_at DESC"
+        if importance_first
+        else "ranked.published_at DESC"
+    )
     return (
         "SELECT title, url, canonical_url, source, published_at, author,\n"
         "       flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by,\n"
@@ -94,12 +124,12 @@ def _capped_sql(*, exclude_read: bool) -> str:
         "  FROM (\n"
         f"{_PERIOD_SELECT},\n"
         "       ROW_NUMBER() OVER (\n"
-        "           PARTITION BY s.name ORDER BY d.published_at DESC\n"
+        f"           PARTITION BY s.name ORDER BY {order}\n"
         "       ) AS source_rank\n"
-        f"{_PERIOD_FROM}{read_filter}"
+        f"{_PERIOD_FROM}{where}"
         "\n       ) ranked\n"
         " WHERE ranked.source_rank <= %s\n"
-        " ORDER BY ranked.published_at DESC\n"
+        f" ORDER BY {outer_order}\n"
         " LIMIT %s"
     )
 
@@ -134,6 +164,36 @@ def _topics_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _validate_min_importance(value: float | None) -> float | None:
+    """Validate the optional importance floor: None, or a number in [0, 1]."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"min_importance must be a number in [0, 1] or None, got {value!r}")
+    number = float(value)
+    if not (0.0 <= number <= 1.0):
+        raise ValueError(f"min_importance must be a number in [0, 1] or None, got {value!r}")
+    return number
+
+
+def _validate_topics(topics: list[str] | None) -> list[str] | None:
+    """Validate the optional Topic filter: None, or a list of non-blank slugs.
+
+    Values are treated as opaque canonical slugs here; the vocabulary lane
+    (``service``) owns canonicalization and unknown-tag rejection.
+    """
+    if topics is None:
+        return None
+    if isinstance(topics, (str, bytes)) or not isinstance(topics, (list, tuple)):
+        raise ValueError(f"topics must be a list of topic slugs or None, got {topics!r}")
+    cleaned: list[str] = []
+    for item in topics:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"topics must be non-empty strings, got {item!r}")
+        cleaned.append(item.strip())
+    return cleaned
+
+
 def get_period_context(
     from_date: date | datetime,
     to_date: date | datetime,
@@ -143,6 +203,8 @@ def get_period_context(
     conn: Any | None = None,
     exclude_read: bool = False,
     per_source_limit: int | None = None,
+    min_importance: float | None = None,
+    topics: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return the period evidence bundle for ``[from_date, to_date]``.
 
@@ -154,15 +216,30 @@ def get_period_context(
     ``exclude_read`` filters out marked (read) articles via
     ``AND d.read_at IS NULL``; default False annotates without filtering.
     ``per_source_limit`` (default None) additionally caps how many items any
-    one source may contribute: rows are ranked newest-first within each
-    source and only the first ``per_source_limit`` survive, then the overall
-    newest ``limit`` rows are taken. Slots a capped source cannot fill go to
-    other sources, so the bundle stays at most ``limit`` items while no
-    source floods it. The two bounds compose with the ``sources`` allowlist.
+    one source may contribute: rows are ranked within each source (recency,
+    or importance-first when ``min_importance`` is set) and only the first
+    ``per_source_limit`` survive, then the overall ``limit`` rows are taken.
+    Slots a capped source cannot fill go to other sources, so the bundle
+    stays at most ``limit`` items while no source floods it.
 
-    Returns ``period {from, to, timezone}`` plus ``recent_articles`` — a
-    purely recency-ordered list (never ranked by importance), bounded by
-    ``limit``. Each item carries ``rank`` (its 1-based position in that final
+    ``min_importance`` (default None) keeps only Documents whose latest
+    Importance score is ``>=`` the floor; ``topics`` (default None) keeps only
+    Documents carrying at least one of the given canonical slugs (array
+    overlap). All filters compose with each other and with the ``sources``
+    allowlist in one call.
+
+    Unannotated behavior (deliberate, not incidental): a Document with no
+    importance row has a NULL score, so it is **excluded only when a floor is
+    set** (NULL never satisfies ``>=``) and is never top-ranked — with no
+    floor the order stays purely recency-first, with a floor the order is
+    importance-first with ``NULLS LAST``. Likewise a Document with no topics
+    is excluded only when a ``topics`` filter is set. Pass ``topics=[]`` to
+    add no topic constraint.
+
+    Returns ``period {from, to, timezone}`` plus ``recent_articles``. With no
+    ``min_importance`` the list is purely recency-ordered (never ranked by
+    importance); with a floor it is importance-ordered (descending, ties by
+    recency). Each item carries ``rank`` (its 1-based position in that final
     order — an ordering signal, not a score) alongside
     ``title, url, canonical_url, source, published_at, author`` provenance,
     the Extraction Flag annotation (``flag_reason, flag_detail, flagged_at,
@@ -176,8 +253,10 @@ def get_period_context(
 
     Raises:
         ValueError: invalid ``limit``, invalid ``per_source_limit`` (non-bool
-            positive int or None), or non-bool ``exclude_read`` (alongside
-            the existing empty-period failure).
+            positive int or None), non-bool ``exclude_read``, invalid
+            ``min_importance`` (non-number or outside [0, 1]), or invalid
+            ``topics`` (not a list of non-blank strings) — alongside the
+            existing empty-period failure.
     """
     start = _coerce_bound(from_date, is_end=False)
     end = _coerce_bound(to_date, is_end=True)
@@ -197,13 +276,19 @@ def get_period_context(
         raise ValueError(
             f"per_source_limit must be a positive int or None, got {per_source_limit!r}"
         )
+    floor = _validate_min_importance(min_importance)
+    topic_filter = _validate_topics(topics)
     names = list(sources) if sources is not None else list(V1_SOURCES)
-    if per_source_limit is None:
-        sql = PERIOD_SQL_EXCLUDE_READ if exclude_read else PERIOD_SQL
-        params: tuple[Any, ...] = (start, end, names, limit)
-    else:
-        sql = _capped_sql(exclude_read=exclude_read)
-        params = (start, end, names, per_source_limit, limit)
+    where, filter_params = _annotation_filters(
+        exclude_read=exclude_read, min_importance=floor, topics=topic_filter
+    )
+    sql = _bundle_sql(
+        where=where, importance_first=floor is not None, per_source_limit=per_source_limit
+    )
+    params: list[Any] = [start, end, names, *filter_params]
+    if per_source_limit is not None:
+        params.append(per_source_limit)
+    params.append(limit)
 
     owns_connection = False
     if conn is None:
