@@ -11,8 +11,11 @@ effective annotation — latest write wins.
 Server-enforced trust rule: a Document whose extraction is flagged
 (``documents.flag_reason IS NOT NULL``) or whose stored body carries a paywall
 marker is hard-capped at :data:`IMPORTANCE_CAP` (0.3) before the row is
-written, whatever score the caller submitted. Flagged/paywalled evidence can
-therefore never outrank clean evidence.
+written, whatever score the caller submitted — and the same cap is re-applied
+whenever the latest annotation is surfaced (see :func:`effective_score`). A
+score written while the Document was still clean therefore reads back capped
+once a later flag (or paywall body) arrives, so flagged/paywalled evidence can
+never outrank clean evidence on any read path.
 
 Error contract: this lane raises ``ValueError``/``TypeError``/``LookupError``
 only (unknown URL -> ``ValueError``); the service adapter maps those to
@@ -35,7 +38,6 @@ except Exception:  # pragma: no cover - defensive fallback when absent
         )
 
 
-from marketing_intelligence import article as _article
 from marketing_intelligence.normalize import canonicalize_url
 
 IMPORTANCE_MIN = 0.0
@@ -57,6 +59,31 @@ PAYWALL_MARKERS = (
     "this article is for subscribers",
     "subscriber-only content",
     "members-only content",
+)
+
+
+def _sql_text_literal(value: str) -> str:
+    """Quote a Python string as a PostgreSQL text literal (quotes doubled)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+#: SQL predicate matching every Document the read-side cap applies to —
+#: extraction-flagged, or with a paywall marker anywhere in the stored body.
+#: Mirrors :func:`is_paywalled` (case-insensitive substring search) so the
+#: ranking lanes and the Python clamp agree on which rows are capped.
+_DOCUMENT_CAPPED_SQL = "d.flag_reason IS NOT NULL OR " + " OR ".join(
+    f"position(lower({_sql_text_literal(marker)}) in lower(d.content)) > 0"
+    for marker in PAYWALL_MARKERS
+)
+
+#: SQL form of :func:`effective_score` for a correlated "latest importance"
+#: lateral (``document_importance`` aliased ``i``, ``documents`` aliased ``d``).
+#: The ranking lanes (search, period) select it as their score so
+#: ``ORDER BY imp.score`` and the ``min_importance`` floor both see the
+#: effective value: a score written before a later flag/paywall cannot outrank
+#: clean evidence. Defined once here and interpolated into those lanes.
+EFFECTIVE_SCORE_SQL = (
+    f"CASE WHEN {_DOCUMENT_CAPPED_SQL} THEN LEAST(i.score, {IMPORTANCE_CAP}) ELSE i.score END"
 )
 
 _DOCUMENT_SQL = """\
@@ -173,11 +200,20 @@ def _resolve(conn: Any, key: str, canonical: str) -> tuple[Any, Any, Any]:
     return row[0], row[1], row[2]
 
 
-def _effective_score(score: float, flag_reason: Any, content: Any) -> float:
-    """Apply the server-side cap: flagged/paywalled Documents never exceed 0.3."""
+def effective_score(score: float | None, flag_reason: Any, content: Any) -> float | None:
+    """Cap a stored score at :data:`IMPORTANCE_CAP` for flagged/paywalled Documents.
+
+    Applied both when a score is written and whenever it is surfaced, because
+    the latest stored annotation may predate the flag or the paywall stub.
+    ``None`` (unannotated) passes through unchanged. Mirrored in SQL by
+    :data:`EFFECTIVE_SCORE_SQL` so ranking and reporting agree.
+    """
+    if score is None:
+        return None
+    value = float(score)
     if flag_reason is not None or is_paywalled(content):
-        return min(score, IMPORTANCE_CAP)
-    return score
+        return min(value, IMPORTANCE_CAP)
+    return value
 
 
 def _fetch_rows(conn: Any, sql: str, params: tuple) -> list[Any]:
@@ -257,13 +293,18 @@ def set_importance(
     clean_rationale = _validate_rationale(rationale)
     clean_reporter = _validate_reporter(reporter)
 
+    # Local import: `article` imports this module for `effective_score`, so a
+    # module-level edge here would form an import cycle. Resolved at call time
+    # instead; set_importance is the only consumer of the article lane.
+    from marketing_intelligence import article as _article
+
     owns_connection = conn is None
     if conn is None:
         conn = get_connection()
     assert conn is not None
     try:
         document_id, flag_reason, content = _resolve(conn, key, canonical)
-        effective = _effective_score(clean_score, flag_reason, content)
+        effective = effective_score(clean_score, flag_reason, content)
         cursor = conn.cursor()
         try:
             cursor.execute(_INSERT_SQL, (document_id, effective, clean_rationale, clean_reporter))
@@ -301,7 +342,9 @@ def get_importance(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         conn = get_connection()
     assert conn is not None
     try:
-        _resolve(conn, key, canonical)  # unknown article -> ValueError
+        _document_id, flag_reason, content = _resolve(
+            conn, key, canonical
+        )  # unknown article -> ValueError
         rows = _fetch_rows(conn, _LATEST_SQL, (key, canonical))
     finally:
         if owns_connection:
@@ -315,7 +358,11 @@ def get_importance(identifier: str, conn: Any | None = None) -> dict[str, Any]:
             "importance_reporter": None,
             "importance_updated_at": None,
         }
-    return _annotation_from_row(rows[0])
+    annotation = _annotation_from_row(rows[0])
+    annotation["importance_score"] = effective_score(
+        annotation["importance_score"], flag_reason, content
+    )
+    return annotation
 
 
 def get_importance_history(identifier: str, conn: Any | None = None) -> list[dict[str, Any]]:

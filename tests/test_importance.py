@@ -30,6 +30,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import marketing_intelligence.article as article_lane  # noqa: E402
+import marketing_intelligence.flag as flag_lane  # noqa: E402
 import marketing_intelligence.importance as importance_lane  # noqa: E402
 import marketing_intelligence.period as period_lane  # noqa: E402
 import marketing_intelligence.service as service  # noqa: E402
@@ -42,6 +43,7 @@ def _utc(*args: int) -> _dt.datetime:
 
 CLEAN_URL = "https://www.socialmediatoday.com/news/clean/1/"
 CLEAN_CANON = "https://www.socialmediatoday.com/news/clean/1/"
+OTHER_CLEAN_URL = "https://www.socialmediatoday.com/news/clean-2/4/"
 FLAGGED_URL = "https://www.socialmediatoday.com/news/flagged/2/"
 PAYWALLED_URL = "https://jingdaily.com/news/metered/3/"
 PAYWALL_BODY = "Shanghai clubs promise discretion.\nSubscribe to continue reading this story."
@@ -88,6 +90,70 @@ def _doc(
     }
 
 
+def _fake_effective(conn: _ImportanceConn, doc: dict[str, Any]) -> float | None:
+    """Mirror the read-side cap the lanes' SQL applies (fake DB semantics)."""
+    latest = conn._latest(doc["id"])
+    if latest is None:
+        return None
+    score = latest["score"]
+    paywalled = any(
+        marker in (doc["content"] or "").lower() for marker in importance_lane.PAYWALL_MARKERS
+    )
+    if doc["flag_reason"] is not None or paywalled:
+        return min(score, importance_lane.IMPORTANCE_CAP)
+    return score
+
+
+def _score_cols(conn: _ImportanceConn, doc: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+    """Latest raw (uncapped) annotation columns, as the lanes' SQL returns them."""
+    latest = conn._latest(doc["id"])
+    if latest is None:
+        return None, None, None, None
+    return latest["score"], latest["rationale"], latest["reporter"], latest["created_at"]
+
+
+def _search_row(conn: _ImportanceConn, doc: dict[str, Any]) -> tuple[Any, ...]:
+    """One 18-column search row (raw score → lane caps it in Python)."""
+    return (
+        doc["title"],
+        doc["url"],
+        doc["canonical_url"],
+        doc["source"],
+        doc["published_at"],
+        doc["author"],
+        doc["content"],
+        doc["flag_reason"],
+        doc["flag_detail"],
+        doc["flagged_at"],
+        doc["flagged_by"],
+        doc["read_at"],
+        doc["read_by"],
+        *_score_cols(conn, doc),
+        None,
+    )
+
+
+def _period_row(conn: _ImportanceConn, doc: dict[str, Any]) -> tuple[Any, ...]:
+    """One 18-column period row (raw score + body → lane caps it in Python)."""
+    return (
+        doc["title"],
+        doc["url"],
+        doc["canonical_url"],
+        doc["source"],
+        doc["published_at"],
+        doc["author"],
+        doc["flag_reason"],
+        doc["flag_detail"],
+        doc["flagged_at"],
+        doc["flagged_by"],
+        doc["read_at"],
+        doc["read_by"],
+        *_score_cols(conn, doc),
+        None,
+        doc["content"],
+    )
+
+
 class _ImportanceConn:
     """Stateful fake for the importance + read-back article SQL shapes."""
 
@@ -117,6 +183,11 @@ class _ImportanceConn:
     def cursor(self) -> _ImportanceCursor:
         return _ImportanceCursor(self)
 
+    def execute(self, sql: str, params: tuple | None = None) -> _ImportanceCursor:
+        cursor = self.cursor()
+        cursor.execute(sql, params)
+        return cursor
+
     def commit(self) -> None:
         pass
 
@@ -128,11 +199,46 @@ class _ImportanceCursor:
     def __init__(self, conn: _ImportanceConn) -> None:
         self._conn = conn
         self._result: list[Any] = []
+        self.rowcount = 0
+
+    def _ranked(self, docs: list[dict[str, Any]], floor: float | None) -> list[dict[str, Any]]:
+        """Apply the SQL floor/ordering mirror (importance-first on effective)."""
+        c = self._conn
+        if floor is not None:
+            scored = [(d, _fake_effective(c, d)) for d in docs]
+            docs = [d for d, score in scored if score is not None and score >= floor]
+            docs.sort(
+                key=lambda d: (-(_fake_effective(c, d) or 0.0), -d["published_at"].timestamp())
+            )
+        else:
+            docs.sort(key=lambda d: d["published_at"], reverse=True)
+        return docs
 
     def execute(self, sql: str, params: tuple | None = None) -> None:
         params = params or ()
         head = " ".join(sql.upper().split())
         c = self._conn
+        self.rowcount = 0
+        if head.startswith("UPDATE"):
+            doc: dict[str, Any] | None
+            if "= NULL" in head:
+                doc = c._find(params[0], params[1])
+                if doc is not None:
+                    doc["flag_reason"] = None
+                    doc["flag_detail"] = None
+                    doc["flagged_at"] = None
+                    doc["flagged_by"] = None
+            else:
+                reason, detail, flagged_by, url_key, canon_key = params
+                doc = c._find(url_key, canon_key)
+                if doc is not None:
+                    doc["flag_reason"] = reason
+                    doc["flag_detail"] = detail
+                    doc["flagged_at"] = _utc(2026, 9, 10, 12, 0)
+                    doc["flagged_by"] = flagged_by
+            self.rowcount = 0 if doc is None else 1
+            self._result = []
+            return
         if head.startswith("SELECT D.ID, D.FLAG_REASON, D.CONTENT"):
             doc = c._find(params[0], params[1])
             self._result = [(doc["id"], doc["flag_reason"], doc["content"])] if doc else []
@@ -155,6 +261,38 @@ class _ImportanceCursor:
         if head.startswith("SELECT D.READ_AT, D.READ_BY"):
             doc = c._find(params[0], params[1])
             self._result = [(doc["read_at"], doc["read_by"])] if doc else []
+            return
+        if "ILIKE" in head:
+            keyword = str(params[0]).strip("%").lower()
+            index = 2
+            floor = None
+            if "IMP.SCORE >= %S" in head:
+                floor = params[index]
+                index += 1
+            if "TPS.TOPICS && %S" in head:
+                index += 1
+            limit = int(params[index])
+            docs = [d for d in c.store if keyword in f"{d['title']}\n{d['content']}".lower()]
+            if "D.READ_AT IS NULL" in head:
+                docs = [d for d in docs if d["read_at"] is None]
+            self._result = [_search_row(c, d) for d in self._ranked(docs, floor)[:limit]]
+            return
+        if "D.PUBLISHED_AT >= %S" in head:
+            start, end, names = params[0], params[1], params[2]
+            index = 3
+            floor = None
+            if "IMP.SCORE >= %S" in head:
+                floor = params[index]
+                index += 1
+            if "TPS.TOPICS && %S" in head:
+                index += 1
+            limit = int(params[index])
+            docs = [
+                d for d in c.store if start <= d["published_at"] < end and d["source"] in set(names)
+            ]
+            if "D.READ_AT IS NULL" in head:
+                docs = [d for d in docs if d["read_at"] is None]
+            self._result = [_period_row(c, d) for d in self._ranked(docs, floor)[:limit]]
             return
         if head.startswith("SELECT D.TITLE"):
             if "WHERE D.CANONICAL_URL" in head:
@@ -277,6 +415,51 @@ def test_paywalled_document_is_hard_capped(monkeypatch: pytest.MonkeyPatch) -> N
 def test_cap_never_raises_a_low_score(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch(monkeypatch, _ImportanceConn(_docs()))
     assert service.set_importance(FLAGGED_URL, 0.1)["importance_score"] == 0.1
+
+
+def test_pre_flag_high_score_reads_back_capped_everywhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A score written while clean cannot outrank clean evidence after a flag.
+
+    Regression (Ticket 19): the write path caps at insert time, so a 0.9
+    stored before a later ``flag_extraction`` used to read back at 0.9 on
+    every lane. The read paths re-apply the cap; ranking uses the effective
+    value, so a flagged Document neither passes a floor it only met before the
+    flag nor sorts above clean evidence.
+    """
+    store = _docs() + [
+        _doc(4, OTHER_CLEAN_URL, content="Another clean body about marketing.", title="Other clean")
+    ]
+    conn = _patch(monkeypatch, _ImportanceConn(store))
+    monkeypatch.setattr(flag_lane, "get_connection", lambda: conn)
+
+    # Both high scores are written while their Documents are still clean.
+    service.set_importance(CLEAN_URL, 0.9, rationale="pre-flag", reporter="digest-agent")
+    service.set_importance(OTHER_CLEAN_URL, 0.8, rationale="clean", reporter="digest-agent")
+    assert conn.rows[-1]["score"] == 0.8  # stored uncapped (clean at write time)
+
+    # A later extraction flag retroactively caps every read surface.
+    service.flag_extraction(CLEAN_URL, reason="thin", detail="body shrank", conn=conn)
+
+    assert service.get_article(CLEAN_URL, conn=conn)["importance_score"] == 0.3
+    assert service.get_importance(CLEAN_URL, conn=conn)["importance_score"] == 0.3
+
+    hits = {r["url"]: r for r in service.search_articles("body", conn=conn)}
+    assert hits[CLEAN_URL]["importance_score"] == 0.3
+    assert hits[OTHER_CLEAN_URL]["importance_score"] == 0.8  # unflagged unaffected
+
+    bundle = period_lane.get_period_context(_dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=conn)
+    by_url = {a["url"]: a for a in bundle["recent_articles"]}
+    assert by_url[CLEAN_URL]["importance_score"] == 0.3
+    assert by_url[OTHER_CLEAN_URL]["importance_score"] == 0.8
+
+    ranked = service.search_articles("body", min_importance=0.5, conn=conn)
+    assert [r["url"] for r in ranked] == [OTHER_CLEAN_URL]
+    ranked_period = period_lane.get_period_context(
+        _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), min_importance=0.5, conn=conn
+    )
+    assert [a["url"] for a in ranked_period["recent_articles"]] == [OTHER_CLEAN_URL]
 
 
 def test_blank_and_unknown_identifiers_are_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,3 +644,27 @@ def test_live_importance_roundtrip_cap_and_visibility(scratch_db: str) -> None:
     capped_by_url = {a["url"]: a for a in capped["recent_articles"]}
     assert capped_by_url[CLEAN_URL]["importance_score"] == 0.4
     assert capped_by_url[FLAGGED_URL]["importance_score"] == 0.3
+
+    # Regression (Ticket 19): the 0.4 above was written while CLEAN_URL was
+    # unflagged. Flagging it now must retroactively cap every read surface,
+    # and the effective score must drive the floor/ordering too.
+    service.flag_extraction(CLEAN_URL, reason="thin", detail="body shrank")
+    assert service.get_article(CLEAN_URL)["importance_score"] == 0.3
+    assert service.get_importance(CLEAN_URL)["importance_score"] == 0.3
+    flagged_hits = {r["url"]: r for r in service.search_articles("body")}
+    assert flagged_hits[CLEAN_URL]["importance_score"] == 0.3
+    flagged_bundle = period_lane.get_period_context(
+        _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=psycopg.connect(scratch_db)
+    )
+    flagged_by_url = {a["url"]: a for a in flagged_bundle["recent_articles"]}
+    assert flagged_by_url[CLEAN_URL]["importance_score"] == 0.3
+    assert all(r["url"] != CLEAN_URL for r in service.search_articles("body", min_importance=0.35))
+    assert all(
+        a["url"] != CLEAN_URL
+        for a in period_lane.get_period_context(
+            _dt.date(2026, 9, 1),
+            _dt.date(2026, 9, 30),
+            min_importance=0.35,
+            conn=psycopg.connect(scratch_db),
+        )["recent_articles"]
+    )

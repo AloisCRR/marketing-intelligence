@@ -4,7 +4,7 @@ End-to-end verification over lanes 01/02/03, hermetic (fake conns, monkeypatched
 fetch — no live Postgres, no network, no model calls):
 
 - Period Context and search list payloads match the shared contract
-  key-for-key at the same limits (18-key search dicts; period bundle items
+  key-for-key at the same limits (19-key search dicts; period bundle items
   with `rank` plus the flag/read/importance annotations).
 - One-item lookup returns identical payloads over HTTP (TestClient) and MCP
   (direct tool call + registered-tool path), including identical validation
@@ -302,7 +302,7 @@ def _unwrap_call_tool(out: Any) -> Any:
 # --- list-payload shape stability ---------------------------------------------
 
 
-def test_search_list_payload_is_eleven_keys_at_same_limits() -> None:
+def test_search_list_payload_is_nineteen_keys_at_same_limits() -> None:
     results = service.search_articles("TikTok", limit=20, conn=_ConnFake(SEARCH_ROWS))
     assert len(results) == 2
     for item in results:

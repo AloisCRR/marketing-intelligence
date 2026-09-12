@@ -2,7 +2,7 @@
 
 Covers the shared validated interface in `marketing_intelligence.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
-- 18-key search schema + provenance + tz-aware published_at
+- 19-key search schema + provenance + tz-aware published_at
 - period bundle shape, provenance, rank + annotations, Panama tz handling
 - string coercion for period bounds, bounded limit (101 rejected)
 """
@@ -255,7 +255,7 @@ class _PeriodConnection:
 # --- search ------------------------------------------------------------------
 
 
-def test_search_returns_eleven_key_schema_with_provenance() -> None:
+def test_search_returns_nineteen_key_schema_with_provenance() -> None:
     results = search_articles("TikTok", conn=_SearchConnection())
     assert len(results) >= 1
     for row in results:

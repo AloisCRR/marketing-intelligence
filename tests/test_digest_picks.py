@@ -3,8 +3,9 @@
 Locked contract:
 - `record_digest_picks(digest_date, identifiers, reporter)` reconciles one
   digest date's stored pick set to exactly the given Documents: new ones are
-  inserted, dropped ones deleted, unchanged ones untouched (their original
-  `picked_at` survives). Recording the same set twice changes nothing.
+  inserted, dropped ones deleted, unchanged ones kept (their original
+  `picked_at` survives; a re-record that supplies a `reporter` refreshes the
+  stored tag, one that supplies `None` leaves it).
 - The returned `added`/`removed` lists are the re-scoring signal for an edited
   digest; re-recording an edited URL set reports the Documents added/removed.
 - `get_digest_picks` reads the set back (identity + reporter + timestamp);
@@ -298,6 +299,28 @@ def test_rerecord_same_set_is_idempotent_and_keeps_picked_at(
     assert again["added"] == []
     assert again["removed"] == []
     assert {p["url"]: p["picked_at"] for p in again["picks"]} == stamped
+    assert len(store.picks) == 2
+
+
+def test_rerecord_unchanged_set_refreshes_reporter_and_keeps_picked_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _patch(monkeypatch, _DigestStore())
+
+    first = service.record_digest_picks(DIGEST_DATE, [A_URL, B_URL], reporter="first-agent")
+    stamped = {p["url"]: p["picked_at"] for p in first["picks"]}
+
+    again = service.record_digest_picks(DIGEST_DATE, [B_URL, A_URL], reporter="second-agent")
+    assert again["added"] == []
+    assert again["removed"] == []
+    assert {p["url"]: p["picked_at"] for p in again["picks"]} == stamped
+    assert all(p["reporter"] == "second-agent" for p in again["picks"])
+    assert service.get_digest_picks(DIGEST_DATE)["picks"] == again["picks"]
+
+    # A later recording that supplies no reporter keeps the refreshed tag.
+    keeps = service.record_digest_picks(DIGEST_DATE, [A_URL, B_URL])
+    assert all(p["reporter"] == "second-agent" for p in keeps["picks"])
+    assert {p["url"]: p["picked_at"] for p in keeps["picks"]} == stamped
     assert len(store.picks) == 2
 
 
@@ -608,6 +631,12 @@ def test_live_digest_picks_roundtrip_diff_and_clear(scratch_db: str) -> None:
     assert again["added"] == []
     assert again["removed"] == []
     assert {p["url"]: p["picked_at"] for p in again["picks"]} == stamped
+
+    refreshed = service.record_digest_picks(DIGEST_DATE, [A_URL, B_URL], reporter="second-agent")
+    assert refreshed["added"] == []
+    assert refreshed["removed"] == []
+    assert {p["url"]: p["picked_at"] for p in refreshed["picks"]} == stamped
+    assert all(p["reporter"] == "second-agent" for p in refreshed["picks"])
 
     edited = service.record_digest_picks(DIGEST_DATE, [B_URL, C_URL])
     assert set(edited["added"]) == {C_URL}

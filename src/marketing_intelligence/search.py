@@ -21,7 +21,9 @@ except Exception:  # pragma: no cover - defensive fallback when absent
         )
 
 
-_SEARCH_SELECT = """\
+from marketing_intelligence import importance as _importance
+
+_SEARCH_SELECT = f"""\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
        d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
@@ -34,7 +36,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
   LEFT JOIN LATERAL (
-      SELECT i.score, i.rationale, i.reporter, i.created_at
+      SELECT {_importance.EFFECTIVE_SCORE_SQL} AS score,
+             i.rationale, i.reporter, i.created_at
         FROM document_importance i
        WHERE i.document_id = d.id
        ORDER BY i.created_at DESC, i.id DESC
@@ -54,8 +57,11 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
 #: Recency-first ordering — the default: annotations never re-order results.
 _ORDER_RECENCY = "d.published_at DESC"
 #: Importance-first ordering, used only when an importance floor is supplied.
-#: ``NULLS LAST`` is defensive: a NULL score never satisfies a floor anyway,
-#: so an unannotated Document can never be sorted above annotated evidence.
+#: ``imp.score`` is the capped effective score (see
+#: :data:`marketing_intelligence.importance.EFFECTIVE_SCORE_SQL`), so a score
+#: written before a later flag cannot outrank clean evidence. ``NULLS LAST`` is
+#: defensive: a NULL score never satisfies a floor anyway, so an unannotated
+#: Document can never be sorted above annotated evidence.
 _ORDER_IMPORTANCE = "imp.score DESC NULLS LAST, d.published_at DESC"
 
 
@@ -211,7 +217,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "read": read_at is not None,
         "read_at": read_at,
         "read_by": read_by,
-        "importance_score": importance_score,
+        "importance_score": _importance.effective_score(importance_score, flag_reason, content),
         "importance_rationale": importance_rationale,
         "importance_reporter": importance_reporter,
         "importance_updated_at": importance_updated_at,

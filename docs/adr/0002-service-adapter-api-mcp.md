@@ -22,16 +22,20 @@ surfaces drift apart in validation or payload shape.
   no empty analytics placeholders). `per_source_limit` (int in [1, 100] or
   None) caps how many bundle items any one source may contribute — slots a
   capped source cannot fill go to other sources in recency order — and
-  composes with the `sources` allowlist; None (default) is uncapped.
-- Thin adapters only: `src/api/app.py` (`GET /search`, `POST
-  /period-context`, `GET /sources`, `POST /importance`, `GET /importance`,
-  `GET /vocabulary`, `POST /topics`, `InvalidRequest` → 422, `/docs` for
-  demo) and
-  `src/mcp/server.py` (10 tools calling the same service functions:
+  composes with the `sources` allowlist; None (default) is uncapped. (Ticket
+  21 later added optional `min_importance`/`topics` filters to both read
+  functions — see ADR-0010.)
+- Thin adapters only: `src/api/app.py` (`GET /health`, `GET /search`, `POST
+  /period-context`, `GET /article`, `POST /flag-extraction`, `POST /mark-read`,
+  `GET /sources`, `POST /importance`, `GET /importance`, `GET /vocabulary`,
+  `POST /topics`, `POST /digest-picks`, `GET /digest-picks`, `DELETE
+  /digest-picks`, `InvalidRequest` → 422, `/docs` for demo) and
+  `src/mcp/server.py` (13 tools calling the same service functions:
   `search_articles`, `get_period_context`, `get_article`,
   `list_sources_inventory`, `flag_extraction`, `mark_article_read`,
   `set_importance`, `get_importance`, `list_vocabulary`,
-  `set_document_topics`).
+  `set_document_topics`, `record_digest_picks`, `get_digest_picks`,
+  `clear_digest_picks`).
 - `src/mcp/` intentionally has **no `__init__.py`**: the directory name
   collides with the installed `mcp` distribution, so a regular package here
   would shadow the dependency (or vice versa). The server module is run as a
@@ -48,6 +52,7 @@ surfaces drift apart in validation or payload shape.
   `InvalidRequest` to 422 / tool errors.
 - Pinned `mcp==1.29.1` (stays on the 1.x `FastMCP` API; 2.x renamed it to
   `MCPServer` — revisit deliberately, not by accident).
-- Out of scope (unchanged): no digest schedule, no search filters, no
-  embeddings, no automatic topic/entity extraction (Documents carry
-  agent-written controlled Topics — see ADR-0009).
+- Out of scope (unchanged): no digest schedule, no embeddings, no automatic
+  topic/entity extraction (Documents carry agent-written controlled Topics —
+  see ADR-0009). The optional `min_importance`/`topics` search/period filters
+  landed later in ADR-0010.

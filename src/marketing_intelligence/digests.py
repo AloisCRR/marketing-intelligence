@@ -288,9 +288,11 @@ def record_digest_picks(
     """Reconcile one digest date's pick set to ``identifiers`` (idempotent).
 
     The stored set becomes exactly the Documents named by ``identifiers``:
-    added Documents are inserted (a re-record of an existing pick does not
-    duplicate it and keeps its original ``picked_at``), removed Documents are
-    deleted. Recording the same set twice changes nothing the second time.
+    added Documents are inserted and removed Documents are deleted. A re-record
+    of an unchanged pick does not duplicate it and keeps its original
+    ``picked_at``; when the re-record supplies a ``reporter`` it refreshes that
+    pick's stored tag (a re-record without a reporter leaves the stored tag as
+    it was).
 
     The returned ``added``/``removed`` lists are the re-scoring signal: when a
     human edits a published digest, call this again with the edited URL set
@@ -336,7 +338,11 @@ def record_digest_picks(
 
         added_ids = [doc for doc in incoming if doc not in existing]
         removed_ids = [doc for doc in existing if doc not in incoming]
-        for document_id in added_ids:
+        # Upsert *every* incoming Document, not only the new ones: the
+        # ON CONFLICT clause keeps an unchanged pick's original ``created_at``
+        # (picked_at) while refreshing ``reporter`` when this recording
+        # supplies one (COALESCE keeps the stored tag when it does not).
+        for document_id in incoming:
             _execute(conn, _INSERT_SQL, (date_value, document_id, clean_reporter))
         if removed_ids:
             _execute(conn, _DELETE_SQL, (date_value, removed_ids))

@@ -23,6 +23,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from marketing_intelligence import importance as _importance
 from marketing_intelligence.db import get_connection
 from marketing_intelligence.sources import V1_SOURCES
 
@@ -40,13 +41,15 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        imp.rationale AS importance_rationale,
        imp.reporter AS importance_reporter,
        imp.created_at AS importance_updated_at,
-       tps.topics AS topics"""
+       tps.topics AS topics,
+       d.content"""
 
-_PERIOD_FROM = """\
+_PERIOD_FROM = f"""\
   FROM documents d
   JOIN sources s ON s.id = d.source_id
   LEFT JOIN LATERAL (
-      SELECT i.score, i.rationale, i.reporter, i.created_at
+      SELECT {_importance.EFFECTIVE_SCORE_SQL} AS score,
+             i.rationale, i.reporter, i.created_at
         FROM document_importance i
        WHERE i.document_id = d.id
        ORDER BY i.created_at DESC, i.id DESC
@@ -69,8 +72,11 @@ _PERIOD_FROM = """\
 #: Recency-first ordering — the default: annotations never re-order a bundle.
 _ORDER_RECENCY = "d.published_at DESC"
 #: Importance-first ordering, used only when an importance floor is supplied.
-#: ``NULLS LAST`` is defensive: a NULL score never satisfies a floor anyway,
-#: so an unannotated Document can never be sorted above annotated evidence.
+#: ``imp.score`` is the capped effective score (see
+#: :data:`marketing_intelligence.importance.EFFECTIVE_SCORE_SQL`), so a score
+#: written before a later flag cannot outrank clean evidence. ``NULLS LAST`` is
+#: defensive: a NULL score never satisfies a floor anyway, so an unannotated
+#: Document can never be sorted above annotated evidence.
 _ORDER_IMPORTANCE = "imp.score DESC NULLS LAST, d.published_at DESC"
 
 
@@ -120,7 +126,7 @@ def _bundle_sql(*, where: str, importance_first: bool, per_source_limit: int | N
         "SELECT title, url, canonical_url, source, published_at, author,\n"
         "       flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by,\n"
         "       importance_score, importance_rationale, importance_reporter,\n"
-        "       importance_updated_at, topics\n"
+        "       importance_updated_at, topics, content\n"
         "  FROM (\n"
         f"{_PERIOD_SELECT},\n"
         "       ROW_NUMBER() OVER (\n"
@@ -325,11 +331,13 @@ def get_period_context(
             importance_reporter = row.get("importance_reporter")
             importance_updated_at = row.get("importance_updated_at")
             topics = row.get("topics")
+            content = row.get("content")
         else:
             # Tuple rows predate the read annotation (10 cols); 12-col rows
             # carry read_at/read_by; the current SELECT appends the 4
-            # importance columns at [12..15] and the topic array at [16].
-            # All shapes are accepted.
+            # importance columns at [12..15], the topic array at [16] and the
+            # raw body at [17] (used only for the read-time cap). All shapes
+            # are accepted.
             items = tuple(row)
             (
                 title,
@@ -350,6 +358,7 @@ def get_period_context(
             importance_reporter = items[14] if len(items) > 14 else None
             importance_updated_at = items[15] if len(items) > 15 else None
             topics = items[16] if len(items) > 16 else None
+            content = items[17] if len(items) > 17 else None
         articles.append(
             {
                 "title": title,
@@ -366,7 +375,9 @@ def get_period_context(
                 "read": read_at is not None,
                 "read_at": _iso_tz_aware(read_at),
                 "read_by": read_by,
-                "importance_score": importance_score,
+                "importance_score": _importance.effective_score(
+                    importance_score, flag_reason, content
+                ),
                 "importance_rationale": importance_rationale,
                 "importance_reporter": importance_reporter,
                 "importance_updated_at": _iso_tz_aware(importance_updated_at),

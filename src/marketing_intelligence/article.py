@@ -31,6 +31,7 @@ except Exception:  # pragma: no cover - defensive fallback when absent
         )
 
 
+from marketing_intelligence import importance as _importance
 from marketing_intelligence.normalize import canonicalize_url
 
 _ARTICLE_BY_URL_SQL = """\
@@ -218,7 +219,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "read": read_at is not None,
         "read_at": read_at,
         "read_by": read_by,
-        "importance_score": importance_score,
+        "importance_score": _importance.effective_score(importance_score, flag_reason, content),
         "importance_rationale": importance_rationale,
         "importance_reporter": importance_reporter,
         "importance_updated_at": importance_updated_at,
