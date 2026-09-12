@@ -1,28 +1,33 @@
 """Thin-triggered Markdown enrichment (ticket 02).
 
-Deterministic, stdlib-only extraction (no language-model calls, no paid deps):
+Deterministic extraction (no language-model calls), on the user-ordered fetch
+chain: impersonated Chrome, then Jina reader, then Firecrawl.
 
 - :func:`is_thin` decides whether an RSS body is worth enriching.
 - :func:`clean_to_markdown` converts article HTML to clean Markdown, with
   per-domain post-processing for the National Jeweler family (chrome blocks
   stripped, inline editorial anchors flattened to plain words, boilerplate
   trailer cut) so harvested and enriched bodies both stay clean.
-- :func:`fetch_and_clean` retrieves an article URL over HTTPS and cleans it:
-  Chrome browser impersonation (``curl_cffi``: TLS fingerprint plus genuine
-  browser headers — never any crawler/bot UA, no cookies/credentials ever)
-  first, with one graceful plain-urllib attempt (same browser headers) when
-  impersonation fails or ``curl_cffi`` is not installed.
+- :func:`fetch_and_clean` retrieves an article URL over HTTPS and cleans it
+  with the single primary backend: Chrome browser impersonation
+  (``curl_cffi``: TLS fingerprint plus genuine browser headers — never any
+  crawler/bot UA, no cookies/credentials ever). ``curl_cffi`` is a hard
+  dependency; when it is unavailable the primary raises an explicit
+  :class:`FetchFailed` — there is no stdlib fetch lane.
 - :func:`enrich_document` enriches one thin document (raises typed errors).
 - :func:`enrich_document_or_keep` never raises: failure keeps the RSS body.
 
-Gated fallback (ticket 03): when the primary extractor misses a page — a
+Gated fallback chain (ticket 03): when the primary extractor misses a page — a
 bot/challenge/rate-limit fetch error, an empty primary output, or a JS-shell
-output — :func:`enrich_document` tries :func:`try_fallback_reader` once (a
-zero-ops Jina-reader-style HTTPS GET with data-minimizing headers: explicit
-User-Agent, ``Accept: text/*``, never any Cookie/Authorization credentials,
-backoff on 429 honoring Retry-After up to 2 retries). Any fallback failure
-raises a typed error that chains the primary cause, so
-:func:`enrich_document_or_keep` still keeps the RSS body.
+output — :func:`enrich_document` walks the fallback chain once: first
+:func:`try_fallback_reader` (a zero-ops Jina-reader-style HTTPS GET with
+data-minimizing headers: explicit User-Agent, ``Accept: text/*``, never any
+Cookie/Authorization credentials, backoff on 429 honoring Retry-After up to 2
+retries), then ``fetch_via_firecrawl`` (the paid last resort, imported lazily
+from :mod:`marketing_intelligence.firecrawl`; Bearer key from
+``FIRECRAWL_API_KEY`` read at call time, never logged, absent key an explicit
+skipped cause). Any fallback failure raises a typed error that chains every
+prior cause, so :func:`enrich_document_or_keep` still keeps the RSS body.
 
 Per-source enrichment policy (threshold overrides, force-on/off) is ticket 03;
 the threshold here is a hardcoded default with an optional per-call override.
@@ -70,9 +75,9 @@ BROWSER_HEADERS: dict[str, str] = {
     "Sec-Fetch-User": "?1",
 }
 
-try:  # preferred primary backend: TLS + browser impersonation (optional dep)
+try:  # primary backend: TLS + browser impersonation (hard dep)
     from curl_cffi import requests as _curl_cffi_requests
-except Exception:  # pragma: no cover - graceful stdlib fallback below
+except Exception:  # pragma: no cover - primary raises explicitly when absent
     _curl_cffi_requests = None  # type: ignore[assignment]
 
 try:  # preferred article extractor (optional dep, deterministic, no LLM)
@@ -428,9 +433,6 @@ def clean_to_markdown(html_or_text: str, url: str = "") -> str:
 #: HTTP statuses whose error bodies may carry bot-challenge evidence.
 _ERROR_BODY_STATUSES = (401, 402, 403, 429)
 
-#: Error-body bytes inspected for challenge evidence / lock-page rendering.
-_ERROR_BODY_CAP = 65536
-
 #: Marker recording that a 403 carried a non-empty body rendering to almost
 #: no text (a keyword-less bot lock page): trips the gated fallback.
 _LOCK_PAGE_MARKER = "lock page (thin rendered text)"
@@ -467,8 +469,16 @@ def _failure_for_status(url: str, status: int, reason: str, body: bytes) -> Fetc
 
 
 def _fetch_via_impersonation(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
-    """GET `url` with curl_cffi Chrome impersonation plus browser headers."""
-    assert _curl_cffi_requests is not None  # guarded by _fetch_primary_bytes
+    """GET `url` with curl_cffi Chrome impersonation plus browser headers.
+
+    The only primary backend. ``curl_cffi`` is a hard dependency; when it is
+    missing the failure is explicit — there is no stdlib fetch lane and never
+    a silent downgrade of the browser identity.
+    """
+    if _curl_cffi_requests is None:
+        raise FetchFailed(
+            f"fetch failed for {url}: curl_cffi unavailable (no impersonation backend)"
+        )
     try:
         response = _curl_cffi_requests.get(
             url, impersonate="chrome", headers=dict(BROWSER_HEADERS), timeout=timeout
@@ -524,57 +534,27 @@ def _decode_body(raw: bytes, encoding: str | None) -> bytes:
         return bytes(raw or b"")
 
 
-def _fetch_via_stdlib(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
-    """GET `url` with plain urllib plus the same genuine browser headers."""
-    request = urllib.request.Request(url, headers=dict(BROWSER_HEADERS))
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = bytes(response.read())
-            try:
-                encoding = response.getheader("Content-Encoding")
-            except Exception:
-                encoding = None
-            return _decode_body(raw, encoding)
-    except EnrichmentError:
-        raise
-    except urllib.error.HTTPError as exc:
-        body = b""
-        if exc.code in _ERROR_BODY_STATUSES:
-            try:
-                body = bytes(exc.read(_ERROR_BODY_CAP) or b"")
-            except Exception:
-                body = b""
-        raise _failure_for_status(url, int(exc.code), str(exc.reason), body) from exc
-    except Exception as exc:
-        raise FetchFailed(f"fetch failed for {url}: {exc}") from exc
-
-
 def _fetch_primary_bytes(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
-    """GET article bytes: impersonation first, one graceful stdlib attempt.
+    """GET article bytes through the impersonated-Chrome primary, or fail.
 
-    curl_cffi Chrome impersonation beats bot-guard 403s on article pages.
-    When it is unavailable — or its attempt fails (transport or HTTP error)
-    — plain urllib with the same browser headers gets one legacy attempt
-    whose outcome is final. At most two bounded attempts, no cookies ever.
+    Single backend: ``curl_cffi`` Chrome impersonation beats bot-guard 403s on
+    article pages. Missing dependency or transport/HTTP failure raises
+    :class:`FetchFailed` (chained causes preserved) for the caller to gate a
+    fallback attempt on — never a stdlib retry, never cookies.
     """
-    if _curl_cffi_requests is not None:
-        try:
-            return _fetch_via_impersonation(url, timeout)
-        except FetchFailed:
-            pass  # one legacy stdlib attempt below; its outcome is final
-    return _fetch_via_stdlib(url, timeout)
+    return _fetch_via_impersonation(url, timeout)
 
 
 def fetch_and_clean(url: str, timeout: int = PRIMARY_TIMEOUT) -> str:
     """Fetch `url` and return clean Markdown.
 
-    Primary path is impersonated-Chrome HTTPS (``curl_cffi``) with one
-    graceful plain-urllib attempt on failure; timeouts, the
-    FetchFailed/UnparseableBody taxonomy, and 401/402/403/429 error-body
-    snippet capture hold on both backends.
+    Single primary backend: impersonated-Chrome HTTPS (``curl_cffi``);
+    timeouts, the FetchFailed/UnparseableBody taxonomy, and 401/402/403/429
+    error-body snippet capture hold there. No stdlib lane, no cookies.
 
-    Raises :class:`FetchFailed` on network/HTTP errors and
-    :class:`UnparseableBody` when nothing usable survives cleaning.
+    Raises :class:`FetchFailed` on network/HTTP errors (and on a missing
+    ``curl_cffi``) and :class:`UnparseableBody` when nothing usable survives
+    cleaning.
     """
     raw = _fetch_primary_bytes(url, timeout)
     try:
@@ -681,27 +661,41 @@ def _fallback_after_primary_miss(
     primary_desc: str,
     threshold: int = DEFAULT_THIN_THRESHOLD,
 ) -> str:
-    """Try the gated fallback; raise (chaining the primary cause) on failure.
+    """Walk the gated fallback chain; raise (chaining every cause) on failure.
 
-    A fallback output that is itself thin counts as a miss — reader stubs and
-    error pages must never become the canonical stored body.
+    Fixed order: Jina reader (:func:`try_fallback_reader`) first, then the
+    paid Firecrawl scrape (imported lazily, key read inside that module — it
+    never touches this one). A leg whose output is thin, missing, or failed
+    counts as a miss — reader stubs, error pages, and empty scrape payloads
+    must never become the canonical stored body. The raised error names the
+    primary cause plus every fallback leg cause, so the operator sees exactly
+    why the chain gave up.
     """
+    causes: list[str] = []
     try:
         markdown = try_fallback_reader(url, timeout)
     except EnrichmentError as exc:
-        raise FetchFailed(
-            f"fallback failed for {url} (primary: {primary_desc}; fallback: {exc})"
-        ) from exc
+        causes.append(f"reader: {exc}")
     except Exception as exc:  # defensive: unexpected reader errors stay typed
-        raise FetchFailed(
-            f"fallback failed for {url} (primary: {primary_desc}; fallback: {exc})"
-        ) from exc
-    if is_thin(markdown, threshold):
-        raise FetchFailed(
-            f"fallback failed for {url} (primary: {primary_desc}; "
-            "fallback delivered no substantive text)"
-        )
-    return markdown
+        causes.append(f"reader: {exc}")
+    else:
+        if not is_thin(markdown, threshold):
+            return markdown
+        causes.append("reader: delivered no substantive text")
+
+    from marketing_intelligence.firecrawl import fetch_via_firecrawl  # lazy: no cycle
+
+    try:
+        scraped = fetch_via_firecrawl(url, timeout).decode("utf-8", errors="replace")
+        markdown = clean_to_markdown(scraped, url)
+    except Exception as exc:  # FirecrawlFailed: missing key, transport, HTTP, payload
+        causes.append(f"firecrawl: {exc}")
+    else:
+        if not is_thin(markdown, threshold):
+            return markdown
+        causes.append("firecrawl: delivered no substantive text")
+
+    raise FetchFailed(f"fallback failed for {url} (primary: {primary_desc}; {'; '.join(causes)})")
 
 
 def enrich_document(
@@ -718,7 +712,8 @@ def enrich_document(
     thin bodies are rebuilt via :func:`make_document` with the same metadata and
     the enriched Markdown (hash over stored text). On a primary-miss signal
     (bot/challenge/rate-limit error, empty primary output, JS-shell output)
-    the gated reader fallback is tried once. Fetch/clean/fallback failures raise
+    the gated fallback chain (Jina reader, then Firecrawl) is walked once.
+    Fetch/clean/fallback failures raise
     :class:`EnrichmentError` subclasses — use :func:`enrich_document_or_keep`
     for the never-raises variant the flow relies on.
     """

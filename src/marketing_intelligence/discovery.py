@@ -15,8 +15,10 @@ exactly as the RSS lane.
   bypassed.
 - Politeness: robots.txt crawl-delay honored (effective pacing is
   max(stanza pacing, crawl-delay) plus jitter), sequential requests with
-  explicit timeouts; transient 403s retried once under the impersonated-feed
-  policy, persistent denials recorded as explicit per-document errors.
+  explicit timeouts; the article chain is curl_cffi Chrome impersonation
+  first, then the Jina reader, then Firecrawl under the impersonated-feed
+  policy — there is no stdlib fetch lane, and persistent denials are
+  recorded as explicit per-document errors.
 - Canonical guard: the final URL after redirects is the fetch identity; the
   declared canonical/og URL is stored only when same-host, else the final
   URL wins — a wrong article is never stored, and slug changes collapse on
@@ -45,7 +47,7 @@ from urllib.parse import urljoin, urlsplit
 from dateutil import parser as date_parser
 
 from marketing_intelligence.enrich import clean_to_markdown
-from marketing_intelligence.ingest import USER_AGENT, _feed_blocked
+from marketing_intelligence.ingest import USER_AGENT
 from marketing_intelligence.normalize import (
     NormalizedDocument,
     canonicalize_url,
@@ -53,23 +55,36 @@ from marketing_intelligence.normalize import (
     content_hash_for,
     normalize_text,
 )
-from marketing_intelligence.sources import DEFAULT_MAX_URLS, DEFAULT_PACING_MS, EXTRACTOR_FAMILIES
+from marketing_intelligence.sources import (
+    DEFAULT_MAX_URLS,
+    DEFAULT_PACING_MS,
+    DEFAULT_RETRIEVAL_POLICY,
+    EXTRACTOR_FAMILIES,
+    RETRIEVAL_POLICIES,
+    RETRIEVAL_POLICY_ALIASES,
+)
 
-try:  # optional impersonated-retry backend (mirrors marketing_intelligence.ingest)
+try:  # primary impersonation backend (hard dependency; see pyproject curl-cffi)
     from curl_cffi import requests as _curl_cffi_requests
-except Exception:  # pragma: no cover - stdlib-only environments
+except Exception:  # pragma: no cover - broken install, surfaced explicitly below
     _curl_cffi_requests = None  # type: ignore[assignment]
 
-#: Explicit timeout (s) for article/discovery stdlib fetches (opt 4 split:
-#: 10s feeds in marketing_intelligence.ingest, 15s articles here, 30s only for the
-#: impersonated retry leg in `_impersonated_get`).
+#: Explicit timeout (s) for article/discovery fetches (opt 4 split: 10s feeds
+#: in marketing_intelligence.ingest, 15s articles here). Every lane of the
+#: article chain honors the caller's timeout.
 DEFAULT_TIMEOUT = 15
 
 #: Maximum sitemap-nesting depth traversed (index → nested index → URL set).
 MAX_SITEMAP_DEPTH = 2
 
-#: Error-body bytes inspected for challenge evidence on the stdlib attempt.
+#: Error-body bytes inspected for reader-leg HTTP error evidence.
 _ERROR_BODY_CAP = 65536
+
+#: Cap on the chained retry-failure detail (never unbounded, never secrets).
+_DETAIL_CAP = 1024
+
+#: Credential-shaped tokens scrubbed from any chained error detail.
+_SECRET_RE = re.compile(r"(?i)\b(?:bearer\s+\S+|fc-[A-Za-z0-9_-]{8,})")
 
 
 class DiscoveryError(Exception):
@@ -109,13 +124,6 @@ class HarvestReport:
     documents: list[NormalizedDocument] = field(default_factory=list)
     skipped: int = 0
     causes: list[str] = field(default_factory=list)
-
-
-#: Identity for discovery fetches (sitemaps, robots, articles): the honest
-#: feed-lane UA. Verified live 2026-09-06: MarketingDirecto serves sitemaps
-#: and articles (200) to this UA while refusing browser-mimicking headers
-#: (403) on the same endpoints — impersonation would be both ruder and broken.
-DISCOVERY_HEADERS: dict[str, str] = {"User-Agent": USER_AGENT}
 
 
 def _decode_body(raw: bytes, encoding: str | None) -> bytes:
@@ -161,23 +169,21 @@ def _decode_body(raw: bytes, encoding: str | None) -> bytes:
         return bytes(raw or b"")
 
 
-def _stdlib_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
-    """GET `url` with plain urllib + feed-lane identity; return (final_url, body)."""
-    request = urllib.request.Request(url, headers=dict(DISCOVERY_HEADERS))
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = bytes(response.read())
-        try:
-            encoding = response.getheader("Content-Encoding")
-        except Exception:
-            encoding = None
-        return (str(response.geturl() or url), _decode_body(raw, encoding))
-
-
 def _impersonated_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
-    """GET `url` with curl_cffi Chrome impersonation; return (final_url, body)."""
+    """GET `url` with curl_cffi Chrome impersonation; return (final_url, body).
+
+    The primary lane: real-Chrome TLS fingerprint plus genuine browser
+    headers, no cookies or credentials. curl_cffi is a hard dependency — a
+    broken install raises explicitly here and never degrades to a stdlib
+    fetch. Honors the caller's `timeout`.
+    """
     from marketing_intelligence.enrich import BROWSER_HEADERS
 
-    assert _curl_cffi_requests is not None  # guarded by policy_get
+    if _curl_cffi_requests is None:
+        raise ArticleFetchError(
+            url,
+            f"fetch failed for {url}: curl_cffi unavailable (hard dependency; no stdlib fallback)",
+        )
     try:
         response = _curl_cffi_requests.get(
             url, impersonate="chrome", headers=dict(BROWSER_HEADERS), timeout=timeout
@@ -187,7 +193,7 @@ def _impersonated_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, by
     body = bytes(response.content or b"")
     status = int(response.status_code)
     if status >= 400:
-        snippet = body[:512].decode("utf-8", errors="replace").strip()
+        snippet = body[:_ERROR_BODY_CAP][:512].decode("utf-8", errors="replace").strip()
         detail = f"HTTP Error {status}"
         if snippet:
             detail += f" — body: {snippet[:512]}"
@@ -195,48 +201,104 @@ def _impersonated_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, by
     return (str(getattr(response, "url", url) or url), body)
 
 
+def _jina_reader_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
+    """GET `url` through the zero-ops reader; return (final_url, body).
+
+    Second lane of the article chain: plain urllib against
+    ``FALLBACK_READER_BASE + url`` carrying only data-minimizing headers
+    (explicit User-Agent, ``Accept: text/*``; never cookies or credentials).
+    A 429 honors the reader's Retry-After, bounded, for up to
+    ``FALLBACK_MAX_RETRIES`` retries, then gives up with a rate-limited
+    cause. The body is returned as delivered (reader markdown bytes).
+
+    Raises :class:`ArticleFetchError` on any failure, body evidence included
+    for non-429 HTTP errors.
+    """
+    from marketing_intelligence.enrich import (
+        FALLBACK_ACCEPT,
+        FALLBACK_MAX_RETRIES,
+        FALLBACK_READER_BASE,
+        _retry_after_seconds,
+    )
+
+    reader_url = FALLBACK_READER_BASE + url
+    request = urllib.request.Request(
+        reader_url, headers={"User-Agent": USER_AGENT, "Accept": FALLBACK_ACCEPT}
+    )
+    for attempt in range(1 + FALLBACK_MAX_RETRIES):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = bytes(response.read())
+                try:
+                    encoding = response.getheader("Content-Encoding")
+                except Exception:
+                    encoding = None
+                return (str(response.geturl() or reader_url), _decode_body(raw, encoding))
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            if status == 429:
+                if attempt < FALLBACK_MAX_RETRIES:
+                    time.sleep(_retry_after_seconds(exc))
+                    continue
+                raise ArticleFetchError(
+                    url,
+                    f"jina reader failed for {url}: rate-limited "
+                    f"(429, {FALLBACK_MAX_RETRIES} retries exhausted)",
+                ) from exc
+            body = b""
+            try:
+                body = bytes(exc.read(_ERROR_BODY_CAP) or b"")
+            except Exception:
+                body = b""
+            snippet = body[:512].decode("utf-8", errors="replace").strip()
+            detail = f"HTTP Error {status}: {exc.reason}"
+            if snippet:
+                detail += f" — body: {snippet[:512]}"
+            raise ArticleFetchError(url, f"jina reader failed for {url}: {detail}") from exc
+        except Exception as exc:
+            raise ArticleFetchError(url, f"jina reader failed for {url}: {exc}") from exc
+    raise ArticleFetchError(url, f"jina reader failed for {url}: rate-limited (reader unavailable)")
+
+
+def _chain_detail(loc: str, primary: str, jina: str, firecrawl: str) -> str:
+    """Bounded, credential-free ``{loc}: {primary} | jina: {e} | firecrawl: {e}``."""
+    detail = f"{loc}: {primary} | jina: {jina} | firecrawl: {firecrawl}"
+    return _SECRET_RE.sub("[redacted]", detail)[:_DETAIL_CAP]
+
+
 def policy_get(
-    url: str, *, policy: str = "stdlib-only", timeout: int = DEFAULT_TIMEOUT
+    url: str, *, policy: str = "impersonated-feed", timeout: int = DEFAULT_TIMEOUT
 ) -> tuple[str, bytes]:
     """GET `url` under the stanza policy; return (final_url, body).
 
-    Mirrors the feed lane (`marketing_intelligence.ingest.fetch_rss`): stdlib first with a
-    15s native timeout, and only when that attempt meets 403/challenge
-    evidence does ``impersonated-feed`` retry once via curl_cffi with its
-    own 30s native timeout — any other failure is an explicit
-    :class:`ArticleFetchError`. Never returns a wrong article: HTTP errors
+    Every policy runs the same graceful chain on the impersonated primary
+    (``_impersonated_get``: curl_cffi Chrome + genuine browser headers,
+    caller's `timeout`): the Jina reader leg (``_jina_reader_get``) on a
+    primary :class:`ArticleFetchError`, then the Firecrawl scrape, with every
+    cause chained into the raised detail (``{loc}: {primary} | jina: {e} |
+    firecrawl: {e}``). ``stdlib-only`` is a dead alias for
+    ``impersonated-feed`` (accepted for back-compat, never a distinct mode);
+    no stdlib fetch lane exists. Never returns a wrong article: HTTP errors
     raise, they never yield bytes.
     """
+    policy = RETRIEVAL_POLICY_ALIASES.get(policy, policy)
+    if policy != "impersonated-feed":
+        policy = "impersonated-feed"  # dead alias: no primary-only mode remains
     try:
-        return _stdlib_get(url, timeout)
-    except urllib.error.HTTPError as exc:
-        body = b""
-        try:
-            body = bytes(exc.read(_ERROR_BODY_CAP) or b"")
-        except Exception:
-            body = b""
-        snippet = body[:512].decode("utf-8", errors="replace").strip()
-        status = int(exc.code)
-        if policy != "impersonated-feed" or not _feed_blocked(status, snippet):
-            raise ArticleFetchError(
-                url, f"fetch failed for {url}: HTTP Error {status}: {exc.reason}"
-            ) from exc
-        blocked_detail = f"HTTP Error {status}: {exc.reason}"
-        if snippet:
-            blocked_detail += f" — body: {snippet[:512]}"
-    except ArticleFetchError:
-        raise
+        return _impersonated_get(url, timeout)
+    except ArticleFetchError as exc:
+        primary = exc.detail
+    try:
+        return _jina_reader_get(url, timeout)
+    except ArticleFetchError as exc:
+        jina = exc.detail
+    try:
+        from marketing_intelligence.firecrawl import fetch_via_firecrawl
+
+        return (url, fetch_via_firecrawl(url))
     except Exception as exc:
-        raise ArticleFetchError(url, f"fetch failed for {url}: {exc}") from exc
-    if _curl_cffi_requests is None:
-        raise ArticleFetchError(
-            url,
-            f"fetch failed for {url}: {blocked_detail} "
-            "(curl_cffi unavailable for impersonated retry)",
-        )
-    # The impersonated retry leg keeps its own 30s native timeout (opt 4
-    # split): only the stdlib attempt honors the caller's `timeout`.
-    return _impersonated_get(url)
+        firecrawl = f"firecrawl failed for {url}: {exc}"
+        raise ArticleFetchError(url, _chain_detail(url, primary, jina, firecrawl)) from exc
 
 
 def _normalize_exclude(raw: Any) -> list[str]:
@@ -1034,7 +1096,7 @@ def _host_slot(host: str) -> threading.Semaphore:
 def paced_policy_fetch(
     url: str,
     *,
-    policy: str = "stdlib-only",
+    policy: str = "impersonated-feed",
     gap_s: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
     timeout: int = DEFAULT_TIMEOUT,
@@ -1043,8 +1105,8 @@ def paced_policy_fetch(
 
     Holds the host slot across the pacing sleep and the fetch, so concurrent
     workers stay sequential per host with the same
-    ``gap * (1 + jitter)`` rhythm as the serial harvest. The stdlib attempt
-    honors `timeout`; the impersonated retry leg keeps its own 30s timeout.
+    ``gap * (1 + jitter)`` rhythm as the serial harvest. `timeout` is the
+    caller-side timeout every lane of the article chain honors.
     """
     try:
         host = urlsplit(url).netloc.lower()
@@ -1071,7 +1133,7 @@ class ArticleJob:
     retrieved_at_iso: str = ""
     extractor: str = "generic"
     id_guard: bool = False
-    policy: str = "stdlib-only"
+    policy: str = "impersonated-feed"
     gap_s: float = 1.0
     timeout_s: int = DEFAULT_TIMEOUT
 
@@ -1091,7 +1153,7 @@ class HarvestPlan:
     skipped: int = 0
     causes: list[str] = field(default_factory=list)
     source_label: str = ""
-    policy: str = "stdlib-only"
+    policy: str = "impersonated-feed"
     gap_s: float = 1.0
     fetch_fn: Callable[[str], tuple[str, bytes]] | None = None
 
@@ -1167,9 +1229,10 @@ def plan_harvest(
     converts that into the explicit per-source error, exactly as a dead RSS
     feed surfaces. One bad sitemap or hub page never aborts the rest.
     """
-    policy = config.get("policy")
-    if policy not in ("stdlib-only", "impersonated-feed"):
-        policy = "stdlib-only"
+    policy = str(config.get("policy") or "")
+    policy = RETRIEVAL_POLICY_ALIASES.get(policy, policy)
+    if policy not in RETRIEVAL_POLICIES:
+        policy = str(DEFAULT_RETRIEVAL_POLICY["policy"])
     extractor = config.get("extractor")
     if extractor not in EXTRACTOR_FAMILIES:
         extractor = "generic"
