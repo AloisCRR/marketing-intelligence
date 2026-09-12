@@ -22,6 +22,7 @@ from marketing_intelligence.discovery import (
     plan_harvest,
 )
 from marketing_intelligence.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
+from marketing_intelligence.flag import flag_unrecoverable
 from marketing_intelligence.health import record_ingestion_run
 from marketing_intelligence.ingest import (
     SOURCE_ID_SQL,
@@ -155,8 +156,8 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
 
     Ticket 08 pilot lane, now fanned out V3-safe (opt 1): serial planning
     via the module-global `plan_harvest` (sitemap-first order, hub-anchor
-    fallback, robots-Disallow filter — raises DiscoveryError on zero URLs
-    like a dead RSS feed), then one `_article_task` per planned URL
+    fallback — raises DiscoveryError on zero URLs like a dead RSS feed),
+    then one `_article_task` per planned URL
     submitted to this flow's ThreadPoolTaskRunner (max 4 workers, no raw
     executor inside any task). Futures resolve in submission order, so
     document order, skipped counts, and per-URL causes match the serial
@@ -209,23 +210,32 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
 @task(name="enrich_single_document", task_run_name="enrich-one", cache_policy=NONE)
 def _enrich_one_task(
     doc: NormalizedDocument, threshold: int, force: bool
-) -> tuple[NormalizedDocument, str, str | None]:
+) -> tuple[NormalizedDocument, str, str | None, str | None]:
     """Enrich one document; never raises (keeps the RSS body with a cause).
 
     Thin wrapper over the module-global `enrich_document_or_keep` so tests
     keep substituting fakes. Side-effecting (article fetch): no result
     caching. Inputs are deepcopied by the parent flow, so workers never
-    share mutable documents.
+    share mutable documents. The fourth element is the terminal
+    `unrecoverable` chained cause when the kept RSS body is still thin
+    after a total chain failure, else None.
     """
-    return enrich_document_or_keep(doc, threshold, force=force)
+    events: list[tuple[str, str]] = []
+    new_doc, method, cause = enrich_document_or_keep(
+        doc,
+        threshold,
+        force=force,
+        on_unrecoverable=lambda url, detail: events.append((url, detail)),
+    )
+    return new_doc, method, cause, events[0][1] if events else None
 
 
 def _enrich_docs(
     docs: list[NormalizedDocument],
     threshold: int = DEFAULT_THIN_THRESHOLD,
     source_name: str | None = None,
-) -> tuple[list[NormalizedDocument], int, list[str]]:
-    """Enrich RSS bodies to Markdown; returns (docs, skipped, causes).
+) -> tuple[list[NormalizedDocument], int, list[str], list[tuple[str, str]]]:
+    """Enrich RSS bodies to Markdown; returns (docs, skipped, causes, unrecoverable).
 
     Plain (undecorated) helper: it must be called from inside a flow context
     and fans out to `_enrich_one_task.submit(deepcopy(doc), ...)`, so every
@@ -261,7 +271,7 @@ def _enrich_docs(
             source_name,
             len(docs),
         )
-        return (list(docs), 0, [])
+        return (list(docs), 0, [], [])
     force = mode == "force_on"
     # Fan-out V3-safe (opt 1): one task per document on this flow's
     # ThreadPoolTaskRunner; futures resolve in submission order so the
@@ -272,22 +282,25 @@ def _enrich_docs(
     enriched: list[NormalizedDocument] = []
     skipped = 0
     causes: list[str] = []
+    unrecoverable: list[tuple[str, str]] = []
     for doc, future in zip(docs, futures, strict=True):
         try:
-            new_doc, method, cause = future.result()
+            new_doc, method, cause, unrecoverable_detail = future.result()
         except Exception as exc:  # defensive: enrichment never blocks ingestion
             enriched.append(doc)
             skipped += 1
             causes.append(f"rss: {doc.url}: enrichment failed ({exc})")
             continue
         enriched.append(new_doc)
+        if unrecoverable_detail is not None:
+            unrecoverable.append((new_doc.url, unrecoverable_detail))
         if cause is not None:
             skipped += 1
             causes.append(f"{method}: {cause}")
     get_run_logger().info(
         "enrich docs=%d enriched=%d skipped=%d", len(docs), len(docs) - skipped, skipped
     )
-    return (enriched, skipped, causes)
+    return (enriched, skipped, causes, unrecoverable)
 
 
 @flow(
@@ -299,8 +312,8 @@ def enrich_task(
     docs: list[NormalizedDocument],
     threshold: int = DEFAULT_THIN_THRESHOLD,
     source_name: str | None = None,
-) -> tuple[list[NormalizedDocument], int, list[str]]:
-    """Enrich RSS bodies to Markdown; returns (docs, skipped, causes).
+) -> tuple[list[NormalizedDocument], int, list[str], list[tuple[str, str]]]:
+    """Enrich RSS bodies to Markdown; returns (docs, skipped, causes, unrecoverable).
 
     Thin flow wrapper over the plain `_enrich_docs` helper, kept for direct
     callers and tests. `ingest_source_flow` calls the helper directly: passing
@@ -452,15 +465,22 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     # can never block an Ingestion Run; no guard needed here. Called as the
     # plain `_enrich_docs` helper inside this Ingestion Run, not as the
     # `enrich_task` subflow: shipping the whole `docs` list as flow-run params
-    # overflowed Prefect's 524,288-byte `POST /api/flow_runs/` body on large
-    # sources (Exame: 705,221 bytes → 422). The helper still fans out one
-    # small `_enrich_one_task.submit(deepcopy(doc), ...)` per document.
-    docs, enrich_skipped, enrich_causes = _enrich_docs(docs, DEFAULT_THIN_THRESHOLD, source_label)
+    docs, enrich_skipped, enrich_causes, unrecoverable = _enrich_docs(
+        docs, DEFAULT_THIN_THRESHOLD, source_label
+    )
     # Persist via the plain `upsert_documents` helper for the same reason (the
     # full list must never ride a task-run param payload); the log line and
     # {inserted, skipped} shape match the old `upsert_task` call exactly.
     inserted, upsert_skipped = upsert_documents(docs)
     logger.info("upsert docs=%d inserted=%d skipped=%d", len(docs), inserted, upsert_skipped)
+    # Terminal unrecoverable flags: the flag lane is an UPDATE keyed on the
+    # article URL, so it runs after the upsert. Best-effort and never
+    # blocking: an unknown URL or DB failure only logs.
+    for flag_url, flag_detail in unrecoverable:
+        try:
+            flag_unrecoverable(flag_url, detail=flag_detail)
+        except Exception as exc:
+            logger.warning("unrecoverable flag failed url=%s (%s)", flag_url, exc)
     result = {"inserted": inserted, "skipped": upsert_skipped}
     reasons: list[str] | None = None
     if retrieval_type == "rss" or source.get("rss_url"):

@@ -11,8 +11,9 @@ exactly as the RSS lane.
   pattern). Hub extends sitemap coverage; it never replaces it.
 - Extractor families: generic HTML-to-Markdown default; JSON-LD
   ``articleBody``-first for the Next.js/Sanity family with generic fallback.
-  Still-thin results are kept-aside with explicit causes (flag path), never
-  bypassed.
+  Provider Markdown (reader/scrape legs, ``articleBody``) is stored as-is
+  after a thin-check, never re-cleaned. Still-thin results are kept-aside
+  with explicit causes (flag path), never bypassed.
 - Politeness: robots.txt crawl-delay honored (effective pacing is
   max(stanza pacing, crawl-delay) plus jitter), sequential requests with
   explicit timeouts; the article chain is curl_cffi Chrome impersonation
@@ -34,10 +35,7 @@ import random
 import re
 import threading
 import time
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
-import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -46,8 +44,14 @@ from urllib.parse import urljoin, urlsplit
 
 from dateutil import parser as date_parser
 
-from marketing_intelligence.enrich import clean_to_markdown
-from marketing_intelligence.ingest import USER_AGENT
+from marketing_intelligence.enrich import (
+    FetchFailed,
+    ProviderMarkdown,
+    article_content_chain,
+    clean_to_markdown,
+    fetch_impersonated,
+    fetch_reader,
+)
 from marketing_intelligence.normalize import (
     NormalizedDocument,
     canonicalize_url,
@@ -64,11 +68,6 @@ from marketing_intelligence.sources import (
     RETRIEVAL_POLICY_ALIASES,
 )
 
-try:  # primary impersonation backend (hard dependency; see pyproject curl-cffi)
-    from curl_cffi import requests as _curl_cffi_requests
-except Exception:  # pragma: no cover - broken install, surfaced explicitly below
-    _curl_cffi_requests = None  # type: ignore[assignment]
-
 #: Explicit timeout (s) for article/discovery fetches (opt 4 split: 10s feeds
 #: in marketing_intelligence.ingest, 15s articles here). Every lane of the
 #: article chain honors the caller's timeout.
@@ -76,15 +75,6 @@ DEFAULT_TIMEOUT = 15
 
 #: Maximum sitemap-nesting depth traversed (index → nested index → URL set).
 MAX_SITEMAP_DEPTH = 2
-
-#: Error-body bytes inspected for reader-leg HTTP error evidence.
-_ERROR_BODY_CAP = 65536
-
-#: Cap on the chained retry-failure detail (never unbounded, never secrets).
-_DETAIL_CAP = 1024
-
-#: Credential-shaped tokens scrubbed from any chained error detail.
-_SECRET_RE = re.compile(r"(?i)\b(?:bearer\s+\S+|fc-[A-Za-z0-9_-]{8,})")
 
 
 class DiscoveryError(Exception):
@@ -126,144 +116,33 @@ class HarvestReport:
     causes: list[str] = field(default_factory=list)
 
 
-def _decode_body(raw: bytes, encoding: str | None) -> bytes:
-    """Decode `raw` per Content-Encoding (gzip/deflate/br); never raises.
-
-    Multi-value headers handled case-insensitively. `br` decodes only when
-    `brotli` is already importable (no new dep). Defense-in-depth: a missing
-    or empty header with gzip-magic bytes gunzips anyway. Any decode failure
-    falls back to the raw bytes.
-    """
-    data = bytes(raw or b"")
-    try:
-        tokens = {(t.strip().lower()) for t in (encoding or "").split(",") if t.strip()}
-        if not tokens and data[:2] == b"\x1f\x8b":
-            try:
-                return gzip.decompress(data)
-            except Exception:
-                return data
-        if "gzip" in tokens or "x-gzip" in tokens:
-            try:
-                return gzip.decompress(data)
-            except Exception:
-                return data
-        if "deflate" in tokens:
-            try:
-                try:
-                    return zlib.decompress(data)
-                except Exception:
-                    return zlib.decompress(data, -15)
-            except Exception:
-                return data
-        if "br" in tokens:
-            try:
-                import brotli as _brotli  # type: ignore[import-not-found]
-            except Exception:
-                return data
-            try:
-                return bytes(_brotli.decompress(data))
-            except Exception:
-                return data
-        return data
-    except Exception:
-        return bytes(raw or b"")
-
-
 def _impersonated_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
-    """GET `url` with curl_cffi Chrome impersonation; return (final_url, body).
+    """Impersonation leg of the shared article chain; return (final_url, body).
 
-    The primary lane: real-Chrome TLS fingerprint plus genuine browser
-    headers, no cookies or credentials. curl_cffi is a hard dependency — a
-    broken install raises explicitly here and never degrades to a stdlib
-    fetch. Honors the caller's `timeout`.
+    Delegates to :func:`marketing_intelligence.enrich.fetch_impersonated`
+    (curl_cffi Chrome + genuine browser headers, no cookies or credentials,
+    caller's `timeout`) and re-raises the shared failure as
+    :class:`ArticleFetchError`, so discovery keeps its typed per-URL contract.
     """
-    from marketing_intelligence.enrich import BROWSER_HEADERS
-
-    if _curl_cffi_requests is None:
-        raise ArticleFetchError(
-            url,
-            f"fetch failed for {url}: curl_cffi unavailable (hard dependency; no stdlib fallback)",
-        )
     try:
-        response = _curl_cffi_requests.get(
-            url, impersonate="chrome", headers=dict(BROWSER_HEADERS), timeout=timeout
-        )
-    except Exception as exc:
-        raise ArticleFetchError(url, f"fetch failed for {url}: {exc}") from exc
-    body = bytes(response.content or b"")
-    status = int(response.status_code)
-    if status >= 400:
-        snippet = body[:_ERROR_BODY_CAP][:512].decode("utf-8", errors="replace").strip()
-        detail = f"HTTP Error {status}"
-        if snippet:
-            detail += f" — body: {snippet[:512]}"
-        raise ArticleFetchError(url, f"fetch failed for {url}: {detail}")
-    return (str(getattr(response, "url", url) or url), body)
+        return fetch_impersonated(url, timeout)
+    except FetchFailed as exc:
+        raise ArticleFetchError(url, str(exc)) from exc
 
 
 def _jina_reader_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, bytes]:
-    """GET `url` through the zero-ops reader; return (final_url, body).
+    """Reader leg of the shared article chain; return (final_url, Markdown bytes).
 
-    Second lane of the article chain: plain urllib against
-    ``FALLBACK_READER_BASE + url`` carrying only data-minimizing headers
-    (explicit User-Agent, ``Accept: text/*``; never cookies or credentials).
-    A 429 honors the reader's Retry-After, bounded, for up to
-    ``FALLBACK_MAX_RETRIES`` retries, then gives up with a rate-limited
-    cause. The body is returned as delivered (reader markdown bytes).
-
-    Raises :class:`ArticleFetchError` on any failure, body evidence included
-    for non-429 HTTP errors.
+    Delegates to :func:`marketing_intelligence.enrich.fetch_reader` (plain
+    urllib, data-minimizing headers, bounded 429 retries) and re-raises the
+    shared failure as :class:`ArticleFetchError`. The payload comes back as
+    delivered — possibly empty; :func:`article_content_chain` tags it
+    :class:`ProviderMarkdown` for the extract site.
     """
-    from marketing_intelligence.enrich import (
-        FALLBACK_ACCEPT,
-        FALLBACK_MAX_RETRIES,
-        FALLBACK_READER_BASE,
-        _retry_after_seconds,
-    )
-
-    reader_url = FALLBACK_READER_BASE + url
-    request = urllib.request.Request(
-        reader_url, headers={"User-Agent": USER_AGENT, "Accept": FALLBACK_ACCEPT}
-    )
-    for attempt in range(1 + FALLBACK_MAX_RETRIES):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = bytes(response.read())
-                try:
-                    encoding = response.getheader("Content-Encoding")
-                except Exception:
-                    encoding = None
-                return (str(response.geturl() or reader_url), _decode_body(raw, encoding))
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            if status == 429:
-                if attempt < FALLBACK_MAX_RETRIES:
-                    time.sleep(_retry_after_seconds(exc))
-                    continue
-                raise ArticleFetchError(
-                    url,
-                    f"jina reader failed for {url}: rate-limited "
-                    f"(429, {FALLBACK_MAX_RETRIES} retries exhausted)",
-                ) from exc
-            body = b""
-            try:
-                body = bytes(exc.read(_ERROR_BODY_CAP) or b"")
-            except Exception:
-                body = b""
-            snippet = body[:512].decode("utf-8", errors="replace").strip()
-            detail = f"HTTP Error {status}: {exc.reason}"
-            if snippet:
-                detail += f" — body: {snippet[:512]}"
-            raise ArticleFetchError(url, f"jina reader failed for {url}: {detail}") from exc
-        except Exception as exc:
-            raise ArticleFetchError(url, f"jina reader failed for {url}: {exc}") from exc
-    raise ArticleFetchError(url, f"jina reader failed for {url}: rate-limited (reader unavailable)")
-
-
-def _chain_detail(loc: str, primary: str, jina: str, firecrawl: str) -> str:
-    """Bounded, credential-free ``{loc}: {primary} | jina: {e} | firecrawl: {e}``."""
-    detail = f"{loc}: {primary} | jina: {jina} | firecrawl: {firecrawl}"
-    return _SECRET_RE.sub("[redacted]", detail)[:_DETAIL_CAP]
+    try:
+        return fetch_reader(url, timeout)
+    except FetchFailed as exc:
+        raise ArticleFetchError(url, str(exc)) from exc
 
 
 def policy_get(
@@ -271,34 +150,27 @@ def policy_get(
 ) -> tuple[str, bytes]:
     """GET `url` under the stanza policy; return (final_url, body).
 
-    Every policy runs the same graceful chain on the impersonated primary
-    (``_impersonated_get``: curl_cffi Chrome + genuine browser headers,
-    caller's `timeout`): the Jina reader leg (``_jina_reader_get``) on a
-    primary :class:`ArticleFetchError`, then the Firecrawl scrape, with every
-    cause chained into the raised detail (``{loc}: {primary} | jina: {e} |
-    firecrawl: {e}``). ``stdlib-only`` is a dead alias for
-    ``impersonated-feed`` (accepted for back-compat, never a distinct mode);
-    no stdlib fetch lane exists. Never returns a wrong article: HTTP errors
-    raise, they never yield bytes.
+    Every policy walks the one shared article-content chain
+    (:func:`marketing_intelligence.enrich.article_content_chain`): the
+    impersonated primary (:func:`_impersonated_get`) first, then the Jina
+    reader (:func:`_jina_reader_get`) on any primary failure, then the
+    Firecrawl scrape — ungated, every leg on fetch failure. ``stdlib-only``
+    is a dead alias for ``impersonated-feed`` (accepted for back-compat,
+    never a distinct mode); no stdlib fetch lane exists. Never returns a
+    wrong article: HTTP errors raise, they never yield bytes. Provider legs
+    come back tagged :class:`ProviderMarkdown`, so extraction stores them
+    as-is. When every leg fails, the raised :class:`ArticleFetchError` names
+    each leg once in the shared, credential-free detail.
     """
     policy = RETRIEVAL_POLICY_ALIASES.get(policy, policy)
     if policy != "impersonated-feed":
         policy = "impersonated-feed"  # dead alias: no primary-only mode remains
     try:
-        return _impersonated_get(url, timeout)
-    except ArticleFetchError as exc:
-        primary = exc.detail
-    try:
-        return _jina_reader_get(url, timeout)
-    except ArticleFetchError as exc:
-        jina = exc.detail
-    try:
-        from marketing_intelligence.firecrawl import fetch_via_firecrawl
-
-        return (url, fetch_via_firecrawl(url))
-    except Exception as exc:
-        firecrawl = f"firecrawl failed for {url}: {exc}"
-        raise ArticleFetchError(url, _chain_detail(url, primary, jina, firecrawl)) from exc
+        return article_content_chain(
+            url, primary=_impersonated_get, reader=_jina_reader_get, timeout=timeout
+        )
+    except FetchFailed as exc:
+        raise ArticleFetchError(url, str(exc)) from exc
 
 
 def _normalize_exclude(raw: Any) -> list[str]:
@@ -613,94 +485,6 @@ def robots_crawl_delay(robots_txt: str) -> float:
         return 0.0
 
 
-def _robots_star_rules(robots_txt: str) -> tuple[list[str], list[str]]:
-    """Allow/Disallow paths declared for `User-agent: *` groups.
-
-    Same grouping semantics as :func:`robots_crawl_delay`: consecutive
-    user-agent lines share one block, and any directive line starts a fresh
-    group. Returns (allows, disallows) in document order, deduped. Absolute-URL
-    values (e.g. ``Allow: https://host/sitemap.xml``) are reduced to their
-    path; empty Disallow values mean allow-all and are dropped. Never raises.
-    """
-    allows: list[str] = []
-    disallows: list[str] = []
-    try:
-        agents: list[str] = []
-        seen_directive = False
-        for raw_line in (robots_txt or "").splitlines():
-            line = raw_line.split("#", 1)[0].strip()
-            if not line or ":" not in line:
-                continue
-            field, _, value = line.partition(":")
-            field = field.strip().lower()
-            value = value.strip().split()[0] if value.strip() else ""
-            if field == "user-agent":
-                if seen_directive:
-                    agents = []
-                    seen_directive = False
-                agents.append(value.lower())
-            elif field in ("allow", "disallow"):
-                seen_directive = True
-                if not any(a == "*" for a in agents):
-                    continue
-                if not value:
-                    continue  # empty Disallow/Allow: allow-all, no rule
-                if "://" in value:
-                    try:
-                        value = urlsplit(value).path or "/"
-                    except ValueError:
-                        continue
-                if not value.startswith("/"):
-                    continue  # not a path rule; ignore
-                target = allows if field == "allow" else disallows
-                if value not in target:
-                    target.append(value)
-            else:
-                seen_directive = True
-    except Exception:
-        return ([], [])
-    return (allows, disallows)
-
-
-def robots_disallowed_paths(robots_txt: str) -> list[str]:
-    """Disallow paths declared for `User-agent: *` in robots.txt.
-
-    Best-effort: missing/garbled input yields [] — never raises.
-    """
-    try:
-        _, disallows = _robots_star_rules(robots_txt)
-        return list(disallows)
-    except Exception:
-        return []
-
-
-def robots_is_disallowed(url: str, robots_txt: str) -> bool:
-    """True when `url` falls under a `User-agent: *` Disallow.
-
-    Longest-prefix match per RFC (``Disallow: /posts/private`` covers
-    ``/posts/private*``); on ties the Allow wins, so an explicit Allow
-    exception beats a Disallow covering it. Query strings participate in the
-    match (``path[?query]``). Empty Disallow means allow-all; missing/garbled
-    input (or an unparseable URL) allows — never raises.
-    """
-    try:
-        allows, disallows = _robots_star_rules(robots_txt)
-        if not disallows:
-            return False
-        try:
-            parts = urlsplit(url)
-            target = parts.path or "/"
-            if parts.query:
-                target += "?" + parts.query
-        except ValueError:
-            return False
-        best_allow = max((len(a) for a in allows if target.startswith(a)), default=-1)
-        best_deny = max((len(d) for d in disallows if target.startswith(d)), default=-1)
-        return best_deny >= 0 and best_deny > best_allow
-    except Exception:
-        return False
-
-
 _TAG_RE = re.compile(r"<[^>]+>")
 _LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
 _ATTR_RE_TEMPLATE = r"""{name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`>]+))"""
@@ -855,7 +639,9 @@ def extract_json_ld_body(html: str) -> str | None:
 
     Selects the first ``articleBody`` on a preferred article type
     (NewsArticle/Article/BlogPosting), else the first ``articleBody`` anywhere;
-    related-article stubs without bodies are ignored. Returns None when no
+    related-article stubs without bodies are ignored. The body arrives already
+    extracted, so it is returned as-is — never run back through the HTML
+    cleaner — and callers decide on thinness downstream. Returns None when no
     usable structured body exists — the caller falls back to generic
     extraction. Never raises on garbled markup.
     """
@@ -874,13 +660,9 @@ def extract_json_ld_body(html: str) -> str | None:
         if not isinstance(body, str) or not body.strip():
             continue
         if str(block.get("@type") or "").lower() in _PREFERRED_LD_TYPES:
-            cleaned = clean_to_markdown(body, "")
-            if cleaned.strip():
-                return cleaned.strip()
-        elif fallback is None:
-            cleaned = clean_to_markdown(body, "")
-            if cleaned.strip():
-                fallback = cleaned.strip()
+            return body
+        if fallback is None:
+            fallback = body
     return fallback
 
 
@@ -956,14 +738,21 @@ def extract_published_raw(html: str) -> str | None:
     return None
 
 
-def _extract_body(html: str, final_url: str, url: str, extractor: str) -> str:
+def _extract_body(
+    html: str, final_url: str, url: str, extractor: str, markdown: bool = False
+) -> str:
     """Select the article body text under the stanza extractor family.
 
-    ``json-ld-first`` reads the embedded JSON-LD ``articleBody`` first and
-    falls back to generic HTML-to-Markdown; every other value cleans the
-    HTML directly. Raises :class:`ArticleExtractError` when nothing usable
-    survives.
+    `markdown` marks a provider payload (reader/scrape leg): it arrives
+    already extracted and is returned as-is after the caller's emptiness
+    check, never run back through the HTML cleaner. Otherwise
+    ``json-ld-first`` reads the embedded JSON-LD ``articleBody`` first (also
+    provider text, returned as-is) and falls back to generic
+    HTML-to-Markdown; every other value cleans the HTML directly. Raises
+    :class:`ArticleExtractError` when nothing usable survives.
     """
+    if markdown:
+        return html
     if extractor == "json-ld-first":
         try:
             structured = extract_json_ld_body(html)
@@ -996,6 +785,7 @@ def extract_article(
     fallback_published: datetime | None = None,
     extractor: str = "generic",
     id_guard: bool = False,
+    markdown: bool = False,
 ) -> NormalizedDocument:
     """Build a NormalizedDocument from one fetched article (family-switched).
 
@@ -1003,6 +793,9 @@ def extract_article(
     directly; ``"json-ld-first"`` reads the embedded JSON-LD ``articleBody``
     first (Next.js/Sanity family, where generic extraction goes thin) and
     falls back to generic extraction. Unknown values yield generic.
+    `markdown` marks a provider payload (``ProviderMarkdown`` from the
+    reader/scrape legs): it is already extracted, so it is stored as-is
+    instead of being run back through the HTML cleaner.
     Thin bodies are still returned — the thin threshold governs keep-vs-flag
     downstream (enrichment-keep + Extraction Flag path), never circumvention.
 
@@ -1024,7 +817,7 @@ def extract_article(
     title = extract_title(html)
     if not title:
         raise ArticleExtractError(url, "unparseable article: missing title")
-    body = _extract_body(html, final_url, url, extractor)
+    body = _extract_body(html, final_url, url, extractor, markdown)
     if not body.strip():
         raise ArticleExtractError(url, "unparseable article body: empty after cleaning")
     published_at = fallback_published
@@ -1142,8 +935,8 @@ class ArticleJob:
 class HarvestPlan:
     """Serial, cheap discovery outcome: article jobs plus visible skip accounting.
 
-    Everything up to the article loop (robots, sitemap traversal, hub
-    fallback, robots-Disallow filter, empty→DiscoveryError) stays serial and
+    Everything up to the article loop (crawl-delay, sitemap traversal, hub
+    fallback, empty→DiscoveryError) stays serial and
     ordered; only the fetch→decode→extract per-article work fans out.
     `fetch_fn` is the resolved ``(final_url, body)`` fetcher the plan used,
     so the serial driver reproduces identical pacing with the same callable.
@@ -1171,6 +964,8 @@ def fetch_extract_one(
     <detail>"``), so concurrent assembly preserves skipped/causes counting.
     The default fetch is the polite concurrent fetch (per-host slot +
     pacing + jitter); the serial driver injects its own paced fetch.
+    A body tagged :class:`ProviderMarkdown` (reader/scrape leg) is already
+    extracted and is stored as-is instead of being cleaned again.
     """
     fetch = fetch_one or (
         lambda url: paced_policy_fetch(
@@ -1183,6 +978,7 @@ def fetch_extract_one(
         return (None, f"{job.loc}: {exc.detail}")
     except Exception as exc:  # defensive: fetch never aborts the harvest
         return (None, f"{job.loc}: fetch failed ({exc})")
+    provider_markdown = isinstance(raw, ProviderMarkdown)
     try:
         html = raw.decode("utf-8", errors="replace")
     except Exception as exc:
@@ -1202,6 +998,7 @@ def fetch_extract_one(
             fallback_published=fallback,
             extractor=job.extractor,
             id_guard=job.id_guard,
+            markdown=provider_markdown,
         )
     except ArticleExtractError as exc:
         return (None, f"{job.loc}: {exc.detail}")
@@ -1223,8 +1020,11 @@ def plan_harvest(
 
     Runs everything in :func:`harvest_sitemap_source` up to the article
     loop (stanza validation, robots crawl-delay, sitemap-first traversal,
-    hub-anchor fallback, robots-Disallow filter) and returns a
-    :class:`HarvestPlan` of immutable :class:`ArticleJob` units. Raises
+    hub-anchor fallback) and returns a
+    :class:`HarvestPlan` of immutable :class:`ArticleJob` units. Every
+    discovered article URL is planned and fetched alike — robots Disallow
+    is not an exclusion ground; only crawl-delay floors the pacing gap.
+    Raises
     :class:`DiscoveryError` when discovery yields zero URLs — the flow
     converts that into the explicit per-source error, exactly as a dead RSS
     feed surfaces. One bad sitemap or hub page never aborts the rest.
@@ -1264,15 +1064,12 @@ def plan_harvest(
             host = urlsplit(candidate.strip()).netloc.lower()
             break
     crawl_delay = 0.0
-    robots_txt = ""
     if host:
         try:
             _, robots_body = fetch_fn(f"https://{host}/robots.txt")
-            robots_txt = robots_body.decode("utf-8", errors="replace")
-            crawl_delay = robots_crawl_delay(robots_txt)
+            crawl_delay = robots_crawl_delay(robots_body.decode("utf-8", errors="replace"))
         except Exception:
             crawl_delay = 0.0
-            robots_txt = ""
     gap = max(pacing_ms / 1000.0, crawl_delay)
 
     def _paced_fetch(url: str) -> tuple[str, bytes]:
@@ -1311,20 +1108,6 @@ def plan_harvest(
                 known.add(canonicalize_url(entry.loc))
                 discovered.append(entry)
         discovered = discovered[:max_urls]
-    robots_skipped = 0
-    if robots_txt:
-        # Robots Disallow filtering: discovered article URLs under a
-        # `User-agent: *` Disallow are explicit skips (never fetched or
-        # extracted). Hub listing pages themselves are never filtered —
-        # only the article URLs discovered from sitemaps/hubs.
-        kept: list[SitemapUrl] = []
-        for entry in discovered:
-            if robots_is_disallowed(entry.loc, robots_txt):
-                errors.append(f"{entry.loc}: disallowed by robots.txt")
-                robots_skipped += 1
-            else:
-                kept.append(entry)
-        discovered = kept
     if not discovered:
         detail = "; ".join(errors) if errors else "no sitemap URLs declared"
         raise DiscoveryError(f"sitemap discovery for {source_label} yielded no URLs: {detail}")
@@ -1346,7 +1129,6 @@ def plan_harvest(
     ]
     return HarvestPlan(
         jobs=jobs,
-        skipped=robots_skipped,
         causes=list(errors),
         source_label=source_label,
         policy=str(policy),

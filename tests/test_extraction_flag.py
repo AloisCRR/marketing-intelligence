@@ -6,10 +6,14 @@ TDD vertical slices against the new seam:
 - read-back annotation on `get_article` / `search_articles` / `get_period_context`
 
 Locked contract (ADR-0005 + CONTEXT.md Extraction Flag term):
-- FLAG_REASONS = thin | js_shell | paywall_challenge | truncated | wrong_body | other
+- FLAG_REASONS = thin | js_shell | paywall_challenge | truncated | wrong_body |
+  unrecoverable | other
 - detail max 2000 chars; `other` requires non-blank detail
 - flagged_by optional, max 100 chars; clear=True ignores reason/detail, NULLs
   the 4 columns and updates nothing else; re-flag overwrites.
+- `unrecoverable` is filed by ingestion (system reporter) when a document's
+  whole article-content chain fails and only the thin RSS body survives; the
+  flag tool accepts and clears it and still rejects unknown reasons.
 """
 
 from __future__ import annotations
@@ -491,11 +495,36 @@ def test_bad_reason_rejected_without_query() -> None:
 
 
 def test_all_spec_reasons_accepted() -> None:
-    for reason in ("thin", "js_shell", "paywall_challenge", "truncated", "wrong_body"):
+    for reason in (
+        "thin",
+        "js_shell",
+        "paywall_challenge",
+        "truncated",
+        "wrong_body",
+        "unrecoverable",
+    ):
         article = service.flag_extraction(
             ARTICLE_URL, reason=reason, detail=f"detail for {reason}", conn=_FakeConnection()
         )
         assert article["flag_reason"] == reason
+
+
+def test_unrecoverable_flag_clears_via_tool() -> None:
+    conn = _FakeConnection()
+    flagged = service.flag_extraction(
+        ARTICLE_URL,
+        reason="unrecoverable",
+        detail="fallback failed for ... (primary: ...; reader: ...; firecrawl: ...)",
+        flagged_by=flag_lane.SYSTEM_REPORTER,
+        conn=conn,
+    )
+    assert flagged["flag_reason"] == "unrecoverable"
+    assert flagged["flagged_by"] == "system"
+    cleared = service.flag_extraction(ARTICLE_URL, clear=True, conn=conn)
+    assert cleared["flag_reason"] is None
+    assert cleared["flag_detail"] is None
+    assert cleared["flagged_at"] is None
+    assert cleared["flagged_by"] is None
 
 
 def test_detail_over_2000_chars_rejected() -> None:
@@ -692,3 +721,174 @@ def test_flag_survives_reingest_upsert() -> None:
     assert _dt.datetime.fromisoformat(str(article["flagged_at"])).tzinfo is not None
     assert article["title"] == ARTICLE_TITLE
     assert article["content"] == ARTICLE_CONTENT
+
+
+# --- slice 8: terminal unrecoverable emission (enrich -> flag) ------------------
+
+
+def _thin_rss_doc() -> Any:
+    """RSS-lane document for the seeded article: thin teaser, same stored URL."""
+    from marketing_intelligence.normalize import make_document
+
+    return make_document(
+        source="Social Media Today",
+        url=ARTICLE_URL,
+        title=ARTICLE_TITLE,
+        content="Short RSS teaser only.",
+        published_at=_utc(2026, 9, 8, 14, 30),
+        author="Andrew Hutchinson",
+    )
+
+
+def _total_chain_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the primary fetch and both fallback legs (a total-chain failure)."""
+    from marketing_intelligence import enrich, firecrawl
+
+    monkeypatch.setattr(
+        enrich,
+        "fetch_and_clean",
+        lambda url, timeout=30: (_ for _ in ()).throw(
+            enrich.FetchFailed(f"fetch failed for {url}: cloudflare challenge captcha")
+        ),
+    )
+    monkeypatch.setattr(
+        enrich,
+        "try_fallback_reader",
+        lambda url, timeout=30: (_ for _ in ()).throw(enrich.FetchFailed("reader leg down")),
+    )
+
+    def _firecrawl_down(url: str, timeout: int = 30) -> bytes:
+        raise firecrawl.FirecrawlFailed("firecrawl leg down")
+
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _firecrawl_down)
+
+
+def test_enrich_total_chain_failure_emits_unrecoverable_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from marketing_intelligence import enrich
+
+    _total_chain_failure(monkeypatch)
+    events: list[tuple[str, str]] = []
+    kept, method, cause = enrich.enrich_document_or_keep(
+        _thin_rss_doc(), on_unrecoverable=lambda url, detail: events.append((url, detail))
+    )
+    assert kept.content == "Short RSS teaser only."  # RSS body kept, never stubbed
+    assert method == "rss"
+    assert cause is not None
+    assert len(events) == 1  # one terminal event per document, not per leg
+    url, detail = events[0]
+    assert url == ARTICLE_URL
+    # The chained cause names the primary error and every failed leg.
+    assert "cloudflare" in detail
+    assert "reader" in detail
+    assert "firecrawl" in detail
+
+    # The flow files the flag once the row exists (post-upsert); read it back.
+    conn = _FakeConnection()
+    article = flag_lane.flag_unrecoverable(url, detail=detail, conn=conn)
+    assert article["flag_reason"] == "unrecoverable"
+    assert article["flagged_by"] == "system"
+    read_back = service.get_article(ARTICLE_URL, conn=conn)
+    assert read_back["flag_reason"] == "unrecoverable"
+    assert "reader" in str(read_back["flag_detail"])
+
+
+def test_enrich_failure_with_sufficient_body_emits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # force_on: the chain still fails, but the RSS body already carries the
+    # article — that document is not unrecoverable and must stay unflagged.
+    from marketing_intelligence import enrich
+    from marketing_intelligence.normalize import make_document
+
+    _total_chain_failure(monkeypatch)
+    template = _thin_rss_doc()
+    substantial = make_document(
+        source=template.source,
+        url=template.url,
+        title=template.title,
+        content="x" * 600,
+        published_at=template.published_at,
+        retrieved_at=template.retrieved_at,
+        language=template.language,
+    )
+    events: list[tuple[str, str]] = []
+    kept, method, cause = enrich.enrich_document_or_keep(
+        substantial,
+        force=True,
+        on_unrecoverable=lambda url, detail: events.append((url, detail)),
+    )
+    assert kept is substantial
+    assert method == "rss"
+    assert cause is not None
+    assert events == []
+
+
+def test_enrich_total_chain_failure_without_sink_keeps_rss_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from marketing_intelligence import enrich
+
+    _total_chain_failure(monkeypatch)
+    kept, method, cause = enrich.enrich_document_or_keep(_thin_rss_doc())
+    assert kept.content == "Short RSS teaser only."
+    assert method == "rss"
+    assert cause is not None
+
+
+def test_unrecoverable_sink_failure_never_breaks_keep(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marketing_intelligence import enrich
+
+    _total_chain_failure(monkeypatch)
+
+    def boom(url: str, detail: str) -> None:
+        raise RuntimeError("flag store down")
+
+    kept, method, cause = enrich.enrich_document_or_keep(_thin_rss_doc(), on_unrecoverable=boom)
+    assert kept.content == "Short RSS teaser only."
+    assert method == "rss"
+    assert cause is not None
+
+
+def test_upsert_then_flag_unrecoverable_persists_terminal_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flow's integration order: keep-RSS upsert first, then the flag write."""
+    from marketing_intelligence import enrich
+    from marketing_intelligence.ingest import upsert_documents
+
+    _total_chain_failure(monkeypatch)
+    events: list[tuple[str, str]] = []
+    kept, _method, _cause = enrich.enrich_document_or_keep(
+        _thin_rss_doc(), on_unrecoverable=lambda url, detail: events.append((url, detail))
+    )
+    conn = _FakeConnection(store=[])
+    assert upsert_documents([kept], conn=conn) == (1, 0)
+    url, detail = events[0]
+    flag_lane.flag_unrecoverable(url, detail=detail, conn=conn)
+    article = service.get_article(ARTICLE_URL, conn=conn)
+    assert article["flag_reason"] == "unrecoverable"
+    assert article["flagged_by"] == "system"
+    assert article["content"] == "Short RSS teaser only."  # body unchanged by flagging
+
+
+def test_flag_unrecoverable_truncates_overlong_chained_cause() -> None:
+    conn = _FakeConnection()
+    article = flag_lane.flag_unrecoverable(
+        ARTICLE_URL, detail="fallback failed for " + "x" * 5000, conn=conn
+    )
+    assert article["flag_reason"] == "unrecoverable"
+    assert article["flagged_by"] == "system"
+    assert len(article["flag_detail"]) == flag_lane.DETAIL_MAX_LENGTH
+
+
+def test_unrecoverable_reason_stays_under_importance_cap() -> None:
+    from marketing_intelligence import importance
+
+    assert (
+        importance.effective_score(0.95, "unrecoverable", ARTICLE_CONTENT)
+        == importance.IMPORTANCE_CAP
+    )
+    # Control: an unflagged score is untouched, so the cap keys off the flag.
+    assert importance.effective_score(0.95, None, ARTICLE_CONTENT) == 0.95

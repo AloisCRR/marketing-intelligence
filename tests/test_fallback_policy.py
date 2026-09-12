@@ -105,17 +105,23 @@ def test_fallback_sends_data_minimizing_headers(monkeypatch: Any) -> None:
     from marketing_intelligence.ingest import USER_AGENT
 
     captured: dict[str, Any] = {}
+    provider_markdown = (
+        b"# Gated Story\n\n![chart](https://example.com/chart.png)\n\n"
+        b"Body paragraph with [a source link](https://example.com/source)."
+    )
 
     def _fake_urlopen(request: Any, timeout: Any = None) -> _Resp:
         captured["request"] = request
         captured["timeout"] = timeout
-        return _Resp(b"<article><p>" + b"x" * 600 + b"</p></article>")
+        return _Resp(provider_markdown)
 
     monkeypatch.setattr(enrich.urllib.request, "urlopen", _fake_urlopen)
     markdown = enrich.try_fallback_reader(GATED_URL, timeout=7)
 
-    assert "x" * 100 in markdown
-    assert "<" not in markdown and ">" not in markdown
+    # Provider Markdown is returned as-is (ticket 03): links and images survive,
+    # the HTML cleaner is never run on the reader's output.
+    assert markdown == provider_markdown.decode()
+    assert "![chart](https://example.com/chart.png)" in markdown
     request = captured["request"]
     assert "r.jina.ai" in request.full_url  # Jina-reader-style endpoint
     assert GATED_URL in request.full_url  # original URL embedded, not dropped
@@ -476,11 +482,12 @@ def test_threshold_override_honored_by_enrich_task(monkeypatch: Any, no_engine: 
         lambda url, timeout=30: (fetched.append(url), LONG_MARKDOWN)[1],
     )
     # 600 chars: sufficient under the 500 default, thin under the 1000 override.
-    docs, skipped, causes = flows.enrich_task([_full_doc()], source_name="MarTech")
+    docs, skipped, causes, unrecoverable = flows.enrich_task([_full_doc()], source_name="MarTech")
     assert fetched == [FULL_URL]
     assert docs[0].content == LONG_MARKDOWN
     assert skipped == 0
     assert causes == []
+    assert unrecoverable == []
 
 
 def test_force_on_enriches_sufficient_rss(monkeypatch: Any, no_engine: None) -> None:
@@ -496,11 +503,12 @@ def test_force_on_enriches_sufficient_rss(monkeypatch: Any, no_engine: None) -> 
         "fetch_and_clean",
         lambda url, timeout=30: (fetched.append(url), LONG_MARKDOWN)[1],
     )
-    docs, skipped, causes = flows.enrich_task([_full_doc()], source_name="MarTech")
+    docs, skipped, causes, unrecoverable = flows.enrich_task([_full_doc()], source_name="MarTech")
     assert fetched == [FULL_URL]  # sufficient body still fetched under force_on
     assert docs[0].content == LONG_MARKDOWN
     assert skipped == 0
     assert causes == []
+    assert unrecoverable == []
 
 
 def test_force_off_performs_zero_fetch(monkeypatch: Any, no_engine: None) -> None:
@@ -522,10 +530,11 @@ def test_force_off_performs_zero_fetch(monkeypatch: Any, no_engine: None) -> Non
     monkeypatch.setattr(enrich_mod.urllib.request, "urlopen", _must_not_open)
 
     doc = _thin_doc()
-    docs, skipped, causes = flows.enrich_task([doc], source_name="MarTech")
+    docs, skipped, causes, unrecoverable = flows.enrich_task([doc], source_name="MarTech")
     assert docs == [doc] and docs[0] is doc
     assert skipped == 0
     assert causes == []
+    assert unrecoverable == []
 
 
 def test_flow_force_off_has_no_enrich_keys_and_completes(monkeypatch: Any, no_engine: None) -> None:

@@ -3,11 +3,11 @@
 Observable behavior (not privates):
 - get_retrieval_policy: allowlist validation, defaults, never raises
 - curated JSON carries retrieval stanzas for all 20 sources (RSS + no-RSS)
-- fetch_rss runs one chain: curl_cffi Chrome impersonation under genuine
-  browser headers (primary) → Jina reader → Firecrawl
+- fetch_rss runs one lane: curl_cffi Chrome impersonation under genuine
+  browser headers; a failure raises and never touches a Markdown reader or
+  scraper (feed URLs are raw XML, not extraction targets)
 - every policy value (default, the dead "stdlib-only" alias, unknown) runs the
-  same chain: primary curl_cffi impersonation → Jina → Firecrawl, one chained
-  RuntimeError naming every failed leg
+  same one lane, raising one explicit RuntimeError naming the policy
 - fetch_task threads source_name -> retrieval policy; the leaf flow passes it
 """
 
@@ -152,26 +152,28 @@ class _FakeCurl:
         return _FakeCurlResponse(self._status_code, self._content)
 
 
-def _stub_fallbacks(
-    monkeypatch: pytest.MonkeyPatch,
-    log: list[str],
-    *,
-    jina: bytes | Exception,
-    firecrawl: bytes | Exception,
-) -> None:
-    """Replace both fallback legs with recording stubs (never any network)."""
+def _forbid_reader_scraper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if a feed fetch reaches a Markdown reader or scraper.
 
-    def make(leg: str, outcome: bytes | Exception) -> Any:
-        def fake(url: str, *args: Any, **kwargs: Any) -> bytes:
-            log.append(leg)
-            if isinstance(outcome, Exception):
-                raise outcome
-            return outcome
+    Feed URLs carry raw XML; the reader/scraper chain belongs to the article
+    lane only. Anything here runs on failure paths too — proving the feed
+    lane performs zero reader/scraper calls under any failure.
+    """
+    from marketing_intelligence import enrich, firecrawl
+
+    def _forbidden(leg: str) -> Any:
+        def fake(url: str, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(f"feed URL routed to {leg}: {url}")
 
         return fake
 
-    monkeypatch.setattr(ingest, "_fetch_feed_via_jina", make("jina", jina))
-    monkeypatch.setattr(ingest, "_fetch_feed_via_firecrawl", make("firecrawl", firecrawl))
+    monkeypatch.setattr(enrich, "try_fallback_reader", _forbidden("jina reader"))
+    monkeypatch.setattr(enrich, "fetch_and_clean", _forbidden("primary article fetch"))
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _forbidden("firecrawl scrape"))
+    # The reader/scraper feed legs are gone, not merely unused.
+    assert not hasattr(ingest, "_fetch_feed_via_jina")
+    assert not hasattr(ingest, "_fetch_feed_via_firecrawl")
+    assert not hasattr(ingest, "FEED_FALLBACK_TIMEOUT")
 
 
 # --- primary lane: curl_cffi Chrome impersonation ------------------------------
@@ -183,7 +185,7 @@ def test_primary_lane_uses_chrome_impersonation_and_browser_headers(
     url = "http://example.com/feed"
     fake = _FakeCurl(content=b"<rss>clean</rss>")
     monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    # Unregistered URL: default chain, primary succeeds on the first try.
+    # Unregistered URL: default lane, impersonated fetch succeeds immediately.
     assert fetch_rss(url) == b"<rss>clean</rss>"
     assert len(fake.calls) == 1
     call = fake.calls[0]
@@ -197,12 +199,13 @@ def test_primary_lane_uses_chrome_impersonation_and_browser_headers(
     assert call["timeout"] >= ingest.IMPERSONATED_TIMEOUT
 
 
-def test_primary_lane_registered_source_resolves_to_impersonated_chain(
+def test_primary_lane_registered_source_resolves_to_impersonated_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = get_source("Social Media Today")["rss_url"]
     fake = _FakeCurl(content=b"<rss>via-impersonation</rss>")
     monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
+    _forbid_reader_scraper(monkeypatch)
     assert fetch_rss(url) == b"<rss>via-impersonation</rss>"
     assert fake.calls[0]["impersonate"] == "chrome"
     assert fake.calls[0]["headers"]["Accept"] == ingest._FEED_ACCEPT
@@ -210,87 +213,59 @@ def test_primary_lane_registered_source_resolves_to_impersonated_chain(
 
 def test_primary_http_error_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     url = "http://example.com/feed"
-    traffic: list[str] = []
     fake = _FakeCurl(status_code=403, content=b"blocked")
     monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    _stub_fallbacks(
-        monkeypatch,
-        traffic,
-        jina=RuntimeError("jina boom"),
-        firecrawl=RuntimeError("firecrawl boom"),
-    )
-    # "stdlib-only" is a dead alias: the primary failure still chains through
-    # both fallback legs.
+    _forbid_reader_scraper(monkeypatch)
+    # "stdlib-only" is a dead alias: the failure is the impersonated lane's,
+    # raised immediately — nothing is routed to a reader or scraper.
     with pytest.raises(RuntimeError) as excinfo:
         fetch_rss(url, policy="stdlib-only")
     message = str(excinfo.value)
     assert "HTTP Error 403" in message
-    assert "jina: jina boom" in message
-    assert "firecrawl: firecrawl boom" in message
-    assert traffic == ["jina", "firecrawl"]
+    assert "policy=impersonated-feed" in message
+    assert len(fake.calls) == 1
 
 
 def test_primary_transport_error_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     url = "http://example.com/feed"
-    traffic: list[str] = []
     fake = _FakeCurl(error=RuntimeError("connection reset by peer"))
     monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    _stub_fallbacks(
-        monkeypatch,
-        traffic,
-        jina=RuntimeError("jina boom"),
-        firecrawl=RuntimeError("firecrawl boom"),
-    )
+    _forbid_reader_scraper(monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
         fetch_rss(url, policy="stdlib-only")
     message = str(excinfo.value)
     assert "connection reset by peer" in message
-    assert "jina: jina boom" in message
-    assert traffic == ["jina", "firecrawl"]
+    assert "policy=impersonated-feed" in message
 
 
-def test_missing_curl_cffi_is_an_explicit_chained_error(
+def test_missing_curl_cffi_is_an_explicit_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = "http://example.com/feed"
-    traffic: list[str] = []
     monkeypatch.setattr(ingest, "_curl_cffi_requests", None)
-    _stub_fallbacks(
-        monkeypatch,
-        traffic,
-        jina=RuntimeError("jina boom"),
-        firecrawl=RuntimeError("firecrawl boom"),
-    )
-    # The hard dependency is an explicit primary failure, not a separate mode:
-    # the chain still runs Jina then Firecrawl and surfaces every cause.
+    _forbid_reader_scraper(monkeypatch)
+    # The hard dependency is an explicit failure, not a separate mode and not
+    # a reason to hand the feed URL to a reader.
     with pytest.raises(RuntimeError) as excinfo:
         fetch_rss(url, policy="stdlib-only")
     message = str(excinfo.value)
     assert "curl_cffi unavailable" in message
-    assert "jina: jina boom" in message
-    assert "firecrawl: firecrawl boom" in message
-    assert traffic == ["jina", "firecrawl"]
+    assert "policy=impersonated-feed" in message
 
 
-# --- policy normalization: every value runs the one full chain ----------------
+# --- policy normalization: every value runs the one impersonated lane ----------
 
 
-def test_every_policy_value_runs_the_full_chain(
+def test_every_policy_value_uses_the_one_impersonated_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = "http://example.com/feed"
-    traffic: list[str] = []
     fake = _FakeCurl(status_code=403, content=b"blocked")
     monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    _stub_fallbacks(
-        monkeypatch,
-        traffic,
-        jina=RuntimeError("jina boom"),
-        firecrawl=RuntimeError("firecrawl boom"),
-    )
+    _forbid_reader_scraper(monkeypatch)
     # Default (unregistered URL), the dead stdlib-only alias, unknown, and the
-    # explicit lane name all normalize to one full chain: primary → Jina →
-    # Firecrawl, with the chained message naming every leg.
+    # explicit lane name all normalize to the single impersonated fetch, whose
+    # failure names the policy.
     for kwargs in (
         {},
         {"policy": "stdlib-only"},
@@ -302,9 +277,6 @@ def test_every_policy_value_runs_the_full_chain(
         message = str(excinfo.value)
         assert "policy=impersonated-feed" in message
         assert "HTTP Error 403" in message
-        assert "jina: jina boom" in message
-        assert "firecrawl: firecrawl boom" in message
-    assert traffic == ["jina", "firecrawl"] * 4
     assert len(fake.calls) == 4
 
 
@@ -312,83 +284,85 @@ def test_stdlib_only_alias_matches_impersonated_feed_call_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = "http://example.com/feed"
-    sequences: dict[str, tuple[int, list[str]]] = {}
+    sequences: dict[str, int] = {}
     for policy in ("impersonated-feed", "stdlib-only"):
-        traffic: list[str] = []
-        fake = _FakeCurl(status_code=403, content=b"blocked")
+        fake = _FakeCurl(content=b"<rss>via-impersonation</rss>")
         monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-        _stub_fallbacks(
-            monkeypatch,
-            traffic,
-            jina=b"<rss>via-jina</rss>",
-            firecrawl=b"<rss>via-firecrawl</rss>",
-        )
-        assert fetch_rss(url, policy=policy) == b"<rss>via-jina</rss>"
-        sequences[policy] = (len(fake.calls), list(traffic))
-    # The dead alias is not a fetch identity: an identical leg sequence.
-    assert sequences["stdlib-only"] == sequences["impersonated-feed"] == (1, ["jina"])
+        _forbid_reader_scraper(monkeypatch)
+        assert fetch_rss(url, policy=policy) == b"<rss>via-impersonation</rss>"
+        sequences[policy] = len(fake.calls)
+    # The dead alias is not a fetch identity: an identical single-lane call.
+    assert sequences["stdlib-only"] == sequences["impersonated-feed"] == 1
 
 
-# --- impersonated-feed chain: primary → Jina → Firecrawl -----------------------
+# --- one lane: raw bytes only; candidate URLs cover dead feeds ---------------
+
+_EMPTY_FEED = b'<?xml version="1.0"?><rss version="2.0"><channel><title>JCK</title></channel></rss>'
 
 
-def test_chain_primary_success_skips_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_impersonated_lane_success_never_touches_reader_or_scraper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     url = "http://example.com/feed"
-    traffic: list[str] = []
     monkeypatch.setattr(ingest, "_curl_cffi_requests", _FakeCurl(content=b"<rss>primary</rss>"))
-    _stub_fallbacks(monkeypatch, traffic, jina=b"<rss>jina</rss>", firecrawl=b"<rss>fc</rss>")
+    _forbid_reader_scraper(monkeypatch)
     assert fetch_rss(url, policy="impersonated-feed") == b"<rss>primary</rss>"
-    assert traffic == []
 
 
-def test_chain_falls_back_to_jina_when_primary_fails(
+def test_feed_failure_never_touches_reader_or_scraper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Every failure mode of the one lane raises — no reader/scraper traffic."""
     url = "http://example.com/feed"
-    traffic: list[str] = []
-    fake = _FakeCurl(status_code=403, content=b"blocked")
-    monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    _stub_fallbacks(monkeypatch, traffic, jina=b"<rss>via-jina</rss>", firecrawl=b"<rss>fc</rss>")
-    assert fetch_rss(url, policy="impersonated-feed") == b"<rss>via-jina</rss>"
-    assert traffic == ["jina"]  # Firecrawl never reached
+    for fake in (
+        _FakeCurl(status_code=403, content=b"blocked"),  # HTTP error
+        _FakeCurl(error=RuntimeError("primary down")),  # transport error
+        None,  # hard dependency absent
+    ):
+        monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
+        _forbid_reader_scraper(monkeypatch)
+        with pytest.raises(RuntimeError):
+            fetch_rss(url, policy="impersonated-feed")
 
 
-def test_chain_falls_through_jina_to_firecrawl(monkeypatch: pytest.MonkeyPatch) -> None:
-    url = "http://example.com/feed"
-    traffic: list[str] = []
-    fake = _FakeCurl(error=RuntimeError("primary down"))
-    monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    _stub_fallbacks(
-        monkeypatch,
-        traffic,
-        jina=RuntimeError("jina boom"),
-        firecrawl=b"<rss>via-firecrawl</rss>",
-    )
-    assert fetch_rss(url, policy="impersonated-feed") == b"<rss>via-firecrawl</rss>"
-    assert traffic == ["jina", "firecrawl"]
-
-
-def test_chain_all_legs_fail_message_chains_every_cause(
-    monkeypatch: pytest.MonkeyPatch,
+def test_dead_primary_feed_recovers_via_next_candidate(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    url = "http://example.com/feed"
-    traffic: list[str] = []
-    fake = _FakeCurl(error=RuntimeError("primary down"))
-    monkeypatch.setattr(ingest, "_curl_cffi_requests", fake)
-    _stub_fallbacks(
-        monkeypatch,
-        traffic,
-        jina=RuntimeError("jina boom"),
-        firecrawl=RuntimeError("firecrawl boom"),
-    )
-    with pytest.raises(RuntimeError) as excinfo:
-        fetch_rss(url, policy="impersonated-feed")
-    message = str(excinfo.value)
-    assert "policy=impersonated-feed" in message
-    assert "primary down" in message
-    assert "jina: jina boom" in message
-    assert "firecrawl: firecrawl boom" in message
-    assert traffic == ["jina", "firecrawl"]
+    """An empty/dead primary feed falls through to the next candidate URL."""
+    primary = get_source("JCK Online")["rss_url"]
+    candidates = ingest.feed_candidate_urls(primary)
+    assert len(candidates) > 1  # the code-level correction is exercised
+    seen: list[str] = []
+
+    def fake_fetch_task(url: str, source_name: str | None = None) -> bytes:
+        seen.append(url)
+        if url == primary:
+            return _EMPTY_FEED  # 0 entries → EmptyFeedError → next candidate
+        return (FIXTURES / "martech_sample.xml").read_bytes()
+
+    monkeypatch.setattr(flows, "fetch_task", fake_fetch_task)
+    monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
+    monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
+    result = flows.ingest_source_flow(source_name="JCK Online")
+    assert seen == list(candidates)  # primary first, then the correction
+    assert result == {"inserted": 3, "skipped": 0}
+
+
+def test_exhausted_candidate_list_raises_explicit_empty_feed_error(
+    monkeypatch: pytest.MonkeyPatch, no_engine: None
+) -> None:
+    """No candidate yields entries: the last failure is the explicit error."""
+    seen: list[str] = []
+
+    def empty_fetch(url: str, source_name: str | None = None) -> bytes:
+        seen.append(url)
+        return _EMPTY_FEED
+
+    monkeypatch.setattr(flows, "fetch_task", empty_fetch)
+    with pytest.raises(ingest.EmptyFeedError) as excinfo:
+        flows.ingest_source_flow(source_name="JCK Online")
+    assert "0 entries" in str(excinfo.value)
+    assert len(seen) == len(ingest.feed_candidate_urls(get_source("JCK Online")["rss_url"]))
 
 
 # --- fetch_task threading ------------------------------------------------------

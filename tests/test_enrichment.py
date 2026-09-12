@@ -94,11 +94,10 @@ def test_clean_to_markdown_strips_tags_preserves_paragraphs() -> None:
     assert "\n\n" in md  # paragraph breaks preserved
 
 
-def test_clean_to_markdown_plain_text_passthrough() -> None:
-    from marketing_intelligence.enrich import clean_to_markdown
-
-    md = clean_to_markdown("Just some plain text.", THIN_URL)
-    assert md == "Just some plain text."
+# The old byte-identical cleaner round-trip pin ("plain text in, same text out")
+# is gone: provider Markdown never reaches the cleaner at all (ticket 03). Its
+# replacement lives in the provider-Markdown section below, where reader and
+# scrape legs prove links/images survive byte-identically.
 
 
 # --- fetch_and_clean failure mapping ------------------------------------------
@@ -524,6 +523,136 @@ def test_reader_success_short_circuits_firecrawl(
     assert "body body" in new_doc.content
 
 
+# --- provider Markdown accepted as-is (ticket 03) --------------------------------
+
+
+#: Provider Markdown carrying links and images: the HTML cleaner would rewrite
+#: or discard it (trafilatura-only extraction has no HTML body to parse), so a
+#: byte-identical store proves the legs never run it back through.
+PROVIDER_MARKDOWN = (
+    "# Story Head\n\n"
+    "![chart](https://cdn.example.com/chart.png)\n\n"
+    "Paragraph with [a source link](https://example.com/source?a=1&b=2) "
+    "and `inline code`.\n\n" + " ".join(["Sustained reporting sentence."] * 20)
+)
+
+
+class _ReaderResponse:
+    """urlopen double for the reader leg (context manager, no Content-Encoding)."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> _ReaderResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+    def getheader(self, name: str) -> str | None:
+        return None
+
+    def geturl(self) -> str:
+        return THIN_URL
+
+
+def test_reader_leg_returns_provider_markdown_as_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from marketing_intelligence import enrich, firecrawl
+
+    # Primary bot-blocked: the reader leg runs and its Markdown must be stored
+    # as delivered — links/images intact, no cleaner round-trip.
+    monkeypatch.setattr(
+        enrich, "_curl_cffi_requests", _FakeCurlRequests(403, b"cloudflare captcha challenge")
+    )
+    monkeypatch.setattr(
+        enrich.urllib.request,
+        "urlopen",
+        lambda request, timeout=None: _ReaderResponse(PROVIDER_MARKDOWN.encode()),
+    )
+
+    def _must_not_scrape(url: str, timeout: int = 30) -> bytes:
+        raise AssertionError("reader delivered provider Markdown: Firecrawl stays unused")
+
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl", _must_not_scrape)
+    new_doc, method, cause = enrich.enrich_document_or_keep(_thin_doc())
+    assert cause is None
+    assert method == "enriched"
+    assert new_doc.content == PROVIDER_MARKDOWN  # byte-identical: cleaner never ran
+    assert "![chart](https://cdn.example.com/chart.png)" in new_doc.content
+    assert "[a source link](https://example.com/source?a=1&b=2)" in new_doc.content
+
+
+def test_scrape_leg_returns_provider_markdown_as_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marketing_intelligence import enrich, firecrawl
+
+    monkeypatch.setattr(
+        enrich, "_curl_cffi_requests", _FakeCurlRequests(403, b"cloudflare captcha challenge")
+    )
+    # Reader stub is thin: the paid scrape leg runs next and must store as-is.
+    monkeypatch.setattr(enrich, "try_fallback_reader", lambda url, timeout=30: "Not found.")
+    monkeypatch.setattr(
+        firecrawl, "fetch_via_firecrawl", lambda url, timeout=30: PROVIDER_MARKDOWN.encode()
+    )
+    new_doc, method, cause = enrich.enrich_document_or_keep(_thin_doc())
+    assert cause is None
+    assert method == "enriched"
+    assert new_doc.content == PROVIDER_MARKDOWN  # byte-identical: cleaner never ran
+
+
+def test_provider_markdown_bypasses_cleaner_on_discovery_extract_sites() -> None:
+    import json
+
+    from marketing_intelligence.discovery import (
+        _extract_body,
+        extract_json_ld_body,
+    )
+
+    payload = (
+        "![chart](https://cdn.example.com/chart.png)\n\n"
+        "Paragraph with [a source link](https://example.com/source?a=1&b=2)."
+    )
+    # Reader/scrape legs: a marked payload is returned as-is for any extractor.
+    assert _extract_body(payload, THIN_URL, THIN_URL, "generic", True) == payload
+    assert _extract_body(payload, THIN_URL, THIN_URL, "json-ld-first", True) == payload
+    # JSON-LD articleBody is provider text too: returned as-is, links intact.
+    html = (
+        '<script type="application/ld+json">'
+        + json.dumps({"@type": "NewsArticle", "headline": "T", "articleBody": payload})
+        + "</script>"
+    )
+    assert extract_json_ld_body(html) == payload
+
+
+def test_discovery_fetch_tagged_markdown_skips_cleaner() -> None:
+    from marketing_intelligence.discovery import (
+        ArticleJob,
+        ProviderMarkdown,
+        fetch_extract_one,
+    )
+
+    # Synthetic <title> keeps title extraction happy; the point is that the
+    # tagged payload (HTML-looking tags included) is stored without cleaning.
+    payload = "<title>Story</title>\n\n" + PROVIDER_MARKDOWN
+    job = ArticleJob(
+        loc=THIN_URL,
+        source_label="Social Media Today",
+        retrieved_at_iso=NOW.isoformat(),
+        extractor="generic",
+    )
+    doc, cause = fetch_extract_one(
+        job, fetch_one=lambda url: (url, ProviderMarkdown(payload.encode()))
+    )
+    assert cause is None
+    assert doc is not None
+    assert doc.content == payload  # as-is: the provider body was never cleaned
+    assert "![chart](https://cdn.example.com/chart.png)" in doc.content
+
+
 # --- clean_to_markdown: trafilatura extraction -----------------------------------
 
 
@@ -591,19 +720,7 @@ def test_cleaner_keeps_paragraphs_and_links_as_markdown() -> None:
     assert "\n\n" in markdown  # paragraph breaks preserved
 
 
-def test_cleaner_boilerplate_much_shorter_than_regex_path() -> None:
-    from marketing_intelligence import enrich
-
-    markdown = enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL)
-    legacy = enrich._regex_to_markdown(BOILERPLATE_HTML)
-    # Regex fallback strips script/style *contents* (never article text) but
-    # keeps visible boilerplate (nav/ads/comments), so it stays much longer.
-    assert "NREUM" not in legacy
-    assert "Reader comments" in legacy
-    assert len(markdown) < len(legacy) / 2
-
-
-def test_cleaner_falls_back_to_regex_when_trafilatura_returns_none(
+def test_cleaner_yields_nothing_when_trafilatura_cannot_extract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from marketing_intelligence import enrich
@@ -613,18 +730,12 @@ def test_cleaner_falls_back_to_regex_when_trafilatura_returns_none(
         def extract(*args: Any, **kwargs: Any) -> None:
             return None
 
+    # Single converter: no regex fallback may re-emit tags/boilerplate as a
+    # degraded dump. An unextractable body is empty, so callers keep their
+    # existing thin-check / keep-RSS / UnparseableBody semantics.
     monkeypatch.setattr(enrich, "_trafilatura", _NoneExtractor)
-    assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == enrich._regex_to_markdown(
-        BOILERPLATE_HTML
-    )
-
-
-def test_cleaner_falls_back_to_regex_when_trafilatura_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from marketing_intelligence import enrich
+    assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == ""
 
     monkeypatch.setattr(enrich, "_trafilatura", None)
-    assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == enrich._regex_to_markdown(
-        BOILERPLATE_HTML
-    )
+    assert enrich.clean_to_markdown(BOILERPLATE_HTML, THIN_URL) == ""
+    assert enrich.clean_to_markdown("Plain text body, no markup at all.", THIN_URL) == ""

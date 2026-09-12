@@ -1,7 +1,9 @@
 """RSS retrieval, feed parsing, and idempotent persistence.
 
-- Retrieval chain: curl_cffi Chrome impersonation (primary, with browser
-  headers) → Jina reader → Firecrawl; there is no plain-urllib fetch lane.
+- Retrieval: curl_cffi Chrome impersonation (browser headers) is the only
+  feed lane. Feed URLs are fetched as raw bytes and are never sent to a
+  Markdown reader or scraper; a dead feed is recovered by the candidate-URL
+  retry (`feed_candidate_urls`), not by a content-extraction fallback.
 - Parsing accepts RSS or Atom and produces the normalized contract.
 - Persistence is rerun-safe: `ON CONFLICT DO NOTHING` (no conflict target,
   so url, canonical_url, and content_hash collisions all collapse) plus
@@ -11,11 +13,6 @@
 
 from __future__ import annotations
 
-import gzip
-import time
-import urllib.error
-import urllib.request
-import zlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -62,12 +59,8 @@ _FEED_CHALLENGE_MARKERS: tuple[str, ...] = (
 #: preempt blocking socket I/O, so the split lives in the clients.
 FEED_TIMEOUT = 10
 
-#: Native timeout (s) floor for the primary impersonated feed fetch.
+#: Native timeout (s) floor for the impersonated feed fetch.
 IMPERSONATED_TIMEOUT = 30
-
-#: Native timeout (s) shared by the Jina and Firecrawl fallback legs
-#: (mirrors marketing_intelligence.enrich.FALLBACK_TIMEOUT).
-FEED_FALLBACK_TIMEOUT = 30
 
 #: Error-body bytes inspected for challenge/bot evidence in a feed payload.
 _FEED_ERROR_BODY_CAP = 65536
@@ -159,65 +152,22 @@ def _policy_for_feed_url(url: str) -> str:
                 policy = get_retrieval_policy(str(entry.get("name", ""))).get("policy")
                 if policy == "impersonated-feed":
                     return str(policy)
-                return "impersonated-feed"  # dead alias: stdlib-only runs the full chain
+                return "impersonated-feed"  # dead alias: stdlib-only resolves to the one lane
     except Exception:
         pass
     return "impersonated-feed"
 
 
-def _decode_body(raw: bytes, encoding: str | None) -> bytes:
-    """Decode `raw` per Content-Encoding (gzip/deflate/br); never raises.
-
-    Multi-value headers handled case-insensitively. `br` decodes only when
-    `brotli` is already importable (no new dep). Defense-in-depth: a missing
-    or empty header with gzip-magic bytes gunzips anyway. Any decode failure
-    falls back to the raw bytes.
-    """
-    data = bytes(raw or b"")
-    try:
-        tokens = {(t.strip().lower()) for t in (encoding or "").split(",") if t.strip()}
-        if not tokens and data[:2] == b"\x1f\x8b":
-            try:
-                return gzip.decompress(data)
-            except Exception:
-                return data
-        if "gzip" in tokens or "x-gzip" in tokens:
-            try:
-                return gzip.decompress(data)
-            except Exception:
-                return data
-        if "deflate" in tokens:
-            try:
-                try:
-                    return zlib.decompress(data)
-                except Exception:
-                    return zlib.decompress(data, -15)
-            except Exception:
-                return data
-        if "br" in tokens:
-            try:
-                import brotli as _brotli  # type: ignore[import-not-found]
-            except Exception:
-                return data
-            try:
-                return bytes(_brotli.decompress(data))
-            except Exception:
-                return data
-        return data
-    except Exception:
-        return bytes(raw or b"")
-
-
 def _cause_text(exc: Exception, cap: int = 512) -> str:
-    """One collapsed, capped failure detail for chain messages; never secrets."""
+    """One collapsed, capped failure detail for error messages; never secrets."""
     return " ".join(str(exc).split())[:cap]
 
 
 def _fetch_feed_impersonated(url: str, timeout: int = IMPERSONATED_TIMEOUT) -> bytes:
     """GET `url` with curl_cffi Chrome impersonation plus browser headers.
 
-    Primary feed lane. curl_cffi is a hard dependency: when it is missing this
-    raises explicitly — it never degrades to a plain-urllib fetch.
+    The only feed lane. curl_cffi is a hard dependency: when it is missing
+    this raises explicitly — it never degrades to a different transport.
     """
     from marketing_intelligence.enrich import BROWSER_HEADERS  # canonical browser identity
 
@@ -244,108 +194,38 @@ def _fetch_feed_impersonated(url: str, timeout: int = IMPERSONATED_TIMEOUT) -> b
     return body
 
 
-def _retry_after_seconds(exc: urllib.error.HTTPError, cap: float) -> float:
-    """Parse a 429 Retry-After delay, bounded so ingestion never stalls."""
-    headers = getattr(exc, "headers", None) or getattr(exc, "hdrs", None)
-    try:
-        raw = headers.get("Retry-After") if headers is not None else None
-        delay = float(str(raw).strip().split(",")[0]) if raw is not None else 0.0
-    except (TypeError, ValueError, AttributeError):
-        delay = 0.0
-    return max(0.0, min(delay, cap))
-
-
-def _fetch_feed_via_jina(url: str, timeout: int = FEED_FALLBACK_TIMEOUT) -> bytes:
-    """Fetch a feed through the zero-ops reader fallback; return raw bytes.
-
-    Mirrors :func:`marketing_intelligence.enrich.try_fallback_reader` semantics
-    (data-minimizing headers only — explicit User-Agent plus ``Accept: text/*``,
-    never any Cookie/Authorization credentials; 429 Retry-After honored up to
-    ``FALLBACK_MAX_RETRIES`` retries) but returns the reader's payload bytes
-    rather than cleaned Markdown: feedparser needs the XML.
-    """
-    from marketing_intelligence.enrich import (
-        FALLBACK_ACCEPT,
-        FALLBACK_MAX_RETRIES,
-        FALLBACK_READER_BASE,
-        FALLBACK_RETRY_CAP_SECONDS,
-    )
-
-    request = urllib.request.Request(
-        FALLBACK_READER_BASE + url,
-        headers={"User-Agent": USER_AGENT, "Accept": FALLBACK_ACCEPT},
-    )
-    for attempt in range(1 + FALLBACK_MAX_RETRIES):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = bytes(response.read())
-                try:
-                    encoding = response.getheader("Content-Encoding")
-                except Exception:
-                    encoding = None
-                return _decode_body(raw, encoding)
-        except urllib.error.HTTPError as exc:
-            if exc.code != 429:
-                raise RuntimeError(
-                    f"jina fetch failed for {url}: HTTP Error {exc.code}: {exc.reason}"
-                ) from exc
-            if attempt < FALLBACK_MAX_RETRIES:
-                time.sleep(_retry_after_seconds(exc, FALLBACK_RETRY_CAP_SECONDS))
-                continue
-            raise RuntimeError(
-                f"jina rate-limited for {url}: reader returned 429 "
-                f"({FALLBACK_MAX_RETRIES} retries exhausted)"
-            ) from exc
-        except Exception as exc:
-            raise RuntimeError(f"jina fetch failed for {url}: {exc}") from exc
-    raise RuntimeError(f"jina rate-limited for {url}: reader unavailable")
-
-
-def _fetch_feed_via_firecrawl(url: str, timeout: int = FEED_FALLBACK_TIMEOUT) -> bytes:
-    """Fetch a feed through Firecrawl (lazy import; key read at call time)."""
-    from marketing_intelligence.firecrawl import fetch_via_firecrawl
-
-    return fetch_via_firecrawl(url, timeout)
-
-
 def fetch_rss(url: str, timeout: int = FEED_TIMEOUT, policy: str | None = None) -> bytes:
-    """Download a feed. Raises on network/HTTP failure.
+    """Download a feed as raw bytes. Raises on network/HTTP failure.
 
-    Every policy value runs the same fallback chain: primary curl_cffi Chrome
-    impersonation (browser headers) → Jina reader → Firecrawl on any primary
-    failure. "stdlib-only" is a dead alias for "impersonated-feed" (accepted
-    for back-compat, never a distinct mode). None resolves the policy from
-    the source registry by feed URL (unregistered URLs yield
-    "impersonated-feed"); unknown policy values fall back to
-    "impersonated-feed". Never raises on bad policy input.
+    One lane only: curl_cffi Chrome impersonation with browser headers. A
+    failed fetch raises immediately — the feed URL is never routed to a
+    Markdown reader or scraper (their output could not be parsed as feed
+    XML). A dead feed is recovered one level up by the candidate-URL retry
+    (:func:`feed_candidate_urls`); an exhausted candidate list surfaces the
+    explicit empty-feed error.
+
+    `policy` is accepted for back-compat: "impersonated-feed" and the dead
+    "stdlib-only" alias are the same lane, as are unknown values. None
+    resolves the policy from the source registry by feed URL (unregistered
+    URLs yield "impersonated-feed"). Never raises on bad policy input.
     """
     normalized = str(policy).strip() if isinstance(policy, str) else ""
     if normalized and normalized not in _FEED_POLICIES:
-        normalized = "impersonated-feed"  # dead alias + unknown values: full chain
+        normalized = "impersonated-feed"  # dead alias + unknown values: the one lane
     if normalized:
         effective = normalized
     elif policy is None:
         effective = _policy_for_feed_url(url)
     else:
         effective = "impersonated-feed"
-    # The impersonated primary keeps the 30s floor it always carried; the
+    # The impersonated fetch keeps the 30s floor it always carried; the
     # caller's `timeout` is honored when larger.
     primary_timeout = max(int(timeout), IMPERSONATED_TIMEOUT)
     try:
         return _fetch_feed_impersonated(url, primary_timeout)
     except Exception as primary_exc:
-        primary_detail = _cause_text(primary_exc)
-        try:
-            return _fetch_feed_via_jina(url)
-        except Exception as exc:
-            jina_detail = _cause_text(exc)
-        try:
-            return _fetch_feed_via_firecrawl(url)
-        except Exception as exc:
-            firecrawl_detail = _cause_text(exc)
         raise RuntimeError(
-            f"fetch failed for {url} (retrieval policy={effective}): "
-            f"{primary_detail}; jina: {jina_detail}; firecrawl: {firecrawl_detail}"
+            f"{_cause_text(primary_exc)} (retrieval policy={effective})"
         ) from primary_exc
 
 

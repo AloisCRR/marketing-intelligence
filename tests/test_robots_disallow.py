@@ -1,13 +1,12 @@
-"""Robots-Disallow filtering in the sitemap/hub discovery pipeline (follow-up 1).
+"""Robots-Disallow URLs are harvested like any other (follow-up 1 removal).
 
 Observable behavior (not privates):
-- pure seam: robots_disallowed_paths() + robots_is_disallowed() honor only
-  `User-agent: *` groups, prefix-match Disallows, let Allow win on
-  longest-prefix, and never raise on garbled input (allow by default)
-- harvest: discovered sitemap/hub article URLs under a Disallow are explicit
-  skips ("<url>: disallowed by robots.txt") — never fetched or extracted —
-  while Allow exceptions still harvest and hub listing pages are never
-  filtered themselves
+- planning: a source whose robots.txt Disallows article paths still plans
+  those URLs — no "disallowed by robots.txt" skip, no pre-fetch drop — and
+  they are fetched/extracted alongside their allowed siblings
+- politeness: robots crawl-delay still floors the pacing gap
+  (max(stanza pacing, crawl-delay) plus bounded jitter) and newest-first
+  `max_urls` budgeting still keeps the newest URLs, Disallowed or not
 
 All network is fake-fetch backed; no live HTTP in tests.
 """
@@ -19,8 +18,7 @@ from typing import Any
 
 from marketing_intelligence.discovery import (
     harvest_sitemap_source,
-    robots_disallowed_paths,
-    robots_is_disallowed,
+    plan_harvest,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -32,11 +30,23 @@ HUB_URL = f"{HOST}/"
 
 URL_PUBLIC = f"{HOST}/posts/public-story"
 URL_BLOCKED = f"{HOST}/private/secret-story"
-URL_EXCEPTION = f"{HOST}/private/allowed-story"
+
+# Real affected source: tests/fixtures/ri_robots.txt Disallows Net-a-Porter.
+RI_HOST = "https://www.richemont.com"
+RI_ROBOTS_URL = f"{RI_HOST}/robots.txt"
+RI_SITEMAP_URL = f"{RI_HOST}/sitemap.xml"
+RI_BLOCKED = f"{RI_HOST}/our-maisons/net-a-porter/"
+RI_PUBLIC = f"{RI_HOST}/our-maisons/cartier/"
+
+#: Bounded jitter: pacing gap * (1 + uniform(0, 0.25)).
+_MAX_JITTER = 1.25
 
 
-def _robots() -> bytes:
-    return b"User-agent: *\nDisallow: /private/\nAllow: /private/allowed-story\n"
+def _robots(crawl_delay: float | None = None) -> bytes:
+    lines = "User-agent: *\nDisallow: /private/\n"
+    if crawl_delay is not None:
+        lines += f"Crawl-delay: {crawl_delay:g}\n"
+    return lines.encode()
 
 
 def _article_html(title: str) -> bytes:
@@ -50,14 +60,14 @@ def _article_html(title: str) -> bytes:
     ).encode()
 
 
-def _sitemap_xml(urls: list[str]) -> bytes:
-    entries = "".join(
-        f"<url><loc>{u}</loc><lastmod>2026-09-05T10:00:00+00:00</lastmod></url>" for u in urls
+def _sitemap_xml(entries: list[tuple[str, str]]) -> bytes:
+    urls = "".join(
+        f"<url><loc>{loc}</loc><lastmod>{lastmod}</lastmod></url>" for loc, lastmod in entries
     )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-        f"{entries}</urlset>"
+        f"{urls}</urlset>"
     ).encode()
 
 
@@ -83,76 +93,48 @@ def _sitemap_config(**overrides: Any) -> dict[str, Any]:
     return config
 
 
-# --- pure-function unit --------------------------------------------------------
+# --- planning ----------------------------------------------------------------
 
 
-def test_allow_all_when_no_rules() -> None:
-    assert robots_disallowed_paths("") == []
-    assert robots_disallowed_paths("User-agent: *\n") == []
-    assert robots_is_disallowed(URL_PUBLIC, "") is False
-    assert robots_is_disallowed(URL_PUBLIC, "User-agent: *\nDisallow:\n") is False
-
-
-def test_disallow_prefix_match() -> None:
-    robots = "User-agent: *\nDisallow: /posts/private\n"
-    assert robots_disallowed_paths(robots) == ["/posts/private"]
-    assert robots_is_disallowed(f"{HOST}/posts/private", robots) is True
-    assert robots_is_disallowed(f"{HOST}/posts/privateer-story", robots) is True
-    assert robots_is_disallowed(f"{HOST}/posts/private/nested", robots) is True
-    assert robots_is_disallowed(f"{HOST}/posts/public", robots) is False
-
-
-def test_allow_override_beats_disallow_on_longest_prefix() -> None:
-    robots = "User-agent: *\nDisallow: /private/\nAllow: /private/allowed-story\n"
-    assert robots_is_disallowed(f"{HOST}/private/other", robots) is True
-    assert robots_is_disallowed(f"{HOST}/private/allowed-story", robots) is False
-    # Full allow-all beats a blanket disallow via longer-prefix Allow: /.
-    blanket = "User-agent: *\nDisallow: /\nAllow: /\n"
-    assert robots_is_disallowed(f"{HOST}/anything", blanket) is False
-
-
-def test_specific_user_agent_groups_ignored() -> None:
-    robots = "User-agent: Googlebot\nDisallow: /posts/\n"
-    assert robots_disallowed_paths(robots) == []
-    assert robots_is_disallowed(URL_PUBLIC, robots) is False
-    # Consecutive user-agent lines share one block, so `*` still applies here.
-    shared = "User-agent: Googlebot\nUser-agent: *\nDisallow: /posts/\n"
-    assert robots_disallowed_paths(shared) == ["/posts/"]
-    assert robots_is_disallowed(URL_PUBLIC, shared) is True
-    # A directive starts a fresh group: the trailing `*` block is empty.
-    fresh = "User-agent: *\nDisallow: /posts/\nUser-agent: Googlebot\n"
-    assert robots_disallowed_paths(fresh) == ["/posts/"]
-
-
-def test_garbled_input_never_raises_and_allows() -> None:
-    for garbled in ["::::\n\x00\x01", "Disallow", "User-agent", "\udcff", "Allow: /x"]:
-        assert robots_disallowed_paths(garbled) == []
-        assert robots_is_disallowed("https://example.com/x", garbled) is False
-    assert robots_is_disallowed("::not a url::", "User-agent: *\nDisallow: /\n") is False
-
-
-def test_real_fixture_rules() -> None:
-    jd = (FIXTURES / "jd_robots.txt").read_text()
-    assert robots_is_disallowed("https://jingdaily.com/search?q=x", jd) is True
-    assert robots_is_disallowed("https://jingdaily.com/api/rss/feed", jd) is True
-    assert robots_is_disallowed("https://jingdaily.com/posts/some-story", jd) is False
-    ri = (FIXTURES / "ri_robots.txt").read_text()
-    assert robots_is_disallowed("https://www.richemont.com/our-maisons/net-a-porter/", ri) is True
-    assert robots_is_disallowed("https://www.richemont.com/our-maisons/cartier/", ri) is False
-    mo = (FIXTURES / "mo_robots.txt").read_text()
-    assert robots_is_disallowed("https://www.modaes.com/admin/panel", mo) is True
-    assert robots_is_disallowed("https://www.modaes.com/es/actualidad", mo) is False
-
-
-# --- harvest-level ------------------------------------------------------------
-
-
-def test_sitemap_url_under_disallow_is_skipped_never_fetched() -> None:
+def test_disallowed_sitemap_url_is_planned() -> None:
+    """A Disallowed article URL is a normal plan entry, never a skip cause."""
     log: list[str] = []
     fetch = _make_fetch(
         {
             ROBOTS_URL: (ROBOTS_URL, _robots()),
-            SITEMAP_URL: (SITEMAP_URL, _sitemap_xml([URL_PUBLIC, URL_BLOCKED])),
+            SITEMAP_URL: (
+                SITEMAP_URL,
+                _sitemap_xml(
+                    [
+                        (URL_BLOCKED, "2026-09-05T10:00:00+00:00"),
+                        (URL_PUBLIC, "2026-09-05T10:00:00+00:00"),
+                    ]
+                ),
+            ),
+        },
+        log=log,
+    )
+    plan = plan_harvest(_sitemap_config(), "Example", "en", fetch=fetch, sleep=lambda _: None)
+    assert {job.loc for job in plan.jobs} == {URL_BLOCKED, URL_PUBLIC}
+    assert plan.skipped == 0
+    assert plan.causes == []
+    assert ROBOTS_URL in log  # robots.txt still read (crawl-delay)
+
+
+def test_disallowed_article_is_fetched_and_extracted() -> None:
+    log: list[str] = []
+    fetch = _make_fetch(
+        {
+            ROBOTS_URL: (ROBOTS_URL, _robots()),
+            SITEMAP_URL: (
+                SITEMAP_URL,
+                _sitemap_xml(
+                    [
+                        (URL_PUBLIC, "2026-09-05T10:00:00+00:00"),
+                        (URL_BLOCKED, "2026-09-05T10:00:00+00:00"),
+                    ]
+                ),
+            ),
             URL_PUBLIC: (URL_PUBLIC, _article_html("Public story")),
             URL_BLOCKED: (URL_BLOCKED, _article_html("Secret story")),
         },
@@ -161,34 +143,13 @@ def test_sitemap_url_under_disallow_is_skipped_never_fetched() -> None:
     report = harvest_sitemap_source(
         _sitemap_config(), "Example", "en", fetch=fetch, sleep=lambda _: None
     )
-    assert [d.url for d in report.documents] == [URL_PUBLIC]
-    assert report.skipped == 1
-    assert report.causes == [f"{URL_BLOCKED}: disallowed by robots.txt"]
-    assert URL_BLOCKED not in log  # filtered BEFORE fetch/extract
+    assert {d.url for d in report.documents} == {URL_PUBLIC, URL_BLOCKED}
+    assert report.skipped == 0
+    assert report.causes == []
+    assert URL_BLOCKED in log  # fetched, not dropped pre-fetch
 
 
-def test_allow_exception_still_harvested() -> None:
-    fetch = _make_fetch(
-        {
-            ROBOTS_URL: (ROBOTS_URL, _robots()),
-            SITEMAP_URL: (
-                SITEMAP_URL,
-                _sitemap_xml([URL_BLOCKED, URL_EXCEPTION, URL_PUBLIC]),
-            ),
-            URL_PUBLIC: (URL_PUBLIC, _article_html("Public story")),
-            URL_EXCEPTION: (URL_EXCEPTION, _article_html("Allowed story")),
-            URL_BLOCKED: (URL_BLOCKED, _article_html("Secret story")),
-        }
-    )
-    report = harvest_sitemap_source(
-        _sitemap_config(), "Example", "en", fetch=fetch, sleep=lambda _: None
-    )
-    assert [d.url for d in report.documents] == [URL_EXCEPTION, URL_PUBLIC]
-    assert report.skipped == 1
-    assert report.causes == [f"{URL_BLOCKED}: disallowed by robots.txt"]
-
-
-def test_hub_url_under_disallow_skipped_but_hub_page_fetched() -> None:
+def test_disallowed_hub_anchor_is_harvested() -> None:
     log: list[str] = []
     hub_html = (
         "<html><body>"
@@ -207,10 +168,105 @@ def test_hub_url_under_disallow_skipped_but_hub_page_fetched() -> None:
     )
     config = _sitemap_config(type="hub", sitemaps=[], hub=HUB_URL, hub_pages=[], link_pattern="/")
     report = harvest_sitemap_source(config, "Example", "en", fetch=fetch, sleep=lambda _: None)
-    # The hub listing page itself is fetched (never filtered); only the
-    # discovered article URL under the Disallow is skipped.
-    assert HUB_URL in log
-    assert [d.url for d in report.documents] == [URL_PUBLIC]
-    assert report.skipped == 1
-    assert report.causes == [f"{URL_BLOCKED}: disallowed by robots.txt"]
-    assert URL_BLOCKED not in log
+    assert {d.url for d in report.documents} == {URL_PUBLIC, URL_BLOCKED}
+    assert report.skipped == 0
+    assert report.causes == []
+    assert URL_BLOCKED in log
+
+
+def test_real_fixture_disallowed_url_is_planned() -> None:
+    """Real affected source (Richemont robots.txt): Net-a-Porter is planned."""
+    robots = (FIXTURES / "ri_robots.txt").read_bytes()
+    fetch = _make_fetch(
+        {
+            RI_ROBOTS_URL: (RI_ROBOTS_URL, robots),
+            RI_SITEMAP_URL: (
+                RI_SITEMAP_URL,
+                _sitemap_xml(
+                    [
+                        (RI_BLOCKED, "2026-09-04T10:00:00+00:00"),
+                        (RI_PUBLIC, "2026-09-05T10:00:00+00:00"),
+                    ]
+                ),
+            ),
+            RI_BLOCKED: (RI_BLOCKED, _article_html("Net-a-Porter story")),
+            RI_PUBLIC: (RI_PUBLIC, _article_html("Cartier story")),
+        }
+    )
+    report = harvest_sitemap_source(
+        _sitemap_config(sitemaps=[RI_SITEMAP_URL]),
+        "Richemont",
+        "en",
+        fetch=fetch,
+        sleep=lambda _: None,
+    )
+    assert RI_BLOCKED in {d.url for d in report.documents}
+    assert report.skipped == 0
+    assert report.causes == []
+
+
+# --- politeness unchanged ----------------------------------------------------
+
+
+def test_crawl_delay_still_floors_the_pacing_gap() -> None:
+    sleeps: list[float] = []
+    fetch = _make_fetch(
+        {
+            ROBOTS_URL: (ROBOTS_URL, _robots(crawl_delay=10)),
+            SITEMAP_URL: (SITEMAP_URL, _sitemap_xml([(URL_PUBLIC, "2026-09-05T10:00:00+00:00")])),
+            URL_PUBLIC: (URL_PUBLIC, _article_html("Public story")),
+        }
+    )
+    plan = plan_harvest(
+        _sitemap_config(pacing_ms=1000), "Example", "en", fetch=fetch, sleep=sleeps.append
+    )
+    assert plan.gap_s == 10.0  # max(stanza 1s, crawl-delay 10s)
+    assert [job.gap_s for job in plan.jobs] == [10.0]
+    assert sleeps  # planning traversal is paced too
+    assert all(10.0 <= s <= 10.0 * _MAX_JITTER for s in sleeps)
+
+
+def test_stanza_pacing_floor_with_jitter_unchanged() -> None:
+    sleeps: list[float] = []
+    fetch = _make_fetch(
+        {
+            ROBOTS_URL: (ROBOTS_URL, _robots()),  # no crawl-delay declared
+            SITEMAP_URL: (SITEMAP_URL, _sitemap_xml([(URL_PUBLIC, "2026-09-05T10:00:00+00:00")])),
+            URL_PUBLIC: (URL_PUBLIC, _article_html("Public story")),
+        }
+    )
+    config = _sitemap_config(pacing_ms=1000)
+    plan = plan_harvest(config, "Example", "en", fetch=fetch, sleep=sleeps.append)
+    assert plan.gap_s == 1.0
+    assert all(1.0 <= s <= 1.0 * _MAX_JITTER for s in sleeps)
+
+    harvest_sleeps: list[float] = []
+    harvest_sitemap_source(config, "Example", "en", fetch=fetch, sleep=harvest_sleeps.append)
+    assert harvest_sleeps
+    assert all(1.0 <= s <= 1.0 * _MAX_JITTER for s in harvest_sleeps)
+
+
+def test_newest_first_budget_keeps_disallowed_urls() -> None:
+    """max_urls still spends on the newest URLs; Disallow is not a budget sink."""
+    oldest = f"{HOST}/posts/oldest-story"
+    fetch = _make_fetch(
+        {
+            ROBOTS_URL: (ROBOTS_URL, _robots()),
+            SITEMAP_URL: (
+                SITEMAP_URL,
+                _sitemap_xml(
+                    [
+                        (oldest, "2026-09-01T10:00:00+00:00"),
+                        (URL_BLOCKED, "2026-09-04T10:00:00+00:00"),
+                        (URL_PUBLIC, "2026-09-05T10:00:00+00:00"),
+                    ]
+                ),
+            ),
+        }
+    )
+    plan = plan_harvest(
+        _sitemap_config(max_urls=2), "Example", "en", fetch=fetch, sleep=lambda _: None
+    )
+    assert [job.loc for job in plan.jobs] == [URL_PUBLIC, URL_BLOCKED]
+    assert plan.skipped == 0
+    assert plan.causes == []

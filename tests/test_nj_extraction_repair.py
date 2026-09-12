@@ -129,24 +129,21 @@ def test_nj_reingest_is_deterministic_and_clean(
     assert first.content == _text(clean_name)
 
 
-def test_generic_fallback_body_is_polluted_before_and_repaired_after(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_nj_post_processing_flattens_anchors_for_the_family() -> None:
     from marketing_intelligence import enrich
 
-    # Force the regex fallback path: the same extraction train a deployment
-    # without trafilatura runs (and where the chrome dump originates).
-    monkeypatch.setattr(enrich, "_trafilatura", None)
     html = _text("nj_article_genz_polluted.html")
 
-    polluted = enrich.clean_to_markdown(html, "https://example.com/articles/15300")
-    assert "The Latest" in polluted
-    assert "Related Articles" in polluted
-    assert "Home" in polluted
-    assert "](" in polluted
+    # Generic (non-family) URL: trafilatura keeps inline editorial anchors as
+    # Markdown links and chrome is already dropped by the converter itself.
+    generic = enrich.clean_to_markdown(html, "https://example.com/articles/15300")
+    assert "](" in generic and "http" in generic
+    for chrome in CHROME:
+        assert chrome not in generic
 
+    # Family URL: the Markdown-level cleanup flattens anchors to plain words.
     repaired = enrich.clean_to_markdown(html, NJ_GENZ)
-    assert repaired != polluted
+    assert repaired != generic
     for chrome in CHROME:
         assert chrome not in repaired
     assert "](" not in repaired and "http" not in repaired

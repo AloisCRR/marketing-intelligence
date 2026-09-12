@@ -1,4 +1,10 @@
-"""Extraction Flag lane (ADR-0005) — agent-reported extraction quality markers.
+"""Extraction Flag lane (ADR-0005) — extraction quality markers.
+
+Markers are filed by agents (``flag_extraction``) or by the ingestion pipeline
+itself: when a document's whole article-content chain fails, the thin RSS body
+is stored carrying the terminal ``unrecoverable`` reason with the chained cause
+and :data:`SYSTEM_REPORTER` as the reporter (see ``flag_unrecoverable``). Both
+lanes share one storage contract.
 
 Domain contract (stable): ``flag_extraction(identifier, reason, detail,
 flagged_by, clear)`` sets (or, with ``clear=True``, NULLs) the nullable
@@ -37,8 +43,14 @@ FLAG_REASONS = (
     "paywall_challenge",
     "truncated",
     "wrong_body",
+    "unrecoverable",
     "other",
 )
+
+#: Reporter tag for flags filed by the ingestion pipeline itself (never an agent):
+#: the terminal ``unrecoverable`` marker on documents whose whole article-content
+#: chain failed. Agents clear it through the normal flag tool once they verify.
+SYSTEM_REPORTER = "system"
 
 DETAIL_MAX_LENGTH = 2000
 FLAGGED_BY_MAX_LENGTH = 100
@@ -173,3 +185,32 @@ def flag_extraction(
             close_conn = getattr(conn, "close", None)
             if callable(close_conn):
                 close_conn()
+
+
+def flag_unrecoverable(
+    identifier: str,
+    detail: str | None = None,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    """File the terminal system flag on an article whose content chain failed.
+
+    Convenience over :func:`flag_extraction` with ``reason="unrecoverable"`` and
+    ``flagged_by=SYSTEM_REPORTER``: the ingestion pipeline calls this once the
+    saved row exists (the flag is an UPDATE, so it must run after the upsert),
+    passing the chained failure cause — every chain leg named once. ``detail``
+    is collapsed and truncated to :data:`DETAIL_MAX_LENGTH` so a long chained
+    cause can never fail validation.
+
+    Raises the same ``ValueError``/``TypeError`` as :func:`flag_extraction`
+    (unknown URL included); the caller decides whether a failure is tolerable.
+    """
+    clean_detail: str | None = None
+    if detail is not None:
+        clean_detail = " ".join(str(detail).split())[:DETAIL_MAX_LENGTH] or None
+    return flag_extraction(
+        identifier,
+        reason="unrecoverable",
+        detail=clean_detail,
+        flagged_by=SYSTEM_REPORTER,
+        conn=conn,
+    )

@@ -327,16 +327,15 @@ def test_policy_get_full_chain_falls_back_to_firecrawl(
     )
 
 
-def test_policy_get_chain_detail_lists_legs_and_redacts_secrets(
+def test_policy_get_chain_detail_lists_legs_once_and_redacts_secrets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_impersonated(url: str, timeout: int = 30) -> tuple[str, bytes]:
         raise ArticleFetchError(url, f"fetch failed for {url}: 403 Bearer sk-live-abc123")
 
     def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
-        raise ArticleFetchError(
-            url, f"jina reader failed for {url}: HTTP Error 403 fc-abcdefgh1234"
-        )
+        # The real shared reader leg raises bare causes: the chain names the leg.
+        raise ArticleFetchError(url, "HTTP Error 403 fc-abcdefgh1234")
 
     def fake_firecrawl(url: str, timeout: int = 30) -> bytes:
         raise RuntimeError(f"firecrawl failed for {url}: rejected fc-deadbeef00")
@@ -347,19 +346,24 @@ def test_policy_get_chain_detail_lists_legs_and_redacts_secrets(
     with pytest.raises(ArticleFetchError) as excinfo:
         policy_get("http://example.com/a", policy="impersonated-feed")
     detail = excinfo.value.detail
-    assert "| jina:" in detail
-    assert "| firecrawl:" in detail
+    # One bounded cause per leg, each leg label named exactly once (no doubled
+    # leg prefixes), all credential-shaped tokens scrubbed.
+    assert detail.startswith("http://example.com/a: ")
+    assert detail.count("| jina reader:") == 1
+    assert detail.count("| firecrawl:") == 1
     assert "Bearer" not in detail
     assert "fc-" not in detail
-    assert "[redacted]" in detail
+    assert detail.count("[redacted]") == 3
 
 
 def test_policy_get_stdlib_only_without_curl_cffi_falls_back_to_jina(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A broken primary (no curl_cffi) still hands off to the Jina leg."""
+    import marketing_intelligence.enrich as enrich
+
     seen: list[str] = []
-    monkeypatch.setattr(discovery, "_curl_cffi_requests", None)
+    monkeypatch.setattr(enrich, "_curl_cffi_requests", None)
 
     def fake_jina(url: str, timeout: int = 30) -> tuple[str, bytes]:
         seen.append("jina")

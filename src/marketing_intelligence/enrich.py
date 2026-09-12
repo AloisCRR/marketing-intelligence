@@ -4,10 +4,11 @@ Deterministic extraction (no language-model calls), on the user-ordered fetch
 chain: impersonated Chrome, then Jina reader, then Firecrawl.
 
 - :func:`is_thin` decides whether an RSS body is worth enriching.
-- :func:`clean_to_markdown` converts article HTML to clean Markdown, with
-  per-domain post-processing for the National Jeweler family (chrome blocks
-  stripped, inline editorial anchors flattened to plain words, boilerplate
-  trailer cut) so harvested and enriched bodies both stay clean.
+- :func:`clean_to_markdown` converts article HTML to clean Markdown through
+  trafilatura, the single converter (there is no regex fallback). Per-domain
+  post-processing for the National Jeweler family flattens inline editorial
+  anchors to plain words and cuts any boilerplate trailer, so harvested and
+  enriched bodies both stay clean.
 - :func:`fetch_and_clean` retrieves an article URL over HTTPS and cleans it
   with the single primary backend: Chrome browser impersonation
   (``curl_cffi``: TLS fingerprint plus genuine browser headers — never any
@@ -15,19 +16,27 @@ chain: impersonated Chrome, then Jina reader, then Firecrawl.
   dependency; when it is unavailable the primary raises an explicit
   :class:`FetchFailed` — there is no stdlib fetch lane.
 - :func:`enrich_document` enriches one thin document (raises typed errors).
-- :func:`enrich_document_or_keep` never raises: failure keeps the RSS body.
+- :func:`enrich_document_or_keep` never raises: failure keeps the RSS body and
+  notifies its ``on_unrecoverable`` sink, so a total-chain failure is filed as
+  the terminal ``unrecoverable`` Extraction Flag instead of a silent thin body.
 
-Gated fallback chain (ticket 03): when the primary extractor misses a page — a
-bot/challenge/rate-limit fetch error, an empty primary output, or a JS-shell
-output — :func:`enrich_document` walks the fallback chain once: first
-:func:`try_fallback_reader` (a zero-ops Jina-reader-style HTTPS GET with
+Gated fallback chain (tickets 03/05): when the primary extractor misses a page
+— a bot/challenge/rate-limit fetch error, an empty primary output, or a
+JS-shell output — :func:`enrich_document` walks the fallback chain once
+through :func:`article_content_chain`, the one three-leg implementation shared
+with sitemap discovery: the impersonated primary (:func:`fetch_impersonated`),
+the Jina reader (:func:`fetch_reader`, a zero-ops HTTPS GET with
 data-minimizing headers: explicit User-Agent, ``Accept: text/*``, never any
 Cookie/Authorization credentials, backoff on 429 honoring Retry-After up to 2
 retries), then ``fetch_via_firecrawl`` (the paid last resort, imported lazily
 from :mod:`marketing_intelligence.firecrawl`; Bearer key from
 ``FIRECRAWL_API_KEY`` read at call time, never logged, absent key an explicit
-skipped cause). Any fallback failure raises a typed error that chains every
-prior cause, so :func:`enrich_document_or_keep` still keeps the RSS body.
+skipped cause). Enrichment enters the chain only on a primary-miss signal
+(discovery walks it ungated) and thin-checks each provider payload; provider
+Markdown is stored as-is — never run back through the HTML cleaner. Any
+fallback failure raises a typed error that chains every prior cause through
+one credential-free detail, so :func:`enrich_document_or_keep` still keeps the
+RSS body.
 
 Per-source enrichment policy (threshold overrides, force-on/off) is ticket 03;
 the threshold here is a hardcoded default with an optional per-call override.
@@ -38,13 +47,13 @@ is the policy seam the flow uses for ``force_on`` sources.
 from __future__ import annotations
 
 import gzip
-import html as _html
 import http
 import re
 import time
 import urllib.error
 import urllib.request
 import zlib
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from marketing_intelligence.ingest import USER_AGENT
@@ -80,9 +89,9 @@ try:  # primary backend: TLS + browser impersonation (hard dep)
 except Exception:  # pragma: no cover - primary raises explicitly when absent
     _curl_cffi_requests = None  # type: ignore[assignment]
 
-try:  # preferred article extractor (optional dep, deterministic, no LLM)
+try:  # the single HTML-to-Markdown converter (hard dep, deterministic, no LLM)
     import trafilatura as _trafilatura
-except Exception:  # pragma: no cover - regex fallback below
+except Exception:  # pragma: no cover - declared hard dep; no fallback exists
     _trafilatura = None  # type: ignore[assignment]
 
 #: Jina-reader-style zero-ops fallback endpoint: GET <base><article-url>.
@@ -108,78 +117,20 @@ FALLBACK_ACCEPT = "text/*"
 METHOD_RSS = "rss"
 METHOD_ENRICHED = "enriched"
 
-_BLOCK_RE = re.compile(
-    r"</?(?:p|div|article|section|header|footer|h[1-6]|li|ul|ol|blockquote|pre|br)[^>]*>",
-    re.IGNORECASE,
-)
-_TAG_RE = re.compile(r"<[^>]+>")
-_ANCHOR_RE = re.compile(
-    r'<a\s[^>]*?href=(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))[^>]*>(.*?)</a\s*>',
-    re.IGNORECASE | re.DOTALL,
-)
-_WS_RE = re.compile(r"\s+")
+#: Sink notified when one document's whole article-content chain fails and the
+#: kept RSS body is still thin: ``on_unrecoverable(url, cause)``, with ``cause``
+#: the chained reason (every chain leg named once, no URL prefix). The flow
+#: wires it to file the terminal ``unrecoverable`` Extraction Flag through
+#: :func:`marketing_intelligence.flag.flag_unrecoverable` after the row exists
+#: (the flag lane is an UPDATE, so it must run after the upsert). Never allowed
+#: to raise into enrichment.
+UnrecoverableSink = Callable[[str, str], None]
 
 #: Hosts in the National Jeweler family. Their article pages share one CMS
 #: shape: a ``trix-content`` body wrapped in related-articles and "The Latest"
 #: sidebar blocks that generic extraction renders into the stored body as
 #: navigation chrome (and inline editorial anchors that render as links).
 NJ_FAMILY_HOSTS = ("nationaljeweler.com",)
-
-#: Container tags whose class/id markers identify NJ boilerplate chrome.
-#: Inline tags (a/img) are never stripped here: editorial anchors are handled
-#: at the Markdown level, where they become plain words instead of vanishing.
-_NJ_CONTAINER_TAGS = frozenset(
-    {"div", "aside", "section", "nav", "ul", "ol", "header", "footer", "form", "figure", "table"}
-)
-
-#: HTML void elements: opening tags that never own a closing tag.
-_VOID_TAGS = frozenset(
-    {
-        "area",
-        "base",
-        "br",
-        "col",
-        "embed",
-        "hr",
-        "img",
-        "input",
-        "link",
-        "meta",
-        "param",
-        "source",
-        "track",
-        "wbr",
-    }
-)
-
-#: class/id substrings marking NJ boilerplate containers (removed with
-#: contents before conversion). Scoped to the NJ family only; NJ article-body
-#: containers are ``trix-content`` / ``article__head`` and never carry these.
-_NJ_BOILERPLATE_MARKERS = (
-    "related",
-    "the-latest",
-    "thelatest",
-    "latest-news",
-    "latest",
-    "sidebar",
-    "side-bar",
-    "most-read",
-    "most-popular",
-    "popular",
-    "recommended",
-    "read-more",
-    "readmore",
-    "newsletter",
-    "outbrain",
-    "taboola",
-    "site-nav",
-    "main-nav",
-    "breadcrumb",
-    "site-header",
-    "site-footer",
-    "social-share",
-    "share-tools",
-)
 
 #: Markdown headings that begin a boilerplate trailer on NJ pages; anything
 #: from such a heading onward is chrome, never article text.
@@ -190,29 +141,9 @@ _NJ_TRAILER_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: class/id attribute values (quoted or bare), scanned for boilerplate markers.
-_CLASS_OR_ID_RE = re.compile(
-    r"""(?:class|id)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
-    re.IGNORECASE,
-)
-
-#: Opening/closing HTML tags, for the NJ boilerplate scanner.
-_HTML_TAG_RE = re.compile(r"<[^>]*>")
-_OPEN_TAG_RE = re.compile(r"<\s*([a-zA-Z][\w:-]*)((?:\s[^>]*?)?)\s*/?>")
-_CLOSE_TAG_RE = re.compile(r"</\s*([a-zA-Z][\w:-]*)\s*>")
-
 #: Markdown image and link syntax, for the NJ link-flattening pass.
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MD_LINK_RE = re.compile(r"\[([^\]\[]*)\]\([^)]*\)")
-
-#: Non-visible blocks whose *contents* are never article text (scripts carry
-#: code and embedded JSON-LD, styles carry CSS). Stripped with contents by
-#: the regex fallback so Next.js shells and structured-data blobs cannot
-#: masquerade as article bodies; the trafilatura path already drops these.
-_NON_VISIBLE_RE = re.compile(
-    r"<(script|style|noscript|template)\b[^>]*>.*?</\1\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
 
 #: Markers that, inside a fetch *failure message* (HTTP status line plus any
 #: captured error-body snippet), identify bot/challenge protection or rate
@@ -270,6 +201,18 @@ class UnparseableBody(EnrichmentError):
     """Retrieved bytes held no usable text after cleaning."""
 
 
+class ProviderMarkdown(bytes):
+    """Article body delivered as Markdown by a reader/scrape provider leg.
+
+    The fetch contract stays a plain ``(final_url, bytes)`` pair; tagging the
+    payload as provider Markdown tells the extract site the body is already
+    extracted, so it is stored after a thin-check only and never run back
+    through the HTML cleaner (links, images, and formatting survive intact).
+    The impersonated primary returns HTML and is never tagged. Both article
+    callers share the tag through :func:`article_content_chain`.
+    """
+
+
 def is_thin(text: str | None, threshold: int = DEFAULT_THIN_THRESHOLD) -> bool:
     """True when `text` is empty or shorter than `threshold` characters.
 
@@ -285,62 +228,6 @@ def _is_nj_family(url: str) -> bool:
     host = urlsplit(url or "").hostname or ""
     host = host.lower()
     return any(host == base or host.endswith("." + base) for base in NJ_FAMILY_HOSTS)
-
-
-def _nj_marker_in(tag_attrs: str) -> bool:
-    """True when a tag's class/id value carries an NJ boilerplate marker."""
-    for quoted, single, bare in _CLASS_OR_ID_RE.findall(tag_attrs):
-        value = (quoted or single or bare).lower()
-        if any(marker in value for marker in _NJ_BOILERPLATE_MARKERS):
-            return True
-    return False
-
-
-def _strip_nj_boilerplate(html: str) -> str:
-    """Drop NJ chrome containers (related blocks, "The Latest", nav) from HTML.
-
-    Depth-aware scan: a marked container and everything nested inside it is
-    removed up to its matching close tag, so nested markup never leaks the
-    remainder of a sidebar back into the body. ``<nav>`` is always chrome on
-    the NJ family; other containers need a class/id marker. Inline tags are
-    left for the Markdown pass, which keeps editorial anchor text.
-    """
-    source = html or ""
-    out: list[str] = []
-    pos = 0
-    skip_depth = 0
-    skip_tag = ""
-    for match in _HTML_TAG_RE.finditer(source):
-        if not skip_depth:
-            out.append(source[pos : match.start()])
-        token = match.group(0)
-        if skip_depth == 0:
-            opening = _OPEN_TAG_RE.match(token)
-            if opening:
-                tag = opening.group(1).lower()
-                attrs = opening.group(2) or ""
-                strip = tag == "nav" or (tag in _NJ_CONTAINER_TAGS and _nj_marker_in(attrs))
-                if strip and not token.rstrip().endswith("/>") and tag not in _VOID_TAGS:
-                    skip_depth, skip_tag = 1, tag
-                    pos = match.end()
-                    continue
-            out.append(token)
-        else:
-            closing = _CLOSE_TAG_RE.match(token)
-            if closing:
-                if closing.group(1).lower() == skip_tag:
-                    skip_depth -= 1
-                    if skip_depth == 0:
-                        skip_tag = ""
-            else:
-                opening = _OPEN_TAG_RE.match(token)
-                if opening and opening.group(1).lower() == skip_tag:
-                    if not token.rstrip().endswith("/>"):
-                        skip_depth += 1
-        pos = match.end()
-    if not skip_depth:
-        out.append(source[pos:])
-    return "".join(out)
 
 
 def _nj_clean_markdown(markdown: str) -> str:
@@ -361,73 +248,46 @@ def _nj_clean_markdown(markdown: str) -> str:
     return "\n\n".join(block for block in paragraphs if block).strip()
 
 
-def _anchor_to_markdown(match: re.Match[str], links: bool = True) -> str:
-    href = match.group(1) or match.group(2) or match.group(3) or ""
-    label = normalize_text(_TAG_RE.sub(" ", match.group(4)))
-    if not label:
-        return ""
-    if links and href.strip():
-        return f"[{label}]({href.strip()})"
-    return label
-
-
-def _regex_to_markdown(html_or_text: str, links: bool = True) -> str:
-    """Legacy regex HTML-to-Markdown path (fallback when trafilatura yields nothing).
-
-    Block elements become paragraph breaks, anchors become `[label](href)`
-    (or plain labels when `links` is false, the National Jeweler family
-    shape), remaining tags are stripped and entities unescaped. Paragraphs
-    are preserved (joined with blank lines).
-    """
-    text = _NON_VISIBLE_RE.sub(" ", html_or_text or "")
-    text = _ANCHOR_RE.sub(lambda match: _anchor_to_markdown(match, links), text)
-    text = _BLOCK_RE.sub("\n", text)
-    text = _TAG_RE.sub(" ", text)
-    text = _html.unescape(text)
-    paragraphs = [_WS_RE.sub(" ", block.strip()) for block in text.split("\n") if block.strip()]
-    return "\n\n".join(paragraphs)
-
-
 def clean_to_markdown(html_or_text: str, url: str = "") -> str:
-    """Convert article HTML (or plain text) to clean Markdown.
+    """Convert article HTML to clean Markdown through trafilatura.
 
-    HTML input goes through trafilatura's deterministic article extractor
-    (Markdown output, links kept, dedupe on, precision favored; scripts,
-    styles, and boilerplate dropped — no LLM features). When trafilatura is
-    unavailable or yields nothing usable (stubs, lock pages, non-HTML
-    input), the legacy regex path runs instead, so cleaning never
-    hard-fails. `url` feeds trafilatura's dedupe/canonical hints and keys the
-    per-domain National Jeweler post-processing (chrome blocks stripped
-    before conversion, anchors flattened to plain words, boilerplate trailer
-    cut) so harvested and enriched bodies are clean on both paths.
+    Single converter: trafilatura's deterministic article extractor
+    (Markdown output, links kept, precision favored; scripts, styles, and
+    boilerplate dropped — no LLM features). There is no regex fallback:
+    HTML trafilatura cannot extract (stubs, lock pages, non-HTML input)
+    yields ``""``, so callers keep their existing empty-body semantics
+    (thin-check, keep-RSS, :class:`UnparseableBody`) instead of storing a
+    tag-stripped dump. Deduplication is never enabled (its process-global
+    cache would discard a re-extracted article). `url` feeds trafilatura's
+    canonical hints and keys the per-domain National Jeweler post-processing
+    (inline editorial anchors flattened to plain words, boilerplate trailer
+    cut).
     """
     source = html_or_text or ""
-    national_jeweler = _is_nj_family(url)
-    if national_jeweler and "<" in source and ">" in source:
-        source = _strip_nj_boilerplate(source)
-    if _trafilatura is not None and "<" in source and ">" in source:
-        try:
-            # NJ family: segment dedupe stays off. trafilatura's `deduplicate`
-            # also keeps a process-global document cache; re-extracting the
-            # same article (every rerun of an Ingestion Run) then discards the
-            # body and leaks metadata chrome back through the regex fallback.
-            # Other sources keep the established behavior.
-            extracted = _trafilatura.extract(
-                source,
-                output_format="markdown",
-                include_links=True,
-                deduplicate=not national_jeweler,
-                favor_precision=True,
-                include_comments=False,
-                url=url or None,
-            )
-        except Exception:
-            extracted = None
-        if extracted and extracted.strip():
-            markdown = extracted.strip()
-            return _nj_clean_markdown(markdown) if national_jeweler else markdown
-    markdown = _regex_to_markdown(source, links=not national_jeweler)
-    return _nj_clean_markdown(markdown) if national_jeweler else markdown
+    if _trafilatura is None or "<" not in source or ">" not in source:
+        return ""
+    try:
+        # Deduplication stays off: trafilatura's `deduplicate` keeps a
+        # process-global LRU segment cache, so re-extracting the same article
+        # (every rerun of an Ingestion Run, or a second document in the same
+        # batch) is "discarding data" and yields None. With no fallback that
+        # would store an empty body, so dedupe is never enabled;
+        # `favor_precision` already drops repeated boilerplate segments.
+        extracted = _trafilatura.extract(
+            source,
+            output_format="markdown",
+            include_links=True,
+            deduplicate=False,
+            favor_precision=True,
+            include_comments=False,
+            url=url or None,
+        )
+    except Exception:
+        return ""
+    markdown = (extracted or "").strip()
+    if not markdown:
+        return ""
+    return _nj_clean_markdown(markdown) if _is_nj_family(url) else markdown
 
 
 #: HTTP statuses whose error bodies may carry bot-challenge evidence.
@@ -468,12 +328,14 @@ def _failure_for_status(url: str, status: int, reason: str, body: bytes) -> Fetc
     return FetchFailed(f"fetch failed for {url}: {detail}")
 
 
-def _fetch_via_impersonation(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
-    """GET `url` with curl_cffi Chrome impersonation plus browser headers.
+def fetch_impersonated(url: str, timeout: int = PRIMARY_TIMEOUT) -> tuple[str, bytes]:
+    """Primary leg: GET `url` with curl_cffi Chrome impersonation; (final_url, body).
 
-    The only primary backend. ``curl_cffi`` is a hard dependency; when it is
-    missing the failure is explicit — there is no stdlib fetch lane and never
-    a silent downgrade of the browser identity.
+    The only primary backend, shared by both article callers (enrichment's
+    :func:`fetch_and_clean` and discovery's ``policy_get``). ``curl_cffi`` is a
+    hard dependency; when it is missing the failure is explicit — there is no
+    stdlib fetch lane and never a silent downgrade of the browser identity.
+    Raises :class:`FetchFailed` on transport/HTTP failure.
     """
     if _curl_cffi_requests is None:
         raise FetchFailed(
@@ -485,10 +347,16 @@ def _fetch_via_impersonation(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
         )
     except Exception as exc:
         raise FetchFailed(f"fetch failed for {url}: {exc}") from exc
+    body = bytes(response.content or b"")
     status = int(response.status_code)
     if status >= 400:
-        raise _failure_for_status(url, status, _reason_for(status), bytes(response.content or b""))
-    return bytes(response.content)
+        raise _failure_for_status(url, status, _reason_for(status), body)
+    return (str(getattr(response, "url", url) or url), body)
+
+
+def _fetch_via_impersonation(url: str, timeout: int = PRIMARY_TIMEOUT) -> bytes:
+    """Bytes-only view of the shared impersonation leg (:func:`fetch_impersonated`)."""
+    return fetch_impersonated(url, timeout)[1]
 
 
 def _decode_body(raw: bytes, encoding: str | None) -> bytes:
@@ -578,19 +446,22 @@ def _retry_after_seconds(exc: urllib.error.HTTPError) -> float:
     return max(0.0, min(delay, FALLBACK_RETRY_CAP_SECONDS))
 
 
-def try_fallback_reader(url: str, timeout: int = FALLBACK_TIMEOUT) -> str:
-    """Fetch `url` through the zero-ops reader fallback; return clean Markdown.
+#: Error-body bytes inspected for reader-leg HTTP error evidence.
+_ERROR_BODY_CAP = 65536
 
-    Gated by the caller (:func:`enrich_document` only calls this on a
-    primary-miss signal — never unconditionally). The request carries only
-    data-minimizing headers (explicit User-Agent, ``Accept: text/*``; no
-    Cookie/Authorization credentials ever). On HTTP 429 the Retry-After delay
-    is honored up to ``FALLBACK_MAX_RETRIES`` retries, then the call gives up
-    with a ``rate-limited`` cause.
 
-    Raises :class:`FetchFailed` on network/HTTP/rate-limit failures and
-    :class:`UnparseableBody` when nothing usable survives cleaning.
-    Stdlib + urllib only: no paid deps, no model calls.
+def fetch_reader(url: str, timeout: int = FALLBACK_TIMEOUT) -> tuple[str, bytes]:
+    """Reader leg: GET ``<reader-base><url>``; return (final_url, raw body).
+
+    Plain urllib against :data:`FALLBACK_READER_BASE` carrying only
+    data-minimizing headers (explicit User-Agent, ``Accept: text/*``; never
+    cookies or credentials). On HTTP 429 the Retry-After delay is honored up
+    to :data:`FALLBACK_MAX_RETRIES` retries, then the leg gives up with a
+    ``rate-limited`` cause; non-429 HTTP errors carry body evidence. The body
+    comes back exactly as delivered — reader Markdown, possibly empty; the
+    caller decides what counts as substantive. Raises :class:`FetchFailed`
+    with a bare cause (the shared chain names the leg). Stdlib + urllib only:
+    no paid deps, no model calls.
     """
     reader_url = FALLBACK_READER_BASE + url
     request = urllib.request.Request(
@@ -601,35 +472,57 @@ def try_fallback_reader(url: str, timeout: int = FALLBACK_TIMEOUT) -> str:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = bytes(response.read())
                 try:
-                    _encoding = response.getheader("Content-Encoding")
+                    encoding = response.getheader("Content-Encoding")
                 except Exception:
-                    _encoding = None
-                raw = _decode_body(raw, _encoding)
-        except EnrichmentError:
-            raise
+                    encoding = None
+                try:
+                    final_url = str(response.geturl() or reader_url)
+                except Exception:
+                    final_url = reader_url
+                return (final_url, _decode_body(raw, encoding))
         except urllib.error.HTTPError as exc:
-            if exc.code == 429:
+            status = int(exc.code)
+            if status == 429:
                 if attempt < FALLBACK_MAX_RETRIES:
                     time.sleep(_retry_after_seconds(exc))
                     continue
                 raise FetchFailed(
-                    f"fallback rate-limited for {url}: reader returned 429 "
-                    f"({FALLBACK_MAX_RETRIES} retries exhausted)"
+                    f"rate-limited (429, {FALLBACK_MAX_RETRIES} retries exhausted)"
                 ) from exc
-            raise FetchFailed(
-                f"fallback fetch failed for {url}: HTTP Error {exc.code}: {exc.reason}"
-            ) from exc
+            body = b""
+            try:
+                body = bytes(exc.read(_ERROR_BODY_CAP) or b"")
+            except Exception:
+                body = b""
+            snippet = body[:512].decode("utf-8", errors="replace").strip()
+            detail = f"HTTP Error {status}: {exc.reason}"
+            if snippet:
+                detail += f" — body: {snippet[:512]}"
+            raise FetchFailed(detail) from exc
         except Exception as exc:
-            raise FetchFailed(f"fallback fetch failed for {url}: {exc}") from exc
-        try:
-            payload = raw.decode("utf-8", errors="replace")
-        except Exception as exc:
-            raise UnparseableBody(f"fallback unparseable body for {url}: {exc}") from exc
-        markdown = clean_to_markdown(payload, url)
-        if not markdown.strip():
-            raise UnparseableBody(f"fallback unparseable body for {url}: empty after cleaning")
-        return markdown
-    raise FetchFailed(f"fallback rate-limited for {url}: reader unavailable")
+            raise FetchFailed(str(exc)) from exc
+    raise FetchFailed("rate-limited (reader unavailable)")
+
+
+def try_fallback_reader(url: str, timeout: int = FALLBACK_TIMEOUT) -> str:
+    """Markdown view of the shared reader leg, for enrichment's gated entry.
+
+    Gated by the caller (:func:`enrich_document` only calls this on a
+    primary-miss signal — never unconditionally). The reader delivers
+    already-extracted Markdown: it is returned as-is, never run back through
+    the HTML cleaner, so links, images, and formatting survive intact; the
+    caller's thin-check decides whether it counts.
+
+    Raises :class:`FetchFailed` on network/HTTP/rate-limit failures (bare leg
+    causes from :func:`fetch_reader`) and :class:`UnparseableBody` when the
+    reader delivered no text.
+    """
+    markdown = fetch_reader(url, timeout)[1].decode("utf-8", errors="replace")
+    if not markdown.strip():
+        raise UnparseableBody(
+            f"fallback reader delivered no substantive text for {url}: empty Markdown"
+        )
+    return markdown
 
 
 def _primary_miss_from_error(exc: Exception) -> bool:
@@ -655,47 +548,121 @@ def _looks_like_js_shell(markdown: str, threshold: int = DEFAULT_THIN_THRESHOLD)
     return is_thin(markdown, threshold)
 
 
+#: Cap on the chained failure detail (never unbounded, never secrets).
+_DETAIL_CAP = 1024
+
+#: Credential-shaped tokens scrubbed from any chained failure detail.
+_SECRET_RE = re.compile(r"(?i)\b(?:bearer\s+\S+|fc-[A-Za-z0-9_-]{8,})")
+
+#: Leg label for the reader leg in the one chained failure detail: names the
+#: Jina reader while keeping the ``reader:`` operator wording.
+_READER_LEG_LABEL = "jina reader"
+
+
+def _chain_detail(loc: str, primary: str, reader: str, firecrawl: str) -> str:
+    """Bounded, credential-free ``{loc}: {primary} | jina reader: {e} | firecrawl: {e}``."""
+    detail = f"{loc}: {primary} | {_READER_LEG_LABEL}: {reader} | firecrawl: {firecrawl}"
+    return _SECRET_RE.sub("[redacted]", detail)[:_DETAIL_CAP]
+
+
+def _leg_cause(exc: Exception) -> str:
+    """Bare failure cause for one article-content leg.
+
+    Discovery's typed fetch errors carry their loc-free ``detail``; every
+    other leg error (``FetchFailed``, ``FirecrawlFailed``) already stringifies
+    to its cause.
+    """
+    detail = getattr(exc, "detail", None)
+    return detail if isinstance(detail, str) and detail else str(exc)
+
+
+#: One chain leg: ``(url, timeout) -> (final_url, payload)``. A provider leg's
+#: payload is already-extracted Markdown; the primary's is raw HTML.
+ContentLeg = Callable[[str, int], tuple[str, bytes]]
+
+
+def article_content_chain(
+    url: str,
+    *,
+    reader: ContentLeg,
+    timeout: int = PRIMARY_TIMEOUT,
+    primary: ContentLeg | None = None,
+    primary_cause: str | None = None,
+    min_chars: int | None = None,
+) -> tuple[str, bytes]:
+    """Walk the one article-content chain: impersonation → Jina reader → Firecrawl.
+
+    `primary` is the impersonated-Chrome leg; ``None`` means it already ran
+    (enrichment's gated path) and `primary_cause` carries its miss reason.
+    `reader` is the Jina-reader leg. The paid Firecrawl scrape is the shared
+    final leg, imported lazily so its API key never touches this module.
+
+    Provider payloads come back tagged :class:`ProviderMarkdown`, so the
+    extract site stores them as-is instead of re-cleaning. With `min_chars`
+    set (enrichment) a payload thinner than the threshold counts as a miss and
+    the next leg runs; with ``None`` (discovery) the first leg that returns
+    bytes wins. When every leg fails, one bounded, credential-free detail
+    names each leg exactly once.
+    """
+    primary_detail = primary_cause or ""
+    if primary is not None:
+        try:
+            return primary(url, timeout)
+        except Exception as exc:
+            primary_detail = _leg_cause(exc)
+    try:
+        final_url, payload = reader(url, timeout)
+    except Exception as exc:
+        reader_detail = _leg_cause(exc)
+    else:
+        if min_chars is None or not is_thin(payload.decode("utf-8", errors="replace"), min_chars):
+            return (final_url, ProviderMarkdown(payload))
+        reader_detail = "delivered no substantive text"
+
+    from marketing_intelligence.firecrawl import fetch_via_firecrawl  # lazy: no cycle
+
+    try:
+        payload = fetch_via_firecrawl(url, timeout)
+    except Exception as exc:  # FirecrawlFailed: missing key, transport, HTTP, payload
+        firecrawl_detail = _leg_cause(exc)
+    else:
+        if min_chars is None or not is_thin(payload.decode("utf-8", errors="replace"), min_chars):
+            return (url, ProviderMarkdown(payload))
+        firecrawl_detail = "delivered no substantive text"
+    raise FetchFailed(
+        _chain_detail(url, primary_detail or "primary failed", reader_detail, firecrawl_detail)
+    )
+
+
+def _enrichment_reader_leg(url: str, timeout: int) -> tuple[str, bytes]:
+    """Reader leg for the chain: :func:`try_fallback_reader` Markdown as bytes."""
+    return (url, try_fallback_reader(url, timeout).encode("utf-8"))
+
+
 def _fallback_after_primary_miss(
     url: str,
     timeout: int,
     primary_desc: str,
     threshold: int = DEFAULT_THIN_THRESHOLD,
 ) -> str:
-    """Walk the gated fallback chain; raise (chaining every cause) on failure.
+    """Walk the shared gated fallback chain; raise (chaining every cause) on failure.
 
-    Fixed order: Jina reader (:func:`try_fallback_reader`) first, then the
-    paid Firecrawl scrape (imported lazily, key read inside that module — it
-    never touches this one). A leg whose output is thin, missing, or failed
+    Enrichment's entry into :func:`article_content_chain`: the primary already
+    ran, `primary_desc` carries its miss reason, and the reader then the paid
+    Firecrawl scrape are walked in the shared order with the thin-check applied
+    to each leg's payload. A leg whose output is thin, missing, or failed
     counts as a miss — reader stubs, error pages, and empty scrape payloads
-    must never become the canonical stored body. The raised error names the
-    primary cause plus every fallback leg cause, so the operator sees exactly
-    why the chain gave up.
+    must never become the canonical stored body — and the raised error names
+    the primary cause plus every fallback leg cause.
     """
-    causes: list[str] = []
-    try:
-        markdown = try_fallback_reader(url, timeout)
-    except EnrichmentError as exc:
-        causes.append(f"reader: {exc}")
-    except Exception as exc:  # defensive: unexpected reader errors stay typed
-        causes.append(f"reader: {exc}")
-    else:
-        if not is_thin(markdown, threshold):
-            return markdown
-        causes.append("reader: delivered no substantive text")
-
-    from marketing_intelligence.firecrawl import fetch_via_firecrawl  # lazy: no cycle
-
-    try:
-        scraped = fetch_via_firecrawl(url, timeout).decode("utf-8", errors="replace")
-        markdown = clean_to_markdown(scraped, url)
-    except Exception as exc:  # FirecrawlFailed: missing key, transport, HTTP, payload
-        causes.append(f"firecrawl: {exc}")
-    else:
-        if not is_thin(markdown, threshold):
-            return markdown
-        causes.append("firecrawl: delivered no substantive text")
-
-    raise FetchFailed(f"fallback failed for {url} (primary: {primary_desc}; {'; '.join(causes)})")
+    _, payload = article_content_chain(
+        url,
+        reader=_enrichment_reader_leg,
+        timeout=timeout,
+        primary_cause=primary_desc,
+        min_chars=threshold,
+    )
+    return payload.decode("utf-8", errors="replace")
 
 
 def enrich_document(
@@ -747,20 +714,50 @@ def enrich_document(
     return (enriched, METHOD_ENRICHED, None)
 
 
+def _emit_unrecoverable(
+    doc: NormalizedDocument,
+    threshold: int,
+    cause: str,
+    sink: UnrecoverableSink | None,
+) -> None:
+    """Notify `sink` that a failed enrichment left a still-thin RSS body.
+
+    The terminal ``unrecoverable`` marker is only true when the body that
+    survives the failure is the thin RSS teaser: a ``force_on`` source may fail
+    enrichment while its RSS body was already substantive, and that document is
+    not unrecoverable, so the sink stays silent. Best-effort by design — a
+    raising sink never disturbs the keep-the-RSS-body contract.
+    """
+    if sink is None or not is_thin(doc.content, threshold):
+        return
+    try:
+        sink(doc.url, cause)
+    except Exception:  # defensive: flag persistence never blocks ingestion
+        pass
+
+
 def enrich_document_or_keep(
     doc: NormalizedDocument,
     threshold: int = DEFAULT_THIN_THRESHOLD,
     timeout: int = PRIMARY_TIMEOUT,
     force: bool = False,
+    *,
+    on_unrecoverable: UnrecoverableSink | None = None,
 ) -> tuple[NormalizedDocument, str, str | None]:
     """Like :func:`enrich_document` but never raises.
 
     Any failure keeps the original RSS document and returns its cause string
     (`method` stays ``"rss"``), so one bad page never aborts an Ingestion Run.
+    When the kept body is still thin (a genuine total-chain failure) the
+    optional `on_unrecoverable` sink receives ``(doc.url, cause)`` — `cause` is
+    the chained failure reason — exactly once, so the flow can file the
+    terminal ``unrecoverable`` Extraction Flag after persisting the row.
     """
     try:
         return enrich_document(doc, threshold, timeout, force)
     except EnrichmentError as exc:
+        _emit_unrecoverable(doc, threshold, str(exc), on_unrecoverable)
         return (doc, METHOD_RSS, f"{doc.url}: {exc}")
     except Exception as exc:  # defensive: enrichment never blocks ingestion
+        _emit_unrecoverable(doc, threshold, f"enrichment failed ({exc})", on_unrecoverable)
         return (doc, METHOD_RSS, f"{doc.url}: enrichment failed ({exc})")

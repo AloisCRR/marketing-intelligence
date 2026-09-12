@@ -62,7 +62,9 @@ SERVER_INSTRUCTIONS = (
     "the edited URL set — its added/removed diff is the re-scoring signal. "
     "clear_digest_picks drops a discarded edition's trace. "
     "Use flag_extraction only to report improperly extracted content (thin body, JS shell, "
-    "paywall challenge, truncated text, wrong body) — never for factual disagreements. "
+    "paywall challenge, truncated text, wrong body, unrecoverable fetch) — never for factual "
+    "disagreements. Ingestion files `unrecoverable` itself when the whole article-content "
+    "chain fails; clear it once you verify the body. "
     "Use set_importance to record how much a Document matters (0-1 score + rationale + "
     "reporter); flagged or paywalled Documents are capped at 0.3 server-side. "
     "Use list_vocabulary to discover canonical Topics, then set_document_topics to tag "
@@ -275,7 +277,7 @@ def flag_extraction(
     identifier: Annotated[str, "Article URL or canonical URL to flag."],
     reason: Annotated[
         str | None,
-        "One of thin, js_shell, paywall_challenge, truncated, wrong_body, other.",
+        "One of thin, js_shell, paywall_challenge, truncated, wrong_body, unrecoverable, other.",
     ] = None,
     detail: Annotated[
         str | None, "Details (<=2000 chars; required when reason is 'other')."
@@ -286,15 +288,18 @@ def flag_extraction(
     """Flag (or clear) an extraction problem on one article.
 
     Use only for improperly extracted content (thin body, JS shell,
-    paywall/bot challenge, truncated text, wrong body) — never for factual
-    disputes about an otherwise well-extracted article. This is one of the
+    paywall/bot challenge, truncated text, wrong body, unrecoverable fetch) —
+    never for factual disputes about an otherwise well-extracted article.
+    `unrecoverable` is filed by ingestion when every article-content chain leg
+    fails; set it only for the same terminal condition, and prefer `clear` once
+    you have verified a body the pipeline gave up on. This is one of the
     mutating tools on this server (with mark_article_read, set_importance,
     set_document_topics, record_digest_picks and clear_digest_picks).
 
     Args:
         identifier: Article URL or canonical URL.
         reason: One of FLAG_REASONS (thin, js_shell, paywall_challenge,
-            truncated, wrong_body, other).
+            truncated, wrong_body, unrecoverable, other).
         detail: Free-text detail, max 2000 chars; required when
             reason is "other".
         flagged_by: Reporter label, max 100 chars.
