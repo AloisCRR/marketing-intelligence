@@ -45,7 +45,10 @@ def search(
     exclude_read: bool = Query(False, description="When true, hide read articles"),
     _: None = Depends(require_bearer),
 ) -> dict[str, Any]:
-    """Keyword search, newest first (18-key dicts: 7 base + 4 flag + 3 read + 4 importance)."""
+    """Keyword search, newest first.
+
+    19-key dicts: 7 base + 4 flag + 3 read + 4 importance + 1 topics.
+    """
     return {"results": service.search_articles(q, limit=limit, exclude_read=exclude_read)}
 
 
@@ -151,3 +154,25 @@ def get_importance(
 ) -> dict[str, Any]:
     """Latest importance annotation for one article (all keys None if unannotated)."""
     return service.get_importance(url)
+
+
+@app.get("/vocabulary")
+def vocabulary(_: None = Depends(require_bearer)) -> dict[str, Any]:
+    """Read-only controlled Topic vocabulary (canonical slugs, synonyms, aliases)."""
+    return {"vocabulary": service.list_vocabulary()}
+
+
+class TopicsRequest(BaseModel):
+    identifier: str
+    topics: list[str]
+    reporter: str | None = None
+
+
+@app.post("/topics")
+def set_document_topics(body: TopicsRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
+    """Set (latest-wins) an article's canonical Topics; returns updated Article."""
+    return service.set_document_topics(
+        body.identifier,
+        body.topics,
+        reporter=body.reporter,
+    )

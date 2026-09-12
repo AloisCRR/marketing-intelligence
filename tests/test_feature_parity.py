@@ -74,6 +74,7 @@ SEARCH_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -95,6 +96,7 @@ PERIOD_ARTICLE_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 PERIOD_TOP_KEYS = {
@@ -121,6 +123,7 @@ ARTICLE_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 
@@ -136,9 +139,11 @@ class _CursorFake:
 
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
+        self.last_sql: str | None = None
         self.last_params: tuple | None = None
 
     def execute(self, sql: str, params: tuple | None = None) -> _CursorFake:
+        self.last_sql = sql
         self.last_params = params
         return self
 
@@ -196,6 +201,8 @@ class _ArticleConnFake(_ConnFake):
 
         class _Lookup(_CursorFake):
             def fetchall(inner_self: _CursorFake) -> list[tuple]:
+                if "topic_slug" in (inner_self.last_sql or "").lower():
+                    return []  # effective-topic fetch (Ticket 20): no topics stored
                 key = (inner_self.last_params or (None,))[0]
                 if key in (inner._url, inner._canonical):
                     return list(inner._rows)

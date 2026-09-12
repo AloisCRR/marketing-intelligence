@@ -391,6 +391,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
             "importance_rationale",
             "importance_reporter",
             "importance_updated_at",
+            "topics",
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
@@ -686,6 +687,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "007_deterministic_sources_and_not_null.sql",
         "008_read_state.sql",
         "009_importance.sql",
+        "010_topics.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

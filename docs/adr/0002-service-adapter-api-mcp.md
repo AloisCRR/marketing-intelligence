@@ -25,11 +25,13 @@ surfaces drift apart in validation or payload shape.
   composes with the `sources` allowlist; None (default) is uncapped.
 - Thin adapters only: `src/api/app.py` (`GET /search`, `POST
   /period-context`, `GET /sources`, `POST /importance`, `GET /importance`,
-  `InvalidRequest` → 422, `/docs` for demo) and
-  `src/mcp/server.py` (8 tools calling the same service functions:
+  `GET /vocabulary`, `POST /topics`, `InvalidRequest` → 422, `/docs` for
+  demo) and
+  `src/mcp/server.py` (10 tools calling the same service functions:
   `search_articles`, `get_period_context`, `get_article`,
   `list_sources_inventory`, `flag_extraction`, `mark_article_read`,
-  `set_importance`, `get_importance`).
+  `set_importance`, `get_importance`, `list_vocabulary`,
+  `set_document_topics`).
 - `src/mcp/` intentionally has **no `__init__.py`**: the directory name
   collides with the installed `mcp` distribution, so a regular package here
   would shadow the dependency (or vice versa). The server module is run as a
@@ -47,4 +49,5 @@ surfaces drift apart in validation or payload shape.
 - Pinned `mcp==1.29.1` (stays on the 1.x `FastMCP` API; 2.x renamed it to
   `MCPServer` — revisit deliberately, not by accident).
 - Out of scope (unchanged): no digest schedule, no search filters, no
-  embeddings/topics.
+  embeddings, no automatic topic/entity extraction (Documents carry
+  agent-written controlled Topics — see ADR-0009).

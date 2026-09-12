@@ -54,8 +54,11 @@ SERVER_INSTRUCTIONS = (
     "paywall challenge, truncated text, wrong body) — never for factual disagreements. "
     "Use set_importance to record how much a Document matters (0-1 score + rationale + "
     "reporter); flagged or paywalled Documents are capped at 0.3 server-side. "
-    "Prefer read-only tools for exploration; flag_extraction, mark_article_read and "
-    "set_importance are the mutating tools."
+    "Use list_vocabulary to discover canonical Topics, then set_document_topics to tag "
+    "Documents with canonical pillar/region/content-type slugs (synonyms are "
+    "canonicalized server-side, unknown tags rejected). "
+    "Prefer read-only tools for exploration; flag_extraction, mark_article_read, "
+    "set_importance and set_document_topics are the mutating tools."
 )
 
 
@@ -123,8 +126,8 @@ def search_articles(
         exclude_read: When True, hide read articles (default False annotates only).
 
     Returns:
-        List of article dicts (18 keys: 7 base + 4 extraction-flag + 3 read
-        + 4 importance),
+        List of article dicts (19 keys: 7 base + 4 extraction-flag + 3 read
+        + 4 importance + 1 topics),
         ordered newest first; empty list when nothing matches.
 
     Raises:
@@ -223,8 +226,9 @@ def flag_extraction(
 
     Use only for improperly extracted content (thin body, JS shell,
     paywall/bot challenge, truncated text, wrong body) — never for factual
-    disputes about an otherwise well-extracted article. This is one of three
-    mutating tools on this server (with mark_article_read and set_importance).
+    disputes about an otherwise well-extracted article. This is one of four
+    mutating tools on this server (with mark_article_read, set_importance and
+    set_document_topics).
 
     Args:
         identifier: Article URL or canonical URL.
@@ -349,6 +353,54 @@ def get_importance(
     return service.get_importance(identifier)
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def list_vocabulary() -> list[dict[str, Any]]:
+    """List the controlled Topic vocabulary (canonical slugs + accepted synonyms).
+
+    Use before tagging to discover canonical pillar/region/content-type slugs
+    without leaving the tool surface. Vocabulary changes are additive: retired
+    slugs stay listed with `retired_alias_of` pointing at their replacement.
+
+    Returns:
+        List of entries, each with `slug`, `kind`
+        (pillar/region/content-type), `label`, `synonyms` (accepted
+        spellings), and `retired_alias_of` (canonical replacement, or None).
+    """
+    return service.list_vocabulary()
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
+def set_document_topics(
+    identifier: Annotated[str, "Article URL or canonical URL to tag."],
+    topics: Annotated[list[str], "Canonical slugs or accepted synonyms; [] clears all tags."],
+    reporter: Annotated[str | None, "Reporter label (<=100 chars)."] = None,
+) -> dict[str, Any]:
+    """Set an article's canonical Topics (latest write wins).
+
+    Tags are canonicalized server-side — synonyms, case/whitespace variants
+    and retired aliases all land on the canonical slug; unknown tags are
+    rejected (422) and never stored as-is. The effective set becomes exactly
+    `topics` (an empty list clears it); history is retained append-only, so
+    the full tagging trail survives. Use list_vocabulary first to discover
+    canonical slugs.
+
+    Args:
+        identifier: Article URL or canonical URL.
+        topics: Canonical slugs or accepted synonyms; duplicates collapse and
+            an empty list clears the article's tags.
+        reporter: Reporter label, max 100 chars.
+
+    Returns:
+        The updated article dict with `topics` (sorted canonical slugs).
+
+    Raises:
+        InvalidRequest: If the identifier is unknown/blank, topics is not a
+            list of non-blank strings, a tag is unknown, or reporter is
+            invalid.
+    """
+    return service.set_document_topics(identifier, topics, reporter=reporter)
+
+
 @mcp.resource("brain://about", mime_type="application/json")
 def read_about() -> str:
     """Static overview: coverage and recommended workflow."""
@@ -362,7 +414,8 @@ def read_about() -> str:
             "workflow": "search_articles for discovery -> get_article for full text -> "
             "get_period_context(from_date, to_date) for any period bundle "
             "(a digest is built from a caller-chosen range) -> set_importance to record "
-            "why evidence matters -> flag_extraction for bad content.",
+            "why evidence matters -> list_vocabulary + set_document_topics to tag "
+            "evidence canonically -> flag_extraction for bad content.",
             "resources": ["brain://about", "article://{identifier}", "period://{from}/{to}"],
             "prompts": ["period_digest", "investigate_topic"],
         }

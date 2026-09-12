@@ -29,7 +29,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        imp.score AS importance_score,
        imp.rationale AS importance_rationale,
        imp.reporter AS importance_reporter,
-       imp.created_at AS importance_updated_at
+       imp.created_at AS importance_updated_at,
+       tps.topics AS topics
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
   LEFT JOIN LATERAL (
@@ -39,6 +40,16 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        ORDER BY i.created_at DESC, i.id DESC
        LIMIT 1
   ) imp ON true
+  LEFT JOIN LATERAL (
+      SELECT array_agg(t.topic_slug ORDER BY t.topic_slug) AS topics
+        FROM (
+              SELECT DISTINCT ON (dt.topic_slug) dt.topic_slug, dt.assigned
+                FROM document_topics dt
+               WHERE dt.document_id = d.id
+               ORDER BY dt.topic_slug, dt.created_at DESC, dt.id DESC
+             ) t
+       WHERE t.assigned
+  ) tps ON true
  WHERE (d.title ILIKE %s OR d.content ILIKE %s)
  ORDER BY d.published_at DESC
  LIMIT %s\
@@ -52,7 +63,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        imp.score AS importance_score,
        imp.rationale AS importance_rationale,
        imp.reporter AS importance_reporter,
-       imp.created_at AS importance_updated_at
+       imp.created_at AS importance_updated_at,
+       tps.topics AS topics
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
   LEFT JOIN LATERAL (
@@ -62,6 +74,16 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        ORDER BY i.created_at DESC, i.id DESC
        LIMIT 1
   ) imp ON true
+  LEFT JOIN LATERAL (
+      SELECT array_agg(t.topic_slug ORDER BY t.topic_slug) AS topics
+        FROM (
+              SELECT DISTINCT ON (dt.topic_slug) dt.topic_slug, dt.assigned
+                FROM document_topics dt
+               WHERE dt.document_id = d.id
+               ORDER BY dt.topic_slug, dt.created_at DESC, dt.id DESC
+             ) t
+       WHERE t.assigned
+  ) tps ON true
  WHERE (d.title ILIKE %s OR d.content ILIKE %s)
    AND d.read_at IS NULL
  ORDER BY d.published_at DESC
@@ -89,7 +111,17 @@ _RESULT_KEYS = (
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 )
+
+
+def _topics_list(value: Any) -> list[str]:
+    """Coerce a DB topic array to a list of slugs (``[]`` when unannotated)."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
 
 
 def _to_iso_tz_aware(value: Any) -> Any:
@@ -146,10 +178,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         importance_rationale = row.get("importance_rationale")
         importance_reporter = row.get("importance_reporter")
         importance_updated_at = row.get("importance_updated_at")
+        topics = row.get("topics")
     else:
         # Tuple rows predate the read annotation (11 cols); newer rows carry
         # read_at/read_by (13 cols); current rows append the 4 importance
-        # columns (17 cols). All shapes are accepted.
+        # columns (17 cols) and, after them, the topic array (18 cols). All
+        # shapes are accepted.
         items = tuple(row)
         (
             title,
@@ -170,6 +204,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         importance_rationale = items[14] if len(items) > 14 else None
         importance_reporter = items[15] if len(items) > 15 else None
         importance_updated_at = items[16] if len(items) > 16 else None
+        topics = items[17] if len(items) > 17 else None
     return {
         "title": title,
         "url": url,
@@ -189,6 +224,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "importance_rationale": importance_rationale,
         "importance_reporter": importance_reporter,
         "importance_updated_at": importance_updated_at,
+        "topics": _topics_list(topics),
     }
 
 
@@ -212,10 +248,11 @@ def search_articles(
         published_at, author, snippet`` plus the Extraction Flag annotation
         (``flag_reason, flag_detail, flagged_at, flagged_by``), the Read
         State annotation (``read`` bool derived from ``read_at IS NOT NULL``,
-        plus ``read_at, read_by`` — ``None`` when unread), and the latest
+        plus ``read_at, read_by`` — ``None`` when unread), the latest
         Importance annotation (``importance_score, importance_rationale,
         importance_reporter, importance_updated_at`` — ``None`` when
-        unannotated). ``published_at``
+        unannotated), and ``topics`` — the Document's effective canonical
+        Topic slugs (sorted, ``[]`` when unannotated). ``published_at``
         is an isoformat tz-aware string; ``author`` may be ``None``;
         ``snippet`` is a content excerpt around the match. Empty/blank
         keyword returns ``[]``.

@@ -39,7 +39,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        imp.score AS importance_score,
        imp.rationale AS importance_rationale,
        imp.reporter AS importance_reporter,
-       imp.created_at AS importance_updated_at"""
+       imp.created_at AS importance_updated_at,
+       tps.topics AS topics"""
 
 _PERIOD_FROM = """\
   FROM documents d
@@ -51,6 +52,16 @@ _PERIOD_FROM = """\
        ORDER BY i.created_at DESC, i.id DESC
        LIMIT 1
   ) imp ON true
+  LEFT JOIN LATERAL (
+      SELECT array_agg(t.topic_slug ORDER BY t.topic_slug) AS topics
+        FROM (
+              SELECT DISTINCT ON (dt.topic_slug) dt.topic_slug, dt.assigned
+                FROM document_topics dt
+               WHERE dt.document_id = d.id
+               ORDER BY dt.topic_slug, dt.created_at DESC, dt.id DESC
+             ) t
+       WHERE t.assigned
+  ) tps ON true
  WHERE d.published_at >= %s
    AND d.published_at < %s
    AND s.name = ANY(%s)"""
@@ -79,7 +90,7 @@ def _capped_sql(*, exclude_read: bool) -> str:
         "SELECT title, url, canonical_url, source, published_at, author,\n"
         "       flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by,\n"
         "       importance_score, importance_rationale, importance_reporter,\n"
-        "       importance_updated_at\n"
+        "       importance_updated_at, topics\n"
         "  FROM (\n"
         f"{_PERIOD_SELECT},\n"
         "       ROW_NUMBER() OVER (\n"
@@ -112,6 +123,15 @@ def _iso_tz_aware(value: Any) -> Any:
             value = value.replace(tzinfo=UTC)
         return value.isoformat()
     return value
+
+
+def _topics_list(value: Any) -> list[str]:
+    """Coerce a DB topic array to a list of slugs (``[]`` when unannotated)."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
 
 
 def get_period_context(
@@ -148,10 +168,11 @@ def get_period_context(
     the Extraction Flag annotation (``flag_reason, flag_detail, flagged_at,
     flagged_by`` — ``None`` when unflagged), the Read State annotation
     (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
-    read_by`` — ``None`` when unread), and the latest Importance annotation
+    read_by`` — ``None`` when unread), the latest Importance annotation
     (``importance_score, importance_rationale, importance_reporter,
-    importance_updated_at`` — ``None`` when unannotated). No empty analytics
-    placeholders are emitted.
+    importance_updated_at`` — ``None`` when unannotated), and ``topics`` —
+    the Document's effective canonical Topic slugs (sorted, ``[]`` when
+    unannotated). No empty analytics placeholders are emitted.
 
     Raises:
         ValueError: invalid ``limit``, invalid ``per_source_limit`` (non-bool
@@ -218,10 +239,12 @@ def get_period_context(
             importance_rationale = row.get("importance_rationale")
             importance_reporter = row.get("importance_reporter")
             importance_updated_at = row.get("importance_updated_at")
+            topics = row.get("topics")
         else:
             # Tuple rows predate the read annotation (10 cols); 12-col rows
             # carry read_at/read_by; the current SELECT appends the 4
-            # importance columns at [12..15]. All shapes are accepted.
+            # importance columns at [12..15] and the topic array at [16].
+            # All shapes are accepted.
             items = tuple(row)
             (
                 title,
@@ -241,6 +264,7 @@ def get_period_context(
             importance_rationale = items[13] if len(items) > 13 else None
             importance_reporter = items[14] if len(items) > 14 else None
             importance_updated_at = items[15] if len(items) > 15 else None
+            topics = items[16] if len(items) > 16 else None
         articles.append(
             {
                 "title": title,
@@ -261,6 +285,7 @@ def get_period_context(
                 "importance_rationale": importance_rationale,
                 "importance_reporter": importance_reporter,
                 "importance_updated_at": _iso_tz_aware(importance_updated_at),
+                "topics": _topics_list(topics),
             }
         )
     return {

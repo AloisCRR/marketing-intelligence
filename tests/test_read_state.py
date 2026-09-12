@@ -130,6 +130,10 @@ class _FakeCursor:
                 self.rowcount = len(matched)
                 self._result = []
             return
+        if head.startswith("SELECT DT.TOPIC_SLUG"):
+            # Effective-topic fetch (Ticket 20): these stores carry no topics.
+            self._result = []
+            return
         if "READ_AT" in head and "READ_BY" in head and head.startswith("SELECT"):
             # Read-state fetch: params (url_key, canonical_key).
             url_key, canon_key = params[0], params[1]

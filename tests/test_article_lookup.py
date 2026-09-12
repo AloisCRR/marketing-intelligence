@@ -83,6 +83,7 @@ ARTICLE_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 SEARCH_RESULT_KEYS = {
@@ -104,6 +105,7 @@ SEARCH_RESULT_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -125,6 +127,7 @@ PERIOD_ARTICLE_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 
@@ -144,7 +147,10 @@ class _ArticleCursor:
         self.last_sql = sql
         self.last_params = params
         ident = params[0] if params else None
-        if sql.strip().upper().startswith("SELECT READ_AT"):
+        if sql.strip().upper().startswith("SELECT DT.TOPIC_SLUG"):
+            # Effective-topic fetch (Ticket 20): ARTICLE_ROWS carry no topics.
+            self._result = []
+        elif sql.strip().upper().startswith("SELECT READ_AT"):
             # Read-state fetch: params (url_key, canonical_key).
             canon = params[1] if params and len(params) > 1 else None
             matched = [r for r in self._rows if r[1] == ident or r[2] == canon]

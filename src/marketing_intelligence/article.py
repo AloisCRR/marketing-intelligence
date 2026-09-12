@@ -7,8 +7,9 @@ flagged_at, flagged_by`` — ``None`` when unflagged), the Read State
 annotation (``read`` bool derived from ``read_at IS NOT NULL``, plus
 ``read_at, read_by`` — ``None`` when unread), and the latest Importance
 annotation (``importance_score, importance_rationale, importance_reporter,
-importance_updated_at`` — ``None`` when unannotated) — the full stored body
-(clean Markdown/text, never a snippet).
+importance_updated_at`` — ``None`` when unannotated) and ``topics`` — the
+Document's effective canonical Topic slugs (sorted, ``[]`` when unannotated) —
+the full stored body (clean Markdown/text, never a snippet).
 Matching tries the exact URL first, then the canonical URL via
 ``marketing_intelligence.normalize.canonicalize_url``. Unknown identifiers raise
 ``ValueError`` (the service adapter maps it to ``InvalidRequest``).
@@ -85,6 +86,21 @@ SELECT d.read_at, d.read_by
  WHERE d.url = %s OR d.canonical_url = %s\
 """
 
+# Effective canonical Topic slugs for the matching Document (Ticket 20):
+# newest row per slug wins; `assigned = FALSE` tombstones retire a tag.
+_ARTICLE_TOPICS_SQL = """\
+SELECT dt.topic_slug
+  FROM (
+        SELECT DISTINCT ON (t.topic_slug) t.topic_slug, t.assigned
+          FROM document_topics t
+          JOIN documents d ON d.id = t.document_id
+         WHERE d.url = %s OR d.canonical_url = %s
+         ORDER BY t.topic_slug, t.created_at DESC, t.id DESC
+       ) dt
+ WHERE dt.assigned
+ ORDER BY dt.topic_slug\
+"""
+
 _RESULT_KEYS = (
     "title",
     "url",
@@ -104,6 +120,7 @@ _RESULT_KEYS = (
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 )
 
 
@@ -242,6 +259,28 @@ def _fetch_one(conn: Any, sql: str, params: tuple) -> Any | None:
     return rows[0]
 
 
+def _fetch_all(conn: Any, sql: str, params: tuple) -> list[Any]:
+    """Return every row for a lookup (empty list on no match)."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql, params)
+        return list(cursor.fetchall() or [])
+    finally:
+        close = getattr(cursor, "close", None)
+        if callable(close):
+            close()
+
+
+def _topics_from_rows(rows: list[Any]) -> list[str]:
+    """Extract canonical topic slugs from effective-topic rows ([] when none)."""
+    slugs: list[str] = []
+    for row in rows:
+        value = row.get("topic_slug") if isinstance(row, dict) else row[0]
+        if value is not None:
+            slugs.append(str(value))
+    return slugs
+
+
 def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     """Fetch one article's full stored body plus provenance by URL.
 
@@ -261,7 +300,8 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         read_by`` — ``None`` when unread), and the latest Importance
         annotation (``importance_score, importance_rationale,
         importance_reporter, importance_updated_at`` — ``None`` when
-        unannotated). ``published_at`` and set
+        unannotated), plus ``topics`` — the Document's effective canonical
+        Topic slugs (sorted, ``[]`` when unannotated). ``published_at`` and set
         ``flagged_at``/``read_at`` values are isoformat tz-aware strings;
         ``content`` is the full stored body (never a snippet).
 
@@ -291,6 +331,7 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         except Exception:
             canonical = key
         read_row = _fetch_one(conn, _ARTICLE_READ_SQL, (key, canonical))
+        topic_rows = _fetch_all(conn, _ARTICLE_TOPICS_SQL, (key, canonical))
     finally:
         if owns_connection:
             close_conn = getattr(conn, "close", None)
@@ -302,6 +343,7 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     item["read"] = read_at is not None
     item["read_at"] = read_at
     item["read_by"] = read_by
+    item["topics"] = _topics_from_rows(topic_rows)
     item["published_at"] = _to_iso_tz_aware(item["published_at"])
     item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
     item["read_at"] = _to_iso_tz_aware(item["read_at"])

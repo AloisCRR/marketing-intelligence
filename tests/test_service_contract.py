@@ -51,6 +51,7 @@ SEARCH_EXPECTED_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -72,6 +73,7 @@ PERIOD_EXPECTED_KEYS = {
     "importance_rationale",
     "importance_reporter",
     "importance_updated_at",
+    "topics",
 }
 
 
@@ -685,6 +687,10 @@ class _ReadCursor:
                     doc["read_by"] = read_by
                 self.rowcount = len(matched)
                 self._result = []
+            return
+        if head.startswith("SELECT DT.TOPIC_SLUG"):
+            # Effective-topic fetch (Ticket 20): these stores carry no topics.
+            self._result = []
             return
         if head.startswith("SELECT READ_AT"):
             url_key, canon_key = params[0], params[1]

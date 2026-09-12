@@ -128,7 +128,7 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_eight_tools() -> None:
+def test_mcp_registers_exactly_ten_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
     assert sorted(t.name for t in tools) == [
         "flag_extraction",
@@ -136,8 +136,10 @@ def test_mcp_registers_exactly_eight_tools() -> None:
         "get_importance",
         "get_period_context",
         "list_sources_inventory",
+        "list_vocabulary",
         "mark_article_read",
         "search_articles",
+        "set_document_topics",
         "set_importance",
     ]
 
@@ -148,9 +150,11 @@ def test_mutating_tools_are_not_read_only() -> None:
     assert tools["get_period_context"].annotations.readOnlyHint is True
     assert tools["get_article"].annotations.readOnlyHint is True
     assert tools["get_importance"].annotations.readOnlyHint is True
+    assert tools["list_vocabulary"].annotations.readOnlyHint is True
     assert tools["flag_extraction"].annotations.readOnlyHint is False
     assert tools["mark_article_read"].annotations.readOnlyHint is False
     assert tools["set_importance"].annotations.readOnlyHint is False
+    assert tools["set_document_topics"].annotations.readOnlyHint is False
     assert tools["set_importance"].annotations.idempotentHint is False
     assert tools["mark_article_read"].annotations.idempotentHint is False
 

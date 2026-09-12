@@ -19,6 +19,7 @@ from marketing_intelligence import importance as _importance
 from marketing_intelligence import period as _period
 from marketing_intelligence import read as _read
 from marketing_intelligence import search as _search
+from marketing_intelligence import topics as _topics
 from marketing_intelligence.db import get_connection
 from marketing_intelligence.sources import V1_SOURCES, get_cadence
 
@@ -46,6 +47,9 @@ IMPORTANCE_KEYS = (
     "importance_updated_at",
 )
 
+#: Visibility key for the controlled Topic vocabulary (Ticket 20).
+TOPICS_KEYS = ("topics",)
+
 SEARCH_RESULT_KEYS = (
     (
         "title",
@@ -59,6 +63,7 @@ SEARCH_RESULT_KEYS = (
     + FLAG_KEYS
     + READ_KEYS
     + IMPORTANCE_KEYS
+    + TOPICS_KEYS
 )
 
 PERIOD_ARTICLE_KEYS = (
@@ -74,6 +79,7 @@ PERIOD_ARTICLE_KEYS = (
     + FLAG_KEYS
     + READ_KEYS
     + IMPORTANCE_KEYS
+    + TOPICS_KEYS
 )
 
 ARTICLE_KEYS = (
@@ -89,6 +95,7 @@ ARTICLE_KEYS = (
     + FLAG_KEYS
     + READ_KEYS
     + IMPORTANCE_KEYS
+    + TOPICS_KEYS
 )
 
 
@@ -193,13 +200,14 @@ def search_articles(
     *,
     exclude_read: bool = False,
 ) -> list[dict[str, Any]]:
-    """Validated keyword search; returns the 18-key provenance dicts, newest first.
+    """Validated keyword search; returns the 19-key provenance dicts, newest first.
 
     `exclude_read=True` filters out marked (read) articles; the default
     False annotates every result (`read`/`read_at`/`read_by`) without
     filtering. Every result also carries the latest Importance annotation
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
-    unannotated).
+    unannotated) and `topics` — the Document's effective canonical Topic
+    slugs (sorted, ``[]`` when unannotated).
     """
     if not isinstance(keyword, str) or not keyword.strip():
         raise InvalidRequest("keyword must be a non-empty string")
@@ -236,7 +244,8 @@ def get_period_context(
     annotates every article (`read`/`read_at`/`read_by`) without filtering.
     Every article also carries the latest Importance annotation
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
-    unannotated).
+    unannotated) and `topics` — the Document's effective canonical Topic
+    slugs (sorted, ``[]`` when unannotated).
     `per_source_limit` (None default) caps how many of the bundle's items any
     one source may contribute — `limit` still bounds the bundle overall, slots
     a capped source cannot fill go to other sources, and both compose with
@@ -267,6 +276,8 @@ def get_period_context(
 def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     """Validated one-item lookup; full stored body plus provenance.
 
+    The returned dict also carries `topics` — the Document's effective
+    canonical Topic slugs (sorted, ``[]`` when unannotated).
     Blank/non-string identifiers raise `InvalidRequest` without a DB
     round-trip; unknown identifiers surface from the lane as `ValueError`
     (also `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
@@ -604,6 +615,82 @@ def get_importance(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         raise InvalidRequest("identifier must be a non-empty string")
     try:
         return _importance.get_importance(identifier.strip(), conn=conn)
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+# --- Controlled Topic vocabulary (Ticket 20) -------------------------------
+#
+# Canonical pillar/region/content-type tags per Document. Reads expose the
+# effective slug list on every Document (search, single read, period bundle)
+# without extra calls; writes canonicalize caller synonyms server-side and
+# reject unknown tags (never stored as-is), keeping an append-only history
+# with latest-wins. Both caller surfaces go through these functions so
+# payloads/errors stay identical by construction.
+
+
+def _validate_topic_list(topics: Any) -> list[str]:
+    """Validate a caller topic list: list/tuple of non-blank strings, or 422."""
+    if isinstance(topics, (str, bytes)) or not isinstance(topics, (list, tuple)):
+        raise InvalidRequest("topics must be a list of topic tags")
+    for item in topics:
+        if not isinstance(item, str) or not item.strip():
+            raise InvalidRequest(f"topic tags must be non-empty strings, got {item!r}")
+    return [item.strip() for item in topics]
+
+
+def _validate_topic_reporter(reporter: Any) -> Any:
+    """Validate the optional topic reporter tag: string-or-null, max 100 chars."""
+    if reporter is None:
+        return None
+    if not isinstance(reporter, str):
+        raise InvalidRequest(f"reporter must be a string or null, got {type(reporter).__name__}")
+    cleaned = reporter.strip() or None
+    if cleaned is not None and len(cleaned) > _topics.REPORTER_MAX_LENGTH:
+        raise InvalidRequest(
+            f"reporter must be at most {_topics.REPORTER_MAX_LENGTH} chars, got {len(cleaned)}"
+        )
+    return cleaned
+
+
+def list_vocabulary() -> list[dict[str, Any]]:
+    """Read-only controlled Topic vocabulary (canonical slugs + synonyms).
+
+    Every entry is ``{slug, kind, label, synonyms, retired_alias_of}`` (see
+    ``marketing_intelligence.topics.list_vocabulary``). Additive by
+    construction: retired slugs stay listed with their replacement, so
+    callers can always discover the current canonical form.
+    """
+    return _topics.list_vocabulary()
+
+
+def set_document_topics(
+    identifier: str,
+    topics: list[str],
+    reporter: str | None = None,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    """Validated Topic write; returns the updated article dict.
+
+    Blank/non-string identifiers raise `InvalidRequest` without a DB
+    round-trip, as do a non-list `topics` argument, non-string/blank tags,
+    and an overlong reporter (>100 chars). Tags are canonicalized
+    server-side (synonyms, case/whitespace variants and retired aliases all
+    land on the canonical slug); unknown tags raise `InvalidRequest` before
+    any write and are never stored as-is. The effective set becomes exactly
+    `topics` (empty list clears it); earlier rows stay, so history is
+    retained and a later write can restore a tag.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise InvalidRequest("identifier must be a non-empty string")
+    clean_topics = _validate_topic_list(topics)
+    clean_reporter = _validate_topic_reporter(reporter)
+    try:
+        return _topics.set_document_topics(
+            identifier.strip(), clean_topics, reporter=clean_reporter, conn=conn
+        )
     except InvalidRequest:
         raise
     except (ValueError, TypeError, LookupError) as exc:
