@@ -45,8 +45,9 @@ SERVER_INSTRUCTIONS = (
     "You are a consumer of this layer — discover evidence with search_articles, read full text "
     "with get_article, and never own or re-run scraping/ingestion yourself. "
     "For any period synthesis, call get_period_context(from_date, to_date) with "
-    "ISO dates (YYYY-MM-DD) and draft only from its important_articles evidence bundle, "
-    "keeping provenance URLs attached. "
+    "ISO dates (YYYY-MM-DD); its recent_articles list is strictly recency-ordered "
+    "(each item carries its rank position, an ordering signal and never an importance "
+    "score), so draft only from what that bundle contains — keep provenance URLs attached. "
     "A digest is just one usage of a bundle: the caller picks any range and builds "
     "the digest from it — there is no built-in schedule. "
     "Use flag_extraction only to report improperly extracted content (thin body, JS shell, "
@@ -141,10 +142,12 @@ def get_period_context(
 ) -> dict[str, Any]:
     """Fetch the evidence bundle for a date range.
 
-    Use for period synthesis: draft exclusively from the
-    returned important_articles, keeping their URLs/provenance attached and
-    separating observations from interpretations. A digest is just
-    the case where the caller picks a range (often a week).
+    Use for period synthesis: draft exclusively from the returned
+    recent_articles — a strictly recency-ordered list whose items each carry
+    a 1-based `rank` (their position in that order, not an importance score).
+    Keep URLs/provenance attached and separate observations from
+    interpretations. A digest is just the case where the caller picks a
+    range (often a week).
 
     Args:
         from_date: Range start as ISO date (YYYY-MM-DD, inclusive).
@@ -154,7 +157,8 @@ def get_period_context(
         exclude_read: When True, hide read articles (default False annotates only).
 
     Returns:
-        Evidence-bundle dict with period and important_articles entries.
+        Evidence-bundle dict with `period` and a recency-ordered
+        `recent_articles` list; no empty analytics placeholders.
 
     Raises:
         InvalidRequest: If dates are malformed/unordered, sources unknown,
@@ -255,6 +259,24 @@ def mark_article_read(
     return service.mark_article_read(identifier, read_by=read_by, clear=clear)
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def list_sources_inventory() -> list[dict[str, Any]]:
+    """List every curated Source with stored counts, last ingest, and cadence.
+
+    Use to see coverage and pipeline health at a glance: which Sources are
+    empty or have never been successfully ingested report explicit ``0`` and
+    ``None`` rather than vanishing from the list. Read-only — never triggers
+    ingestion.
+
+    Returns:
+        All 20 V1 Sources in registry order; each dict has ``name``,
+        ``article_count`` (stored Documents), ``last_ingest_at`` (ISO-8601
+        finish time of the most recent successful Ingestion Run, or None),
+        and ``cadence`` (curated, or None).
+    """
+    return service.list_sources_inventory()
+
+
 @mcp.resource("brain://about", mime_type="application/json")
 def read_about() -> str:
     """Static overview: coverage and recommended workflow."""
@@ -297,7 +319,8 @@ def period_digest(period: str, focus: str | None = None) -> str:
     scope = f" with focus on {focus}" if focus else ""
     return (
         f"Draft a digest for {period}{scope} "
-        "from get_period_context important_articles only. "
+        "from get_period_context recent_articles only — a strictly "
+        "recency-ordered list whose rank is item position, not importance. "
         "Cite every claim with its article URL/provenance, "
         "separate observations from interpretations, "
         "and flag (do not silently fix) any badly extracted content via flag_extraction."
@@ -313,9 +336,11 @@ def investigate_topic(keyword: str) -> str:
     """
     return (
         f"Investigate '{keyword}': call search_articles(keyword={keyword!r}), "
-        "then get_article for the most relevant hits, then synthesize what the "
+        "then get_article for the hits you choose to inspect, then synthesize what the "
         "stored evidence supports with URL citations, "
-        "clearly separating observations from interpretations."
+        "clearly separating observations from interpretations. "
+        "For a date-bounded view, get_period_context returns a strictly "
+        "recency-ordered recent_articles list (rank = position, not importance)."
     )
 
 

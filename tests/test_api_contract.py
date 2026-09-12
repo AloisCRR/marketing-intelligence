@@ -40,21 +40,17 @@ PERIOD_PAYLOAD = {
         "to": "2026-09-14T00:00:00-05:00",
         "timezone": "America/Panama",
     },
-    "important_articles": [
+    "recent_articles": [
         {
             "title": "TikTok Adds Voice Notes",
             "url": "https://www.socialmediatoday.com/news/tiktok/1/",
             "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
             "source": "Social Media Today",
             "published_at": "2026-09-08T14:30:00+00:00",
+            "rank": 1,
             "author": "Andrew Hutchinson",
         }
     ],
-    "top_stories": [],
-    "emerging_topics": [],
-    "topic_movements": [],
-    "notable_entities": [],
-    "source_convergence": [],
 }
 
 FLAG_PAYLOAD = {

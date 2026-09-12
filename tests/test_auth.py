@@ -30,7 +30,7 @@ from marketing_intelligence.auth import StaticTokenVerifier, is_auth_configured 
 TOKEN = "test-bearer-token-" + "x" * 32
 
 SEARCH_PAYLOAD = [{"title": "t", "url": "https://example.test/1/"}]
-PERIOD_PAYLOAD = {"period": {}, "important_articles": []}
+PERIOD_PAYLOAD = {"period": {}, "recent_articles": []}
 ARTICLE_PAYLOAD = {"title": "t", "url": "https://example.test/1/", "content": "body"}
 FLAG_PAYLOAD = {"title": "t", "url": "https://example.test/1/", "flag_reason": "thin"}
 

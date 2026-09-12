@@ -78,6 +78,7 @@ PERIOD_ARTICLE_KEYS = {
     "canonical_url",
     "source",
     "published_at",
+    "rank",
     "author",
     "flag_reason",
     "flag_detail",
@@ -90,21 +91,8 @@ PERIOD_ARTICLE_KEYS = {
 
 PERIOD_TOP_KEYS = {
     "period",
-    "important_articles",
-    "top_stories",
-    "emerging_topics",
-    "topic_movements",
-    "notable_entities",
-    "source_convergence",
+    "recent_articles",
 }
-
-TREND_KEYS = (
-    "top_stories",
-    "emerging_topics",
-    "topic_movements",
-    "notable_entities",
-    "source_convergence",
-)
 
 ARTICLE_KEYS = {
     "title",
@@ -307,23 +295,21 @@ def test_search_list_payload_is_eleven_keys_at_same_limits() -> None:
         service.search_articles("TikTok", limit=101, conn=_ConnFake(SEARCH_ROWS))
 
 
-def test_period_list_payload_matches_pre_feature_shape() -> None:
+def test_period_list_payload_is_recency_bundle() -> None:
     ctx = period_lane.get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnFake(PERIOD_ROWS)
     )
     assert set(ctx) == PERIOD_TOP_KEYS
     assert set(ctx["period"]) == {"from", "to", "timezone"}
-    assert len(ctx["important_articles"]) == 2
-    for item in ctx["important_articles"]:
+    assert len(ctx["recent_articles"]) == 2
+    for item in ctx["recent_articles"]:
         assert set(item) == PERIOD_ARTICLE_KEYS
-    # V1: no history yet — trend keys present as explicit empties.
-    for key in TREND_KEYS:
-        assert ctx[key] == []
+    assert [item["rank"] for item in ctx["recent_articles"]] == [1, 2]
     # Same limits: limit=1 bounds the article list.
     bounded = period_lane.get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), limit=1, conn=_PeriodConnFake(PERIOD_ROWS)
     )
-    assert len(bounded["important_articles"]) == 1
+    assert len(bounded["recent_articles"]) == 1
 
 
 def test_http_search_and_period_match_service_shapes(
@@ -339,7 +325,7 @@ def test_http_search_and_period_match_service_shapes(
         "/period-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}
     ).json()
     assert set(period_payload) == PERIOD_TOP_KEYS
-    assert all(set(item) == PERIOD_ARTICLE_KEYS for item in period_payload["important_articles"])
+    assert all(set(item) == PERIOD_ARTICLE_KEYS for item in period_payload["recent_articles"])
 
 
 # --- one-item lookup parity: HTTP == MCP ---------------------------------------

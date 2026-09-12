@@ -1,0 +1,14 @@
+name: marketing-intelligence
+pull: []
+
+deployments:
+  - name: marketing-intelligence-daily-ingestion
+    entrypoint: marketing_intelligence.flows:ingest_sources_flow
+    parameters: {}
+    work_pool:
+      name: brain-pool
+    schedules:
+      - cron: "0 5 * * *"
+        timezone: "America/Panama"
+        slug: "daily-5am-panama"
+        active: true

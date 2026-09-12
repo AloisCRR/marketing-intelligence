@@ -323,30 +323,19 @@ def test_period_defaults_to_v1_sources() -> None:
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
     assert len(conn.cursor_obj.last_params[2]) == 20
-    assert {a["source"] for a in ctx["important_articles"]} <= set(V1_SOURCES)
+    assert {a["source"] for a in ctx["recent_articles"]} <= set(V1_SOURCES)
 
 
 # --- period context + provenance ----------------------------------------------
 
 
-def test_response_shape_matches_spec_conceptual_contract() -> None:
+def test_response_shape_is_truthful_recency_list_only() -> None:
     ctx, _ = _context()
-    assert set(ctx) == {
-        "period",
-        "important_articles",
-        "top_stories",
-        "emerging_topics",
-        "topic_movements",
-        "notable_entities",
-        "source_convergence",
-    }
+    # Only real fields: period + a recency-ordered list. No empty placeholders.
+    assert set(ctx) == {"period", "recent_articles"}
     assert set(ctx["period"]) == {"from", "to", "timezone"}
-    # V1: no accumulated history -> no velocity/emerging claims, explicit empties.
-    assert ctx["top_stories"] == []
-    assert ctx["emerging_topics"] == []
-    assert ctx["topic_movements"] == []
-    assert ctx["notable_entities"] == []
-    assert ctx["source_convergence"] == []
+    for article in ctx["recent_articles"]:
+        assert "rank" in article
 
 
 def test_period_boundaries_are_panama_utc_minus_five() -> None:
@@ -359,7 +348,7 @@ def test_period_boundaries_are_panama_utc_minus_five() -> None:
 
 def test_range_filtering_newest_first_and_provenance() -> None:
     ctx, _ = _context()
-    articles = ctx["important_articles"]
+    articles = ctx["recent_articles"]
     assert [a["title"] for a in articles] == [
         "Casas Bahia em crise",
         "Vicenzaoro Opens",
@@ -374,6 +363,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
             "canonical_url",
             "source",
             "published_at",
+            "rank",
             "author",
             "flag_reason",
             "flag_detail",
@@ -385,6 +375,11 @@ def test_range_filtering_newest_first_and_provenance() -> None:
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
+    # rank is the 1-based position in the recency order, not a score.
+    assert [a["rank"] for a in articles] == [1, 2, 3, 4, 5]
+    assert [a["published_at"] for a in articles] == sorted(
+        (a["published_at"] for a in articles), reverse=True
+    )
     # Out-of-range August article and next-week boundary excluded; JCK is
     # in V1 scope (all 20), so it is included.
     titles = {a["title"] for a in articles}
@@ -398,13 +393,13 @@ def test_range_filtering_newest_first_and_provenance() -> None:
 
 def test_explicit_sources_narrow_within_v1() -> None:
     ctx, _ = _context(sources=["JCK Online"])
-    assert [a["title"] for a in ctx["important_articles"]] == ["JCK Extra-scope Piece"]
+    assert [a["title"] for a in ctx["recent_articles"]] == ["JCK Extra-scope Piece"]
 
 
 def test_empty_range_returns_empty_articles_with_period() -> None:
     conn = _PeriodConnection(ARTICLE_ROWS)
     ctx = get_period_context(date(2026, 1, 5), date(2026, 1, 11), conn=conn)
-    assert ctx["important_articles"] == []
+    assert ctx["recent_articles"] == []
     assert ctx["period"]["timezone"] == PANAMA_NAME
 
 
@@ -443,12 +438,12 @@ def test_invalid_inputs_rejected() -> None:
 
 def test_limit_bounds_results() -> None:
     ctx, _ = _context(limit=2)
-    assert len(ctx["important_articles"]) == 2
+    assert len(ctx["recent_articles"]) == 2
 
 
 def test_unread_rows_annotate_read_false() -> None:
     ctx, _ = _context()
-    for article in ctx["important_articles"]:
+    for article in ctx["recent_articles"]:
         assert article["read"] is False
         assert article["read_at"] is None
         assert article["read_by"] is None
@@ -460,12 +455,12 @@ def test_exclude_read_filters_marked_rows() -> None:
     marked[11] = "reader-1"
     rows = [tuple(marked)] + list(ARTICLE_ROWS[1:])
     ctx, _ = _context(rows)
-    assert {a["title"] for a in ctx["important_articles"]} >= {"TikTok Adds Voice Notes"}
-    flagged = next(a for a in ctx["important_articles"] if a["title"] == "TikTok Adds Voice Notes")
+    assert {a["title"] for a in ctx["recent_articles"]} >= {"TikTok Adds Voice Notes"}
+    flagged = next(a for a in ctx["recent_articles"] if a["title"] == "TikTok Adds Voice Notes")
     assert flagged["read"] is True
     assert flagged["read_by"] == "reader-1"
     filtered, _ = _context(rows, exclude_read=True)
-    titles = {a["title"] for a in filtered["important_articles"]}
+    titles = {a["title"] for a in filtered["recent_articles"]}
     assert "TikTok Adds Voice Notes" not in titles
     assert "Signal Loss Rebuild" in titles
 

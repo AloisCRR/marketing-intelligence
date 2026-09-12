@@ -3,7 +3,10 @@
 Deterministic, stdlib-only extraction (no language-model calls, no paid deps):
 
 - :func:`is_thin` decides whether an RSS body is worth enriching.
-- :func:`clean_to_markdown` converts article HTML to clean Markdown.
+- :func:`clean_to_markdown` converts article HTML to clean Markdown, with
+  per-domain post-processing for the National Jeweler family (chrome blocks
+  stripped, inline editorial anchors flattened to plain words, boilerplate
+  trailer cut) so harvested and enriched bodies both stay clean.
 - :func:`fetch_and_clean` retrieves an article URL over HTTPS and cleans it:
   Chrome browser impersonation (``curl_cffi``: TLS fingerprint plus genuine
   browser headers — never any crawler/bot UA, no cookies/credentials ever)
@@ -37,6 +40,7 @@ import time
 import urllib.error
 import urllib.request
 import zlib
+from urllib.parse import urlsplit
 
 from marketing_intelligence.ingest import USER_AGENT
 from marketing_intelligence.normalize import NormalizedDocument, make_document, normalize_text
@@ -109,6 +113,92 @@ _ANCHOR_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _WS_RE = re.compile(r"\s+")
+
+#: Hosts in the National Jeweler family. Their article pages share one CMS
+#: shape: a ``trix-content`` body wrapped in related-articles and "The Latest"
+#: sidebar blocks that generic extraction renders into the stored body as
+#: navigation chrome (and inline editorial anchors that render as links).
+NJ_FAMILY_HOSTS = ("nationaljeweler.com",)
+
+#: Container tags whose class/id markers identify NJ boilerplate chrome.
+#: Inline tags (a/img) are never stripped here: editorial anchors are handled
+#: at the Markdown level, where they become plain words instead of vanishing.
+_NJ_CONTAINER_TAGS = frozenset(
+    {"div", "aside", "section", "nav", "ul", "ol", "header", "footer", "form", "figure", "table"}
+)
+
+#: HTML void elements: opening tags that never own a closing tag.
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+#: class/id substrings marking NJ boilerplate containers (removed with
+#: contents before conversion). Scoped to the NJ family only; NJ article-body
+#: containers are ``trix-content`` / ``article__head`` and never carry these.
+_NJ_BOILERPLATE_MARKERS = (
+    "related",
+    "the-latest",
+    "thelatest",
+    "latest-news",
+    "latest",
+    "sidebar",
+    "side-bar",
+    "most-read",
+    "most-popular",
+    "popular",
+    "recommended",
+    "read-more",
+    "readmore",
+    "newsletter",
+    "outbrain",
+    "taboola",
+    "site-nav",
+    "main-nav",
+    "breadcrumb",
+    "site-header",
+    "site-footer",
+    "social-share",
+    "share-tools",
+)
+
+#: Markdown headings that begin a boilerplate trailer on NJ pages; anything
+#: from such a heading onward is chrome, never article text.
+_NJ_TRAILER_HEADING_RE = re.compile(
+    r"^(?:#{1,6}\s*)?(?:the latest|related (?:articles|stories|posts|content)|"
+    r"most (?:popular|read)|recommended|read more|more stories|more from|"
+    r"you may also like|from our partners)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+#: class/id attribute values (quoted or bare), scanned for boilerplate markers.
+_CLASS_OR_ID_RE = re.compile(
+    r"""(?:class|id)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
+    re.IGNORECASE,
+)
+
+#: Opening/closing HTML tags, for the NJ boilerplate scanner.
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+_OPEN_TAG_RE = re.compile(r"<\s*([a-zA-Z][\w:-]*)((?:\s[^>]*?)?)\s*/?>")
+_CLOSE_TAG_RE = re.compile(r"</\s*([a-zA-Z][\w:-]*)\s*>")
+
+#: Markdown image and link syntax, for the NJ link-flattening pass.
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MD_LINK_RE = re.compile(r"\[([^\]\[]*)\]\([^)]*\)")
 
 #: Non-visible blocks whose *contents* are never article text (scripts carry
 #: code and embedded JSON-LD, styles carry CSS). Stripped with contents by
@@ -185,25 +275,107 @@ def is_thin(text: str | None, threshold: int = DEFAULT_THIN_THRESHOLD) -> bool:
     return not collapsed or len(collapsed) < threshold
 
 
-def _anchor_to_markdown(match: re.Match[str]) -> str:
+def _is_nj_family(url: str) -> bool:
+    """True when `url` belongs to the National Jeweler host family."""
+    host = urlsplit(url or "").hostname or ""
+    host = host.lower()
+    return any(host == base or host.endswith("." + base) for base in NJ_FAMILY_HOSTS)
+
+
+def _nj_marker_in(tag_attrs: str) -> bool:
+    """True when a tag's class/id value carries an NJ boilerplate marker."""
+    for quoted, single, bare in _CLASS_OR_ID_RE.findall(tag_attrs):
+        value = (quoted or single or bare).lower()
+        if any(marker in value for marker in _NJ_BOILERPLATE_MARKERS):
+            return True
+    return False
+
+
+def _strip_nj_boilerplate(html: str) -> str:
+    """Drop NJ chrome containers (related blocks, "The Latest", nav) from HTML.
+
+    Depth-aware scan: a marked container and everything nested inside it is
+    removed up to its matching close tag, so nested markup never leaks the
+    remainder of a sidebar back into the body. ``<nav>`` is always chrome on
+    the NJ family; other containers need a class/id marker. Inline tags are
+    left for the Markdown pass, which keeps editorial anchor text.
+    """
+    source = html or ""
+    out: list[str] = []
+    pos = 0
+    skip_depth = 0
+    skip_tag = ""
+    for match in _HTML_TAG_RE.finditer(source):
+        if not skip_depth:
+            out.append(source[pos : match.start()])
+        token = match.group(0)
+        if skip_depth == 0:
+            opening = _OPEN_TAG_RE.match(token)
+            if opening:
+                tag = opening.group(1).lower()
+                attrs = opening.group(2) or ""
+                strip = tag == "nav" or (tag in _NJ_CONTAINER_TAGS and _nj_marker_in(attrs))
+                if strip and not token.rstrip().endswith("/>") and tag not in _VOID_TAGS:
+                    skip_depth, skip_tag = 1, tag
+                    pos = match.end()
+                    continue
+            out.append(token)
+        else:
+            closing = _CLOSE_TAG_RE.match(token)
+            if closing:
+                if closing.group(1).lower() == skip_tag:
+                    skip_depth -= 1
+                    if skip_depth == 0:
+                        skip_tag = ""
+            else:
+                opening = _OPEN_TAG_RE.match(token)
+                if opening and opening.group(1).lower() == skip_tag:
+                    if not token.rstrip().endswith("/>"):
+                        skip_depth += 1
+        pos = match.end()
+    if not skip_depth:
+        out.append(source[pos:])
+    return "".join(out)
+
+
+def _nj_clean_markdown(markdown: str) -> str:
+    """Flatten NJ anchors to plain words and cut any boilerplate trailer.
+
+    Inline editorial anchors keep their label text (never a URL), images are
+    dropped, and everything from a known chrome heading ("The Latest",
+    "Related Articles", "Most Popular", ...) onward is discarded, so the lede
+    stays first and sentence text stays intact.
+    """
+    text = _MD_IMAGE_RE.sub("", markdown or "")
+    text = _MD_LINK_RE.sub(r"\1", text)
+    paragraphs = [block.strip() for block in re.split(r"\n{2,}", text)]
+    for index, block in enumerate(paragraphs):
+        if _NJ_TRAILER_HEADING_RE.match(block):
+            paragraphs = paragraphs[:index]
+            break
+    return "\n\n".join(block for block in paragraphs if block).strip()
+
+
+def _anchor_to_markdown(match: re.Match[str], links: bool = True) -> str:
     href = match.group(1) or match.group(2) or match.group(3) or ""
     label = normalize_text(_TAG_RE.sub(" ", match.group(4)))
     if not label:
         return ""
-    if href.strip():
+    if links and href.strip():
         return f"[{label}]({href.strip()})"
     return label
 
 
-def _regex_to_markdown(html_or_text: str) -> str:
+def _regex_to_markdown(html_or_text: str, links: bool = True) -> str:
     """Legacy regex HTML-to-Markdown path (fallback when trafilatura yields nothing).
 
-    Block elements become paragraph breaks, anchors become `[label](href)`,
-    remaining tags are stripped and entities unescaped. Paragraphs are
-    preserved (joined with blank lines).
+    Block elements become paragraph breaks, anchors become `[label](href)`
+    (or plain labels when `links` is false, the National Jeweler family
+    shape), remaining tags are stripped and entities unescaped. Paragraphs
+    are preserved (joined with blank lines).
     """
     text = _NON_VISIBLE_RE.sub(" ", html_or_text or "")
-    text = _ANCHOR_RE.sub(_anchor_to_markdown, text)
+    text = _ANCHOR_RE.sub(lambda match: _anchor_to_markdown(match, links), text)
     text = _BLOCK_RE.sub("\n", text)
     text = _TAG_RE.sub(" ", text)
     text = _html.unescape(text)
@@ -219,17 +391,27 @@ def clean_to_markdown(html_or_text: str, url: str = "") -> str:
     styles, and boilerplate dropped — no LLM features). When trafilatura is
     unavailable or yields nothing usable (stubs, lock pages, non-HTML
     input), the legacy regex path runs instead, so cleaning never
-    hard-fails. `url` feeds trafilatura's dedupe/canonical hints and is
-    otherwise accepted for signature symmetry with fetch-stage callers.
+    hard-fails. `url` feeds trafilatura's dedupe/canonical hints and keys the
+    per-domain National Jeweler post-processing (chrome blocks stripped
+    before conversion, anchors flattened to plain words, boilerplate trailer
+    cut) so harvested and enriched bodies are clean on both paths.
     """
     source = html_or_text or ""
+    national_jeweler = _is_nj_family(url)
+    if national_jeweler and "<" in source and ">" in source:
+        source = _strip_nj_boilerplate(source)
     if _trafilatura is not None and "<" in source and ">" in source:
         try:
+            # NJ family: segment dedupe stays off. trafilatura's `deduplicate`
+            # also keeps a process-global document cache; re-extracting the
+            # same article (every rerun of an Ingestion Run) then discards the
+            # body and leaks metadata chrome back through the regex fallback.
+            # Other sources keep the established behavior.
             extracted = _trafilatura.extract(
                 source,
                 output_format="markdown",
                 include_links=True,
-                deduplicate=True,
+                deduplicate=not national_jeweler,
                 favor_precision=True,
                 include_comments=False,
                 url=url or None,
@@ -237,8 +419,10 @@ def clean_to_markdown(html_or_text: str, url: str = "") -> str:
         except Exception:
             extracted = None
         if extracted and extracted.strip():
-            return extracted.strip()
-    return _regex_to_markdown(source)
+            markdown = extracted.strip()
+            return _nj_clean_markdown(markdown) if national_jeweler else markdown
+    markdown = _regex_to_markdown(source, links=not national_jeweler)
+    return _nj_clean_markdown(markdown) if national_jeweler else markdown
 
 
 #: HTTP statuses whose error bodies may carry bot-challenge evidence.

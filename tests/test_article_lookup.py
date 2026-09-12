@@ -104,6 +104,7 @@ PERIOD_ARTICLE_KEYS = {
     "canonical_url",
     "source",
     "published_at",
+    "rank",
     "author",
     "flag_reason",
     "flag_detail",
@@ -309,28 +310,12 @@ def test_search_shape_unchanged() -> None:
         assert "content" not in row
 
 
-def test_period_shape_unchanged() -> None:
+def test_period_shape_is_truthful_recency_bundle() -> None:
     from datetime import date
 
     ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConn())
-    assert set(ctx) == {
-        "period",
-        "important_articles",
-        "top_stories",
-        "emerging_topics",
-        "topic_movements",
-        "notable_entities",
-        "source_convergence",
-    }
-    for key in (
-        "top_stories",
-        "emerging_topics",
-        "topic_movements",
-        "notable_entities",
-        "source_convergence",
-    ):
-        assert ctx[key] == []
-    for article in ctx["important_articles"]:
+    assert set(ctx) == {"period", "recent_articles"}
+    for article in ctx["recent_articles"]:
         assert set(article) == PERIOD_ARTICLE_KEYS
         assert "content" not in article
 

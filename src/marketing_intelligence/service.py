@@ -10,7 +10,7 @@ payloads stay identical by construction. Validation failures raise
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from marketing_intelligence import article as _article
@@ -18,7 +18,8 @@ from marketing_intelligence import flag as _flag
 from marketing_intelligence import period as _period
 from marketing_intelligence import read as _read
 from marketing_intelligence import search as _search
-from marketing_intelligence.sources import V1_SOURCES
+from marketing_intelligence.db import get_connection
+from marketing_intelligence.sources import V1_SOURCES, get_cadence
 
 MAX_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
@@ -58,6 +59,7 @@ PERIOD_ARTICLE_KEYS = (
         "canonical_url",
         "source",
         "published_at",
+        "rank",
         "author",
     )
     + FLAG_KEYS
@@ -76,14 +78,6 @@ ARTICLE_KEYS = (
     )
     + FLAG_KEYS
     + READ_KEYS
-)
-
-TREND_KEYS = (
-    "top_stories",
-    "emerging_topics",
-    "topic_movements",
-    "notable_entities",
-    "source_convergence",
 )
 
 
@@ -208,10 +202,12 @@ def get_period_context(
     """Validated period evidence bundle for [from_date, to_date].
 
     Bounds accept `date`, `datetime`, or ISO strings (Panama interpretation
-    downstream). Explicit `sources` must all be known names. V1 trend keys are
-    present as explicit `[]` (no accumulated history yet). `exclude_read=True`
-    filters out marked (read) articles; the default False annotates every
-    article (`read`/`read_at`/`read_by`) without filtering.
+    downstream). Explicit `sources` must all be known names. The bundle
+    contains only real data: a recency-ordered `recent_articles` list whose
+    items each carry a 1-based `rank` ordering signal, with no empty
+    analytics placeholders. `exclude_read=True` filters out marked (read)
+    articles; the default False annotates every article
+    (`read`/`read_at`/`read_by`) without filtering.
     """
     start = _coerce_bound(from_date, label="from_date")
     end = _coerce_bound(to_date, label="to_date")
@@ -375,3 +371,99 @@ def flag_extraction(
         raise
     except (ValueError, TypeError, LookupError) as exc:
         raise InvalidRequest(str(exc)) from None
+
+
+# --- Source inventory (Ticket 18) ------------------------------------------
+#
+# Read-only per-Source listing for operators/agents: stored Document counts
+# and the last successful Ingestion Run come from the durable tables; cadence
+# comes from the curated registry. Both queries take the V1 name list as one
+# parameter and never write.
+
+_SOURCE_DOCUMENT_COUNTS_SQL = """\
+SELECT s.name, COUNT(d.id)
+  FROM sources s
+  LEFT JOIN documents d ON d.source_id = s.id
+ WHERE s.name = ANY(%s)
+ GROUP BY s.name\
+"""
+
+_SOURCE_LAST_SUCCESS_SQL = """\
+SELECT source_name, MAX(finished_at)
+  FROM ingestion_runs
+ WHERE error IS NULL
+   AND source_name = ANY(%s)
+ GROUP BY source_name\
+"""
+
+
+def _iso_or_none(value: Any) -> Any:
+    """Normalise a timestamp to an isoformat tz-aware string; None passes through."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.isoformat()
+    return value
+
+
+def _pair_rows(conn: Any, sql: str, params: tuple) -> dict[str, Any]:
+    """Run a ``(name, value)`` SELECT and map rows by name (missing keys absent)."""
+    cursor = conn.execute(sql, params)
+    rows = cursor.fetchall() or []
+    result: dict[str, Any] = {}
+    for row in rows:
+        if row is None or row[0] is None:
+            continue
+        result[str(row[0])] = row[1]
+    return result
+
+
+def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
+    """Read-only inventory of every V1 Source, in V1 order (all 20).
+
+    Each item is ``{"name", "article_count", "last_ingest_at", "cadence"}``:
+    the stored Document count, the most recent *successful* Ingestion Run's
+    finish time (ISO-8601 tz-aware, ``None`` when never successfully
+    ingested), and the curated cadence label (``None`` when undeclared).
+    Empty and never-ingested Sources stay in the listing with explicit
+    ``0``/``None`` — they never disappear.
+
+    Args:
+        conn: optional injected DB-API connection (fake-friendly). When None
+            the adapter opens one via ``get_connection`` and closes only that;
+            an injected connection is never closed or committed here.
+
+    Returns:
+        List of 20 dicts in ``V1_SOURCES`` order. Read-only.
+    """
+    names = list(V1_SOURCES)
+    owns_connection = conn is None
+    if conn is None:
+        conn = get_connection()
+    assert conn is not None
+    try:
+        counts = _pair_rows(conn, _SOURCE_DOCUMENT_COUNTS_SQL, (names,))
+        last = _pair_rows(conn, _SOURCE_LAST_SUCCESS_SQL, (names,))
+    finally:
+        if owns_connection:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    inventory: list[dict[str, Any]] = []
+    for name in names:
+        try:
+            count = int(counts.get(name, 0))
+        except (TypeError, ValueError):
+            count = 0
+        inventory.append(
+            {
+                "name": name,
+                "article_count": count,
+                "last_ingest_at": _iso_or_none(last.get(name)),
+                "cadence": get_cadence(name),
+            }
+        )
+    return inventory

@@ -54,6 +54,7 @@ PERIOD_EXPECTED_KEYS = {
     "canonical_url",
     "source",
     "published_at",
+    "rank",
     "author",
     "flag_reason",
     "flag_detail",
@@ -269,29 +270,15 @@ def test_search_injected_conn_is_not_closed() -> None:
 # --- period ------------------------------------------------------------------
 
 
-def test_period_shape_provenance_and_empty_trend_keys() -> None:
+def test_period_shape_provenance_and_truthful_recency_list() -> None:
     ctx = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
-    assert set(ctx) == {
-        "period",
-        "important_articles",
-        "top_stories",
-        "emerging_topics",
-        "topic_movements",
-        "notable_entities",
-        "source_convergence",
-    }
+    # No empty analytics placeholders: period + recency-ordered articles only.
+    assert set(ctx) == {"period", "recent_articles"}
     assert set(ctx["period"]) == {"from", "to", "timezone"}
     assert ctx["period"]["timezone"] == "America/Panama"
-    for key in (
-        "top_stories",
-        "emerging_topics",
-        "topic_movements",
-        "notable_entities",
-        "source_convergence",
-    ):
-        assert ctx[key] == []
-    articles = ctx["important_articles"]
+    articles = ctx["recent_articles"]
     assert [a["title"] for a in articles] == ["Signal Loss Rebuild", "TikTok Adds Voice Notes"]
+    assert [a["rank"] for a in articles] == [1, 2]
     for article in articles:
         assert set(article) == PERIOD_EXPECTED_KEYS
         parsed = datetime.fromisoformat(str(article["published_at"]))
@@ -308,7 +295,7 @@ def test_period_string_bounds_coerced_like_dates() -> None:
     from_str = get_period_context("2026-09-07", "2026-09-13", conn=_PeriodConnection())
     from_dates = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
     assert from_str["period"] == from_dates["period"]
-    assert from_str["important_articles"] == from_dates["important_articles"]
+    assert from_str["recent_articles"] == from_dates["recent_articles"]
     # Datetime strings stay exact instants.
     ctx = get_period_context("2026-09-07T09:00:00", "2026-09-08T09:00:00", conn=_PeriodConnection())
     assert ctx["period"]["from"] == "2026-09-07T09:00:00-05:00"
@@ -351,7 +338,7 @@ def test_period_explicit_known_source_passes_through() -> None:
         sources=["MarTech"],
         conn=_PeriodConnection(),
     )
-    assert [a["title"] for a in ctx["important_articles"]] == ["Signal Loss Rebuild"]
+    assert [a["title"] for a in ctx["recent_articles"]] == ["Signal Loss Rebuild"]
 
 
 def test_period_bad_bounds_and_limits_rejected() -> None:
@@ -480,7 +467,7 @@ def test_period_annotates_read_state_by_default() -> None:
     ctx = get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
     )
-    by_url = {a["url"]: a for a in ctx["important_articles"]}
+    by_url = {a["url"]: a for a in ctx["recent_articles"]}
     assert len(by_url) == 2
     marked = by_url[READ_URL]
     assert set(marked.keys()) == PERIOD_EXPECTED_KEYS
@@ -497,14 +484,14 @@ def test_period_exclude_read_filters_marked() -> None:
     ctx = get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
     )
-    assert len(ctx["important_articles"]) == 2
+    assert len(ctx["recent_articles"]) == 2
     filtered = get_period_context(
         date(2026, 9, 7),
         date(2026, 9, 13),
         exclude_read=True,
         conn=_PeriodConnection(READ_PERIOD_ROWS),
     )
-    assert [a["url"] for a in filtered["important_articles"]] == [UNREAD_URL]
+    assert [a["url"] for a in filtered["recent_articles"]] == [UNREAD_URL]
 
 
 def test_period_exclude_read_must_be_bool() -> None:

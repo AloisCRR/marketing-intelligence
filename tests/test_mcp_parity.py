@@ -58,12 +58,7 @@ PERIOD_PAYLOAD = {
         "to": "2026-09-14T00:00:00-05:00",
         "timezone": "America/Panama",
     },
-    "important_articles": [],
-    "top_stories": [],
-    "emerging_topics": [],
-    "topic_movements": [],
-    "notable_entities": [],
-    "source_convergence": [],
+    "recent_articles": [],
 }
 
 FLAG_PAYLOAD = {
@@ -133,12 +128,13 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_five_tools() -> None:
+def test_mcp_registers_exactly_six_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
     assert sorted(t.name for t in tools) == [
         "flag_extraction",
         "get_article",
         "get_period_context",
+        "list_sources_inventory",
         "mark_article_read",
         "search_articles",
     ]

@@ -10,12 +10,11 @@ an explicit caller-supplied period interpreted in ``America/Panama``:
   upper bound at the next midnight);
 - ``datetime`` bounds are exact instants (``from`` inclusive, ``to`` exclusive).
 
-V1 deliberately makes NO velocity or emerging-topic claims: ranking signals
-need accumulated history that does not exist yet. The trend-shaped keys
-(``top_stories``, ``emerging_topics``, ``topic_movements``,
-``notable_entities``, ``source_convergence``) are therefore present as
-explicit empty lists following spec §13's conceptual contract, so future
-lanes can fill them without breaking callers.
+V1 deliberately makes NO velocity, emerging-topic, entity, or convergence
+claims: those signals need accumulated history and enrichment that do not
+exist yet. The bundle therefore carries only what is real — a recency-ordered
+``recent_articles`` list, each item stamped with its 1-based ``rank`` in that
+order plus its provenance — and no placeholder analytics fields.
 """
 
 from __future__ import annotations
@@ -102,14 +101,16 @@ def get_period_context(
     ``exclude_read`` filters out marked (read) articles via
     ``AND d.read_at IS NULL``; default False annotates without filtering.
 
-    Returns ``period {from, to, timezone}`` plus ``important_articles`` —
-    each with ``title, url, canonical_url, source, published_at, author``
-    provenance plus the Extraction Flag annotation (``flag_reason,
-    flag_detail, flagged_at, flagged_by`` — ``None`` when unflagged) and the
-    Read State annotation (``read`` bool derived from ``read_at IS NOT
-    NULL``, plus ``read_at, read_by`` — ``None`` when unread),
-    newest-first, bounded by ``limit`` — plus the V1-empty
-    trend keys documented above.
+    Returns ``period {from, to, timezone}`` plus ``recent_articles`` — a
+    purely recency-ordered list (never ranked by importance), bounded by
+    ``limit``. Each item carries ``rank`` (its 1-based position in that
+    order; an ordering signal, not a score) alongside
+    ``title, url, canonical_url, source, published_at, author`` provenance,
+    the Extraction Flag annotation (``flag_reason, flag_detail, flagged_at,
+    flagged_by`` — ``None`` when unflagged), and the Read State annotation
+    (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
+    read_by`` — ``None`` when unread). No empty analytics placeholders are
+    emitted.
 
     Raises:
         ValueError: non-bool ``exclude_read`` (alongside the existing
@@ -144,7 +145,7 @@ def get_period_context(
                 pass
 
     articles: list[dict[str, Any]] = []
-    for row in rows or []:
+    for index, row in enumerate(rows or [], start=1):
         if isinstance(row, dict):
             title = row.get("title")
             url = row.get("url")
@@ -183,6 +184,7 @@ def get_period_context(
                 "canonical_url": canonical_url,
                 "source": source,
                 "published_at": _iso_tz_aware(published_at),
+                "rank": index,
                 "author": author,
                 "flag_reason": flag_reason,
                 "flag_detail": flag_detail,
@@ -199,11 +201,5 @@ def get_period_context(
             "to": end.isoformat(),
             "timezone": PANAMA_NAME,
         },
-        "important_articles": articles,
-        # V1: no accumulated history yet — no velocity/emerging claims.
-        "top_stories": [],
-        "emerging_topics": [],
-        "topic_movements": [],
-        "notable_entities": [],
-        "source_convergence": [],
+        "recent_articles": articles,
     }

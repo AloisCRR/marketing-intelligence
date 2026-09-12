@@ -3,6 +3,7 @@
 ## Glossary
 
 - **Source**: a curated origin (site/feed) with retrieval config. V1: all 20 curated sources via RSS + sitemap/hub/url-set lanes.
+- **Source Inventory**: read-only per-Source listing (`name`, `article_count`, `last_ingest_at`, `cadence`) covering all 20 V1 Sources; empty and never-ingested Sources report explicit `0`/`null` instead of disappearing. `last_ingest_at` is the finish time of the most recent successful Ingestion Run (`error IS NULL`).
 - **Document / Article**: one normalized retrieved item (title, content, URLs, timestamps, language, hash). The durable evidence unit.
 - **Read State**: whether a Document has been marked as read by a consumer (`read_at`/`read_by`, NULL = unread). Marking reflects consuming the Document, not reading a digest. _Avoid_: seen, viewed, page mark, digest consumer as actor
 - **Story / Event**: the underlying development multiple documents may cover. V1: column reserved (`story_id`, nullable) but unused — no clustering yet.
@@ -11,11 +12,11 @@
   _Avoid_: Flow Run (Prefect implementation term for the same execution), batch run
 - **Ingestion Stage**: one fetch / parse / upsert step inside an Ingestion Run, implemented as a Prefect task.
   _Avoid_: Task Run (Prefect implementation term for the same step)
-- **Period Context**: a prepared evidence bundle for a caller-given date range (`period`, `important_articles` with provenance). V1: no velocity, no emerging-topics (no history yet).
+- **Period Context**: a prepared evidence bundle for a caller-given date range (`period`, `recent_articles` — a recency-ordered list whose items carry a 1-based `rank` position plus provenance). Truthful by construction: no empty analytics placeholders, no ranking-by-importance claim. V1: no velocity, no emerging-topics (no history yet).
 - **Service Adapter**: the single validated interface (`marketing_intelligence.service`, `MAX_LIMIT=100`, `InvalidRequest`) behind both caller surfaces; stdlib-only, no HTTP/MCP imports.
 - **Extraction Flag**: an agent-reported marker that a Document's content was improperly extracted, with reason + detail + reporter + timestamp.
   _Avoid_: Page mark, quality flag (factual accuracy is out of scope)
-- **API / MCP**: two thin, parity-guaranteed surfaces over the service adapter — HTTP (`GET /search` with 11-key dicts, `POST /period-context` with 10-key dicts, `GET /article`, `POST /flag-extraction`, 422 on `InvalidRequest`) and MCP (4 tools: `search_articles`, `get_period_context`, `get_article`, `flag_extraction`, same payloads by construction).
+- **API / MCP**: two thin, parity-guaranteed surfaces over the service adapter — HTTP (`GET /search` with 11-key dicts, `POST /period-context` with a recency-ordered bundle, `GET /article`, `GET /sources` with the Source Inventory, `POST /flag-extraction`, `POST /mark-read`, 422 on `InvalidRequest`) and MCP (6 tools: `search_articles`, `get_period_context`, `get_article`, `list_sources_inventory`, `flag_extraction`, `mark_article_read`, same payloads by construction).
 
 ## V1 cuts (agreed)
 

@@ -59,7 +59,7 @@ class PeriodRequest(BaseModel):
 
 @app.post("/period-context")
 def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> dict[str, Any]:
-    """Period evidence bundle for [from_date, to_date] (ISO dates)."""
+    """Recency-ordered period evidence bundle for [from_date, to_date] (ISO dates)."""
     return service.get_period_context(
         body.from_date,
         body.to_date,
@@ -112,3 +112,9 @@ def mark_read(body: MarkReadRequest, _: None = Depends(require_bearer)) -> dict[
         read_by=body.read_by,
         clear=body.clear,
     )
+
+
+@app.get("/sources")
+def source_inventory(_: None = Depends(require_bearer)) -> dict[str, Any]:
+    """Read-only Source inventory (name, article count, last ingest, cadence)."""
+    return {"sources": service.list_sources_inventory()}

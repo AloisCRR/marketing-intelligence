@@ -83,6 +83,7 @@ PERIOD_EXPECTED_KEYS = {
     "canonical_url",
     "source",
     "published_at",
+    "rank",
     "author",
     "flag_reason",
     "flag_detail",
@@ -579,14 +580,14 @@ def test_period_annotates_flag_without_filtering() -> None:
     conn = _FakeConnection()
     _flagged(conn)
     ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
-    flagged = next(a for a in ctx["important_articles"] if a["url"] == ARTICLE_URL)
+    flagged = next(a for a in ctx["recent_articles"] if a["url"] == ARTICLE_URL)
     assert set(flagged.keys()) == PERIOD_EXPECTED_KEYS
     assert flagged["flag_reason"] == "thin"
     assert flagged["flag_detail"] == "body under 200 chars, looks like RSS teaser only"
     assert flagged["flagged_by"] == "digest-agent"
     assert _dt.datetime.fromisoformat(str(flagged["flagged_at"])).tzinfo is not None
     # Flagged articles are still listed (annotate, not filter).
-    assert {a["title"] for a in ctx["important_articles"]} == {
+    assert {a["title"] for a in ctx["recent_articles"]} == {
         ARTICLE_TITLE,
         "Signal Loss Rebuild",
     }

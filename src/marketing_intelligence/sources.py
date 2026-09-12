@@ -38,6 +38,13 @@ def normalize_language(raw: Any | None) -> str:
     return "en"
 
 
+def _clean_cadence(raw: Any | None) -> str | None:
+    """Trim a curated cadence label; missing/blank/non-string values are None."""
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
 SOURCE_NAME_SMT = "Social Media Today"
 
 #: Default thin threshold (chars) for the enrichment policy when a source
@@ -159,6 +166,9 @@ def _registry() -> dict[str, dict[str, Any]]:
                 "rss_url": entry.get("rss_url"),
                 "hub_url": entry.get("hub_url"),
                 "language": normalize_language(entry.get("language")),
+                # Curated publishing cadence ("Daily"/"Weekly"); None when the
+                # entry declares none. Read via `get_cadence`.
+                "cadence": _clean_cadence(entry.get("cadence")),
                 "raw": entry,
             }
             overrides = entry.get("enrichment")
@@ -187,6 +197,25 @@ def get_source(name: str) -> dict[str, Any]:
         return dict(_registry()[name])
     except KeyError:
         raise KeyError(f"Unknown source: {name!r}") from None
+
+
+def get_cadence(source_name: str | None) -> str | None:
+    """Return the curated cadence label for `source_name`.
+
+    Cadence is registry metadata (``"Daily"``/``"Weekly"`` today), not a DB
+    column. Unknown or missing sources and entries without a declared cadence
+    yield ``None`` — this function never raises.
+    """
+    if not source_name:
+        return None
+    try:
+        entry = get_source(source_name)
+    except KeyError:
+        return None
+    cadence = entry.get("cadence")
+    if isinstance(cadence, str) and cadence:
+        return cadence
+    return None
 
 
 def get_enrichment_policy(source_name: str) -> dict[str, Any]:
