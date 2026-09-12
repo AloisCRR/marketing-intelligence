@@ -76,9 +76,15 @@ RETRIEVAL_TYPES: tuple[str, ...] = (
     "url-set+hub",
 )
 
-#: Allowed feed retrieval policies: plain stdlib fetch, or stdlib with one
-#: curl_cffi impersonated retry on 403/challenge evidence.
-RETRIEVAL_POLICIES: tuple[str, ...] = ("stdlib-only", "impersonated-feed")
+#: Allowed feed retrieval policies. The stdlib lanes are gone: every fetch
+#: runs the impersonated chain (curl_cffi Chrome + browser headers → Jina
+#: reader → Firecrawl), each leg explicit about its own failure.
+RETRIEVAL_POLICIES: tuple[str, ...] = ("impersonated-feed",)
+
+#: Deprecated back-compat alias: stanzas (or callers) still saying
+#: ``"stdlib-only"`` resolve to ``"impersonated-feed"``. It is never a fetch
+#: identity — no stdlib traffic is ever issued for it.
+RETRIEVAL_POLICY_ALIASES: dict[str, str] = {"stdlib-only": "impersonated-feed"}
 
 #: Allowed article extractor families: generic HTML-to-Markdown default, or
 #: JSON-LD ``articleBody``-first (Next.js/Sanity family, e.g. Jing Daily)
@@ -97,7 +103,7 @@ DEFAULT_MAX_URLS = 50
 #: Policy returned for unknown sources and entries without overrides.
 DEFAULT_RETRIEVAL_POLICY: dict[str, Any] = {
     "type": "rss",
-    "policy": "stdlib-only",
+    "policy": "impersonated-feed",
 }
 
 V1_SOURCES: tuple[str, ...] = (
@@ -296,18 +302,20 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
 def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     """Return the retrieval policy for `source_name`.
 
-    Result shape is ``{"type": ..., "policy": "stdlib-only"|"impersonated-feed"}``
+    Result shape is ``{"type": ..., "policy": "impersonated-feed"}``
     plus validated optional discovery keys (``extractor``, ``sitemaps``,
     ``hub``, ``hub_pages``, ``link_pattern``, ``sitemap_pattern``,
     ``sitemap_exclude``, ``id_guard``, ``pacing_ms``, ``max_urls``) only when the
     registry stanza declares them: RSS stanzas keep their exact
     ``{"type", "policy"}`` shape, so RSS ingest behavior is unchanged.
-    ``stdlib-only`` fetches with plain urllib (current behavior);
-    ``impersonated-feed`` adds one curl_cffi Chrome-impersonated retry when
-    the plain attempt meets 403/challenge evidence, else an explicit fetch
-    error. Overrides come from the registry entry's ``"retrieval"`` mapping;
-    entries without overrides yield the default (rss, stdlib-only).
-    Unknown (or missing) sources yield the default — never raises.
+    Every fetch runs the impersonated chain: curl_cffi Chrome under
+    ``BROWSER_HEADERS``, then the Jina reader, then Firecrawl.
+    The deprecated ``"stdlib-only"`` alias resolves back to
+    ``"impersonated-feed"`` (accepted for back-compat, never a fetch
+    identity), as do unknown policy values. Overrides come from the registry
+    entry's ``"retrieval"`` mapping; entries without overrides yield the
+    default (rss, impersonated-feed). Unknown (or missing) sources yield the
+    default — never raises.
     """
     if source_name is None:
         return dict(DEFAULT_RETRIEVAL_POLICY)
@@ -321,9 +329,12 @@ def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     rtype = raw.get("type", "rss")
     if rtype not in RETRIEVAL_TYPES:
         rtype = "rss"
-    policy = raw.get("policy", "stdlib-only")
+    policy = raw.get("policy", "impersonated-feed")
+    if not isinstance(policy, str):
+        policy = "impersonated-feed"
+    policy = RETRIEVAL_POLICY_ALIASES.get(policy, policy)
     if policy not in RETRIEVAL_POLICIES:
-        policy = "stdlib-only"
+        policy = "impersonated-feed"
     return {"type": rtype, "policy": policy, **_validated_extras(raw)}
 
 

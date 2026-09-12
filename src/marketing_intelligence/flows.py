@@ -78,7 +78,8 @@ def fetch_task(url: str, source_name: str | None = None) -> bytes:
 
     Threads the per-source retrieval policy like `enrich_task` threads
     threshold/mode: `get_retrieval_policy` (never raises; unknown sources
-    yield stdlib-only) selects the `fetch_rss` lane. Declarative retries
+    yield impersonated-feed — the only lane, chaining curl_cffi Chrome →
+    Jina reader → Firecrawl) selects the `fetch_rss` lane. Declarative retries
     (3 attempts, 2s/5s/15s backoff) self-heal transient network blips; a
     genuine failure exhausts retries and lands the task Failed (red) — the
     exception propagates, never swallowed here.
@@ -171,7 +172,7 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
     config = get_retrieval_config(source_name)
     source = get_source(source_name)
     language = str(source.get("language") or "en")
-    policy = str(config.get("policy") or "stdlib-only")
+    policy = str(config.get("policy") or "impersonated-feed")
     pacing_ms = config.get("pacing_ms")
     pacing_s = pacing_ms / 1000.0 if isinstance(pacing_ms, int) and pacing_ms > 0 else 1.0
     # Planning traverses a handful of sitemap/hub listings at stanza pace
