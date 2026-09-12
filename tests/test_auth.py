@@ -189,3 +189,48 @@ def test_mcp_http_requires_auth(authed: str) -> None:
         # Correct token passes auth (garbage body fails later, but never 401).
         allowed = client.post("/mcp", json={}, headers=_authed_headers(authed))
         assert allowed.status_code != 401
+
+
+def test_mcp_allowlists_internal_and_public_hosts(authed: str) -> None:
+    """Admitted callers (internal compose DNS, public Traefik domain) pass the host gate.
+
+    Regression test for the 421s: only auth (401) or the MCP-protocol layer may
+    answer these hosts — never DNS-rebinding protection (421).
+    """
+    http_app = MCP_SERVER.create_http_app()
+    hosts = [
+        "marketing-intelligence-mcp",
+        "marketing-intelligence-mcp:8124",
+        "marketing-intelligence.services.aloiscrr.dev",
+    ]
+    with TestClient(http_app) as client:
+        for host in hosts:
+            headers = {**_authed_headers(authed), "host": host}
+            resp = client.post("/mcp", json={}, headers=headers)
+            assert resp.status_code not in (401, 421), host
+
+
+def test_mcp_rejects_unknown_host_with_421(authed: str) -> None:
+    """DNS-rebinding protection stays on: unlisted hosts get 421, not a silent pass."""
+    http_app = MCP_SERVER.create_http_app()
+    with TestClient(http_app) as client:
+        headers = {**_authed_headers(authed), "host": "evil.example"}
+        assert client.post("/mcp", json={}, headers=headers).status_code == 421
+
+
+def test_mcp_extra_allowed_hosts_env(authed: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """MCP_ALLOWED_HOSTS admits future callers without a code change."""
+    monkeypatch.setenv("MCP_ALLOWED_HOSTS", "future-caller.internal")
+    http_app = MCP_SERVER.create_http_app()
+    with TestClient(http_app) as client:
+        headers = {**_authed_headers(authed), "host": "future-caller.internal"}
+        resp = client.post("/mcp", json={}, headers=headers)
+        assert resp.status_code not in (401, 421)
+
+
+def test_mcp_internal_host_still_requires_auth(authed: str) -> None:
+    """Allowlist opens the host gate only: no token on the internal host is still 401."""
+    http_app = MCP_SERVER.create_http_app()
+    with TestClient(http_app) as client:
+        resp = client.post("/mcp", json={}, headers={"host": "marketing-intelligence-mcp:8124"})
+        assert resp.status_code == 401

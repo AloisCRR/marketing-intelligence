@@ -19,10 +19,12 @@ disabled (local-dev open mode).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -54,6 +56,27 @@ SERVER_INSTRUCTIONS = (
 )
 
 
+def _transport_security() -> TransportSecuritySettings:
+    """DNS-rebinding allowlist: public Traefik domain + internal compose DNS.
+
+    Extra hosts via MCP_ALLOWED_HOSTS (comma-separated, Dokploy env).
+    Passed as FastMCP's `transport_security=` constructor setting so both
+    `streamable_http_app()` and `mcp.run()` enforce the same allowlist.
+    """
+    extra = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    return TransportSecuritySettings(
+        allowed_hosts=[
+            "marketing-intelligence.services.aloiscrr.dev",
+            "marketing-intelligence.services.aloiscrr.dev:*",
+            "marketing-intelligence-mcp",
+            "marketing-intelligence-mcp:8124",
+            "localhost:*",
+            "127.0.0.1:*",
+            *extra,
+        ]
+    )
+
+
 def create_mcp() -> FastMCP:
     """Build the shared FastMCP server.
 
@@ -68,8 +91,13 @@ def create_mcp() -> FastMCP:
             instructions=SERVER_INSTRUCTIONS,
             auth=mcp_auth_settings(),
             token_verifier=StaticTokenVerifier(),
+            transport_security=_transport_security(),
         )
-    return FastMCP("Marketing Intelligence", instructions=SERVER_INSTRUCTIONS)
+    return FastMCP(
+        "Marketing Intelligence",
+        instructions=SERVER_INSTRUCTIONS,
+        transport_security=_transport_security(),
+    )
 
 
 mcp = create_mcp()
