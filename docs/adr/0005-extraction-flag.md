@@ -18,3 +18,21 @@ Consumer agents reading via `get_article` / `search_articles` hit improperly ext
 
 - `tests/test_mcp_parity.py` pins 4 tools; contract tests pin annotate-not-filter and all 422 paths.
 - No auto re-fetch, no history, no health/dashboard surfacing in V1 — each is a separate branch if needed.
+
+## Amendment — 2026-09-12: system-filed `unrecoverable`
+
+The retrieval pipeline now files one reason itself: when a document's whole
+article-content chain fails and only the thin RSS body survives, the
+`unrecoverable` reason is written with `SYSTEM_REPORTER` (`"system"`) as the
+reporter and the chained, credential-scrubbed failure cause as detail. This
+extends the lane from agent-only to two reporters sharing one contract:
+
+- `unrecoverable` is a normal member of `FLAG_REASONS`: the agent tool accepts
+  it (and `clear`s it), and unknown reasons still reject as before.
+- Lifecycle and storage are unchanged: the same four `documents` columns,
+  overwrite on re-flag, `clear=true` nulls, no history table.
+- The 0.3 importance cap applies to any non-NULL `flag_reason`, so
+  system-filed flags cap exactly like agent-filed ones.
+
+The pipeline context — why the chain fails terminally, and the post-upsert
+ordering that makes the flag write possible — lives in ADR-0012.

@@ -7,11 +7,12 @@
 
 The article-content lane (`.scratch/article-content/spec.md`, "Resolved
 contradictions") could not be built without narrowing three standing V1 cuts,
-and it swaps the spec's named primary extractor for a dependency-free one.
-Per repo convention these deviations are flagged explicitly instead of being
-silently overridden: the Postgres-plus-pgvector (ADR-0001), service-adapter
-parity (ADR-0002), and ephemeral-Prefect run-shape (ADR-0003) decisions stand
-unchanged except where noted below.
+and it swaps the spec's named primary extractor for a dependency-free one
+(since replaced by trafilatura-only; see (d)). Per repo convention these
+deviations are flagged explicitly instead of being silently overridden: the
+Postgres-plus-pgvector (ADR-0001), service-adapter parity (ADR-0002), and
+ephemeral-Prefect run-shape (ADR-0003) decisions stand unchanged except where
+noted below.
 
 ## Decision
 
@@ -34,14 +35,31 @@ unchanged except where noted below.
   their exact `{inserted, skipped}` shape; each cause entry carries method
   plus cause (`"rss: <cause>"` whenever the stored body stayed RSS), and the
   same entries flow into `record_ingestion_run`'s `skipped_reasons`.
-- Accepted deviation: the spec names Crawl4AI as the primary extractor; the
-  lane builds a stdlib urllib+regex Markdown cleaner instead (no new
-  dependencies, deterministic, hermetic tests). Crawl4AI/Forage remains an
-  approved future swap with no contract change (same stored-body and cause
-  shapes).
+- (d) **Superseded 2026-09-12 — trafilatura-only HTML extraction.** Accepted
+  deviation (original): the spec names Crawl4AI as the primary extractor; the
+  lane built a stdlib urllib+regex Markdown cleaner instead (no new
+  dependencies, deterministic, hermetic tests). The regex-primary era is
+  superseded: HTML-to-Markdown extraction runs a single converter,
+  trafilatura (hard dependency), and the legacy regex converter plus the
+  HTML-level National Jeweler boilerplate scanner are deleted. An HTML body
+  trafilatura cannot extract yields empty Markdown — no tag-stripped fallback
+  dump — so callers keep their thin-check / keep-RSS / `UnparseableBody`
+  semantics. The Markdown-level National Jeweler post-processing (inline
+  editorial anchors flattened to plain words, boilerplate trailer cut) is kept
+  because the family fixtures fail without it: dropping it leaves
+  `nj_article_genz_polluted.html` at 883 chars with `](`/URL links instead of
+  the pinned 756-char `nj_article_genz_clean.md` (closure page: 726 vs the
+  pinned 646). trafilatura's `deduplicate` flag stays off for every URL: its
+  process-global LRU segment cache discards a re-extracted article, which the
+  deleted regex fallback used to mask. Crawl4AI/Forage remains an approved
+  future swap with no contract change (same stored-body and cause shapes).
 
 ## Consequences
 
+- HTML bodies extract through trafilatura only: unextractable input (stubs,
+  lock pages, non-HTML) produces empty Markdown rather than a degraded
+  tag-stripped dump, so the thin-check / keep-RSS / `UnparseableBody`
+  behavior downstream is unchanged and no regex path exists to regress into.
 - `tests/test_mcp_parity.py` pins 3 tools, not 2; `tests/test_feature_parity.py`
   pins list-shape stability and HTTP↔MCP lookup identity.
 - Pre-enrichment shape tests stay hermetic via an identity-enrich stub so
