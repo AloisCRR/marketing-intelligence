@@ -31,34 +31,66 @@ PANAMA_NAME = "America/Panama"
 
 DEFAULT_LIMIT = 50
 
-PERIOD_SQL = """\
+_PERIOD_SELECT = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author,
        d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
-       d.read_at, d.read_by
-  FROM documents d
-  JOIN sources s ON s.id = d.source_id
- WHERE d.published_at >= %s
-   AND d.published_at < %s
-   AND s.name = ANY(%s)
- ORDER BY d.published_at DESC
- LIMIT %s\
-"""
+       d.read_at, d.read_by,
+       imp.score AS importance_score,
+       imp.rationale AS importance_rationale,
+       imp.reporter AS importance_reporter,
+       imp.created_at AS importance_updated_at"""
 
-PERIOD_SQL_EXCLUDE_READ = """\
-SELECT d.title, d.url, d.canonical_url, s.name AS source,
-       d.published_at, d.author,
-       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
-       d.read_at, d.read_by
+_PERIOD_FROM = """\
   FROM documents d
   JOIN sources s ON s.id = d.source_id
+  LEFT JOIN LATERAL (
+      SELECT i.score, i.rationale, i.reporter, i.created_at
+        FROM document_importance i
+       WHERE i.document_id = d.id
+       ORDER BY i.created_at DESC, i.id DESC
+       LIMIT 1
+  ) imp ON true
  WHERE d.published_at >= %s
    AND d.published_at < %s
-   AND s.name = ANY(%s)
-   AND d.read_at IS NULL
- ORDER BY d.published_at DESC
- LIMIT %s\
-"""
+   AND s.name = ANY(%s)"""
+
+_PERIOD_EXCLUDE_READ = "\n   AND d.read_at IS NULL"
+
+#: Newest-first, total-bounded bundle (the default; no per-source cap).
+PERIOD_SQL = f"{_PERIOD_SELECT}\n{_PERIOD_FROM}\n ORDER BY d.published_at DESC\n LIMIT %s"
+
+PERIOD_SQL_EXCLUDE_READ = (
+    f"{_PERIOD_SELECT}\n{_PERIOD_FROM}{_PERIOD_EXCLUDE_READ}"
+    "\n ORDER BY d.published_at DESC\n LIMIT %s"
+)
+
+
+def _capped_sql(*, exclude_read: bool) -> str:
+    """Bundle SQL that keeps at most ``per_source_limit`` rows per source first.
+
+    A window rank is computed over the filtered, newest-first rows per source;
+    only ranks within the cap survive, then the overall newest ``limit`` rows
+    are taken. That way a single prolific source cannot monopolise the bundle
+    — slots it is not allowed to fill go to the next sources in recency order.
+    """
+    read_filter = _PERIOD_EXCLUDE_READ if exclude_read else ""
+    return (
+        "SELECT title, url, canonical_url, source, published_at, author,\n"
+        "       flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by,\n"
+        "       importance_score, importance_rationale, importance_reporter,\n"
+        "       importance_updated_at\n"
+        "  FROM (\n"
+        f"{_PERIOD_SELECT},\n"
+        "       ROW_NUMBER() OVER (\n"
+        "           PARTITION BY s.name ORDER BY d.published_at DESC\n"
+        "       ) AS source_rank\n"
+        f"{_PERIOD_FROM}{read_filter}"
+        "\n       ) ranked\n"
+        " WHERE ranked.source_rank <= %s\n"
+        " ORDER BY ranked.published_at DESC\n"
+        " LIMIT %s"
+    )
 
 
 def _coerce_bound(value: date | datetime, *, is_end: bool) -> datetime:
@@ -90,6 +122,7 @@ def get_period_context(
     limit: int = DEFAULT_LIMIT,
     conn: Any | None = None,
     exclude_read: bool = False,
+    per_source_limit: int | None = None,
 ) -> dict[str, Any]:
     """Return the period evidence bundle for ``[from_date, to_date]``.
 
@@ -100,21 +133,30 @@ def get_period_context(
     are seeded by migrations 001 + 006) or they match no articles.
     ``exclude_read`` filters out marked (read) articles via
     ``AND d.read_at IS NULL``; default False annotates without filtering.
+    ``per_source_limit`` (default None) additionally caps how many items any
+    one source may contribute: rows are ranked newest-first within each
+    source and only the first ``per_source_limit`` survive, then the overall
+    newest ``limit`` rows are taken. Slots a capped source cannot fill go to
+    other sources, so the bundle stays at most ``limit`` items while no
+    source floods it. The two bounds compose with the ``sources`` allowlist.
 
     Returns ``period {from, to, timezone}`` plus ``recent_articles`` — a
     purely recency-ordered list (never ranked by importance), bounded by
-    ``limit``. Each item carries ``rank`` (its 1-based position in that
-    order; an ordering signal, not a score) alongside
+    ``limit``. Each item carries ``rank`` (its 1-based position in that final
+    order — an ordering signal, not a score) alongside
     ``title, url, canonical_url, source, published_at, author`` provenance,
     the Extraction Flag annotation (``flag_reason, flag_detail, flagged_at,
-    flagged_by`` — ``None`` when unflagged), and the Read State annotation
+    flagged_by`` — ``None`` when unflagged), the Read State annotation
     (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
-    read_by`` — ``None`` when unread). No empty analytics placeholders are
-    emitted.
+    read_by`` — ``None`` when unread), and the latest Importance annotation
+    (``importance_score, importance_rationale, importance_reporter,
+    importance_updated_at`` — ``None`` when unannotated). No empty analytics
+    placeholders are emitted.
 
     Raises:
-        ValueError: non-bool ``exclude_read`` (alongside the existing
-            empty-period / bad-limit failures).
+        ValueError: invalid ``limit``, invalid ``per_source_limit`` (non-bool
+            positive int or None), or non-bool ``exclude_read`` (alongside
+            the existing empty-period failure).
     """
     start = _coerce_bound(from_date, is_end=False)
     end = _coerce_bound(to_date, is_end=True)
@@ -126,8 +168,21 @@ def get_period_context(
         raise ValueError(f"limit must be a positive int, got {limit!r}")
     if not isinstance(exclude_read, bool):
         raise ValueError(f"exclude_read must be a bool, got {exclude_read!r}")
+    if per_source_limit is not None and (
+        not isinstance(per_source_limit, int)
+        or isinstance(per_source_limit, bool)
+        or per_source_limit < 1
+    ):
+        raise ValueError(
+            f"per_source_limit must be a positive int or None, got {per_source_limit!r}"
+        )
     names = list(sources) if sources is not None else list(V1_SOURCES)
-    sql = PERIOD_SQL_EXCLUDE_READ if exclude_read else PERIOD_SQL
+    if per_source_limit is None:
+        sql = PERIOD_SQL_EXCLUDE_READ if exclude_read else PERIOD_SQL
+        params: tuple[Any, ...] = (start, end, names, limit)
+    else:
+        sql = _capped_sql(exclude_read=exclude_read)
+        params = (start, end, names, per_source_limit, limit)
 
     owns_connection = False
     if conn is None:
@@ -135,7 +190,7 @@ def get_period_context(
         owns_connection = True
     assert conn is not None
     try:
-        cursor = conn.execute(sql, (start, end, names, limit))
+        cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
     finally:
         if owns_connection:
@@ -159,9 +214,14 @@ def get_period_context(
             flagged_by = row.get("flagged_by")
             read_at = row.get("read_at")
             read_by = row.get("read_by")
+            importance_score = row.get("importance_score")
+            importance_rationale = row.get("importance_rationale")
+            importance_reporter = row.get("importance_reporter")
+            importance_updated_at = row.get("importance_updated_at")
         else:
-            # Tuple rows predate the read annotation (10 cols); newer rows
-            # carry read_at/read_by (12 cols). Both shapes are accepted.
+            # Tuple rows predate the read annotation (10 cols); 12-col rows
+            # carry read_at/read_by; the current SELECT appends the 4
+            # importance columns at [12..15]. All shapes are accepted.
             items = tuple(row)
             (
                 title,
@@ -177,6 +237,10 @@ def get_period_context(
             ) = items[:10]
             read_at = items[10] if len(items) > 10 else None
             read_by = items[11] if len(items) > 11 else None
+            importance_score = items[12] if len(items) > 12 else None
+            importance_rationale = items[13] if len(items) > 13 else None
+            importance_reporter = items[14] if len(items) > 14 else None
+            importance_updated_at = items[15] if len(items) > 15 else None
         articles.append(
             {
                 "title": title,
@@ -193,6 +257,10 @@ def get_period_context(
                 "read": read_at is not None,
                 "read_at": _iso_tz_aware(read_at),
                 "read_by": read_by,
+                "importance_score": importance_score,
+                "importance_rationale": importance_rationale,
+                "importance_reporter": importance_reporter,
+                "importance_updated_at": _iso_tz_aware(importance_updated_at),
             }
         )
     return {

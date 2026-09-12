@@ -198,6 +198,22 @@ def test_period_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> N
     assert seen["limit"] == 5
 
 
+def test_period_forwards_per_source_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        return PERIOD_PAYLOAD
+
+    monkeypatch.setattr(service, "get_period_context", fake)
+    http = TestClient(app)
+    body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
+    assert http.post("/period-context", json=body).status_code == 200
+    assert seen["per_source_limit"] is None  # default preserves current behaviour
+    assert http.post("/period-context", json=dict(body, per_source_limit=3)).status_code == 200
+    assert seen["per_source_limit"] == 3
+
+
 def test_period_forwards_exclude_read(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
 
@@ -248,6 +264,18 @@ def test_period_validation_maps_to_422() -> None:
         ).status_code
         == 422
     )
+    for bad in (0, -1, 101, 2.5):
+        assert (
+            live.post(
+                "/period-context",
+                json={
+                    "from_date": "2026-09-07",
+                    "to_date": "2026-09-13",
+                    "per_source_limit": bad,
+                },
+            ).status_code
+            == 422
+        )
 
 
 def test_openapi_docs_demoable(client: TestClient) -> None:

@@ -3,9 +3,9 @@
 End-to-end verification over lanes 01/02/03, hermetic (fake conns, monkeypatched
 fetch — no live Postgres, no network, no model calls):
 
-- Period Context and search list payloads match their pre-feature shapes
-  key-for-key at the same limits (11-key search dicts, 10-key period dicts +
-  5 explicit-empty V1 trend keys).
+- Period Context and search list payloads match the shared contract
+  key-for-key at the same limits (18-key search dicts; period bundle items
+  with `rank` plus the flag/read/importance annotations).
 - One-item lookup returns identical payloads over HTTP (TestClient) and MCP
   (direct tool call + registered-tool path), including identical validation
   failures (unknown/blank -> 422 detail shape == MCP InvalidRequest message).
@@ -70,6 +70,10 @@ SEARCH_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -87,6 +91,10 @@ PERIOD_ARTICLE_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 PERIOD_TOP_KEYS = {
@@ -109,6 +117,10 @@ ARTICLE_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 

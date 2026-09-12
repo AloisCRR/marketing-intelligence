@@ -52,8 +52,10 @@ SERVER_INSTRUCTIONS = (
     "the digest from it — there is no built-in schedule. "
     "Use flag_extraction only to report improperly extracted content (thin body, JS shell, "
     "paywall challenge, truncated text, wrong body) — never for factual disagreements. "
-    "Prefer read-only tools for exploration; flag_extraction and mark_article_read "
-    "are the mutating tools."
+    "Use set_importance to record how much a Document matters (0-1 score + rationale + "
+    "reporter); flagged or paywalled Documents are capped at 0.3 server-side. "
+    "Prefer read-only tools for exploration; flag_extraction, mark_article_read and "
+    "set_importance are the mutating tools."
 )
 
 
@@ -121,7 +123,8 @@ def search_articles(
         exclude_read: When True, hide read articles (default False annotates only).
 
     Returns:
-        List of article dicts (14 keys: 7 base + 4 extraction-flag keys + 3 read keys),
+        List of article dicts (18 keys: 7 base + 4 extraction-flag + 3 read
+        + 4 importance),
         ordered newest first; empty list when nothing matches.
 
     Raises:
@@ -139,14 +142,18 @@ def get_period_context(
     ] = None,
     limit: Annotated[int, "Max articles in bundle, 1-100."] = DEFAULT_PERIOD_LIMIT,
     exclude_read: Annotated[bool, "When true, hide read articles."] = False,
+    per_source_limit: Annotated[
+        int | None,
+        "Optional cap on items from any one source, 1-100; None means no per-source cap.",
+    ] = None,
 ) -> dict[str, Any]:
     """Fetch the evidence bundle for a date range.
 
     Use for period synthesis: draft exclusively from the returned
     recent_articles — a strictly recency-ordered list whose items each carry
-    a 1-based `rank` (their position in that order, not an importance score).
-    Keep URLs/provenance attached and separate observations from
-    interpretations. A digest is just the case where the caller picks a
+    a 1-based `rank` (their position in the final returned order, not an
+    importance score). Keep URLs/provenance attached and separate observations
+    from interpretations. A digest is just the case where the caller picks a
     range (often a week).
 
     Args:
@@ -155,6 +162,10 @@ def get_period_context(
         sources: Optional allowlist of source names; None means all sources.
         limit: Max articles in the bundle, 1-100 (default 50).
         exclude_read: When True, hide read articles (default False annotates only).
+        per_source_limit: Optional cap of 1-100 on articles any single source
+            may contribute; None (default) means no per-source cap. Slots a
+            capped source cannot fill go to other sources; composes with
+            `sources` and `limit`.
 
     Returns:
         Evidence-bundle dict with `period` and a recency-ordered
@@ -162,10 +173,15 @@ def get_period_context(
 
     Raises:
         InvalidRequest: If dates are malformed/unordered, sources unknown,
-            or limit is outside 1-100.
+            or limit/per_source_limit is outside 1-100.
     """
     return service.get_period_context(
-        from_date, to_date, sources=sources, limit=limit, exclude_read=exclude_read
+        from_date,
+        to_date,
+        sources=sources,
+        limit=limit,
+        exclude_read=exclude_read,
+        per_source_limit=per_source_limit,
     )
 
 
@@ -207,8 +223,8 @@ def flag_extraction(
 
     Use only for improperly extracted content (thin body, JS shell,
     paywall/bot challenge, truncated text, wrong body) — never for factual
-    disputes about an otherwise well-extracted article. This is one of two
-    mutating tools on this server (with mark_article_read).
+    disputes about an otherwise well-extracted article. This is one of three
+    mutating tools on this server (with mark_article_read and set_importance).
 
     Args:
         identifier: Article URL or canonical URL.
@@ -277,6 +293,62 @@ def list_sources_inventory() -> list[dict[str, Any]]:
     return service.list_sources_inventory()
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
+def set_importance(
+    identifier: Annotated[str, "Article URL or canonical URL to annotate."],
+    score: Annotated[float, "Importance in [0, 1] (server caps flagged/paywalled at 0.3)."],
+    rationale: Annotated[str | None, "Why it matters (<=2000 chars)."] = None,
+    reporter: Annotated[str | None, "Reporter label (<=100 chars)."] = None,
+) -> dict[str, Any]:
+    """Record a 0-1 importance annotation on one article (latest write wins).
+
+    Use to mark evidence the digest consumer should prefer. History is
+    retained append-only; flagged or paywalled articles are hard-capped at
+    0.3 server-side regardless of the submitted score, so they can never
+    outrank clean evidence. This is a mutating tool (with flag_extraction
+    and mark_article_read).
+
+    Args:
+        identifier: Article URL or canonical URL.
+        score: Importance in [0, 1]; outside that range is rejected (422).
+        rationale: Free-text rationale, max 2000 chars.
+        reporter: Reporter label, max 100 chars.
+
+    Returns:
+        The updated article dict with the latest importance annotation.
+
+    Raises:
+        InvalidRequest: If the identifier is unknown/blank or the score /
+            rationale / reporter is invalid.
+    """
+    return service.set_importance(  # type: ignore[attr-defined, no-any-return]
+        identifier, score, rationale=rationale, reporter=reporter
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def get_importance(
+    identifier: Annotated[str, "Article URL or canonical URL."],
+) -> dict[str, Any]:
+    """Read one article's latest importance annotation.
+
+    Use to inspect the current score/rationale/reporter/timestamp without
+    re-reading the full article. All four ``importance_*`` keys are ``None``
+    when the article has never been annotated.
+
+    Args:
+        identifier: Article URL or canonical URL.
+
+    Returns:
+        Dict with ``importance_score``, ``importance_rationale``,
+        ``importance_reporter``, ``importance_updated_at``.
+
+    Raises:
+        InvalidRequest: If the identifier is unknown or blank.
+    """
+    return service.get_importance(identifier)
+
+
 @mcp.resource("brain://about", mime_type="application/json")
 def read_about() -> str:
     """Static overview: coverage and recommended workflow."""
@@ -289,7 +361,8 @@ def read_about() -> str:
             "v1_sources": "20 curated V1 sources (RSS + sitemap/hub/url-set lanes).",
             "workflow": "search_articles for discovery -> get_article for full text -> "
             "get_period_context(from_date, to_date) for any period bundle "
-            "(a digest is built from a caller-chosen range) -> flag_extraction for bad content.",
+            "(a digest is built from a caller-chosen range) -> set_importance to record "
+            "why evidence matters -> flag_extraction for bad content.",
             "resources": ["brain://about", "article://{identifier}", "period://{from}/{to}"],
             "prompts": ["period_digest", "investigate_topic"],
         }

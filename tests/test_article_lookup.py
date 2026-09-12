@@ -79,6 +79,10 @@ ARTICLE_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 SEARCH_RESULT_KEYS = {
@@ -96,6 +100,10 @@ SEARCH_RESULT_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -113,6 +121,10 @@ PERIOD_ARTICLE_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 

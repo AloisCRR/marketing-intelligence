@@ -15,6 +15,7 @@ from typing import Any
 
 from marketing_intelligence import article as _article
 from marketing_intelligence import flag as _flag
+from marketing_intelligence import importance as _importance
 from marketing_intelligence import period as _period
 from marketing_intelligence import read as _read
 from marketing_intelligence import search as _search
@@ -38,6 +39,13 @@ READ_KEYS = (
     "read_by",
 )
 
+IMPORTANCE_KEYS = (
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
+)
+
 SEARCH_RESULT_KEYS = (
     (
         "title",
@@ -50,6 +58,7 @@ SEARCH_RESULT_KEYS = (
     )
     + FLAG_KEYS
     + READ_KEYS
+    + IMPORTANCE_KEYS
 )
 
 PERIOD_ARTICLE_KEYS = (
@@ -64,6 +73,7 @@ PERIOD_ARTICLE_KEYS = (
     )
     + FLAG_KEYS
     + READ_KEYS
+    + IMPORTANCE_KEYS
 )
 
 ARTICLE_KEYS = (
@@ -78,6 +88,7 @@ ARTICLE_KEYS = (
     )
     + FLAG_KEYS
     + READ_KEYS
+    + IMPORTANCE_KEYS
 )
 
 
@@ -87,12 +98,24 @@ class InvalidRequest(ValueError):
 
 def _validate_limit(limit: int, *, default: int) -> int:
     """Coerce/validate a result limit: positive int within [1, MAX_LIMIT]."""
-    if isinstance(limit, bool) or not isinstance(limit, int):
-        raise InvalidRequest(f"limit must be an int in [1, {MAX_LIMIT}], got {limit!r}")
-    if limit < 1 or limit > MAX_LIMIT:
-        raise InvalidRequest(f"limit must be an int in [1, {MAX_LIMIT}], got {limit!r}")
     _ = default
-    return limit
+    return _validate_bounded(limit, label="limit")
+
+
+def _validate_bounded(value: Any, *, label: str) -> int:
+    """Validate an int within [1, MAX_LIMIT]; failure is InvalidRequest."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidRequest(f"{label} must be an int in [1, {MAX_LIMIT}], got {value!r}")
+    if value < 1 or value > MAX_LIMIT:
+        raise InvalidRequest(f"{label} must be an int in [1, {MAX_LIMIT}], got {value!r}")
+    return value
+
+
+def _validate_per_source_limit(value: Any) -> int | None:
+    """Validate the optional per-source cap: None, or int within [1, MAX_LIMIT]."""
+    if value is None:
+        return None
+    return _validate_bounded(value, label="per_source_limit")
 
 
 def _known_source_names() -> set[str]:
@@ -170,11 +193,13 @@ def search_articles(
     *,
     exclude_read: bool = False,
 ) -> list[dict[str, Any]]:
-    """Validated keyword search; returns the 14-key provenance dicts, newest first.
+    """Validated keyword search; returns the 18-key provenance dicts, newest first.
 
     `exclude_read=True` filters out marked (read) articles; the default
     False annotates every result (`read`/`read_at`/`read_by`) without
-    filtering.
+    filtering. Every result also carries the latest Importance annotation
+    (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
+    unannotated).
     """
     if not isinstance(keyword, str) or not keyword.strip():
         raise InvalidRequest("keyword must be a non-empty string")
@@ -198,25 +223,40 @@ def get_period_context(
     limit: int = DEFAULT_PERIOD_LIMIT,
     conn: Any | None = None,
     exclude_read: bool = False,
+    per_source_limit: int | None = None,
 ) -> dict[str, Any]:
     """Validated period evidence bundle for [from_date, to_date].
 
     Bounds accept `date`, `datetime`, or ISO strings (Panama interpretation
     downstream). Explicit `sources` must all be known names. The bundle
     contains only real data: a recency-ordered `recent_articles` list whose
-    items each carry a 1-based `rank` ordering signal, with no empty
-    analytics placeholders. `exclude_read=True` filters out marked (read)
-    articles; the default False annotates every article
-    (`read`/`read_at`/`read_by`) without filtering.
+    items each carry a 1-based `rank` ordering signal (its position in the
+    final returned list), with no empty analytics placeholders.
+    `exclude_read=True` filters out marked (read) articles; the default False
+    annotates every article (`read`/`read_at`/`read_by`) without filtering.
+    Every article also carries the latest Importance annotation
+    (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
+    unannotated).
+    `per_source_limit` (None default) caps how many of the bundle's items any
+    one source may contribute — `limit` still bounds the bundle overall, slots
+    a capped source cannot fill go to other sources, and both compose with
+    `sources`. It must be an int in [1, 100] or None.
     """
     start = _coerce_bound(from_date, label="from_date")
     end = _coerce_bound(to_date, label="to_date")
     names = _validate_sources(sources)
     bound = _validate_limit(limit, default=DEFAULT_PERIOD_LIMIT)
     hide_read = _validate_exclude_read(exclude_read)
+    per_source = _validate_per_source_limit(per_source_limit)
     try:
         return _period.get_period_context(
-            start, end, sources=names, limit=bound, conn=conn, exclude_read=hide_read
+            start,
+            end,
+            sources=names,
+            limit=bound,
+            conn=conn,
+            exclude_read=hide_read,
+            per_source_limit=per_source,
         )
     except InvalidRequest:
         raise
@@ -467,3 +507,104 @@ def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
             }
         )
     return inventory
+
+
+# --- Importance annotations (Ticket 19) ------------------------------------
+#
+# Agent-writable 0-1 importance per Document with rationale + reporter,
+# append-only history and latest-wins. The lane caps flagged/paywalled
+# Documents at 0.3 server-side before writing; read paths annotate every
+# returned article without extra calls. Both caller surfaces go through
+# these two functions so payloads/errors stay identical by construction.
+
+
+def _validate_importance_score(score: Any) -> float:
+    """Validate a 0-1 importance score; failure is InvalidRequest."""
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        raise InvalidRequest(f"score must be a number in [0, 1], got {type(score).__name__}")
+    value = float(score)
+    if not (_importance.IMPORTANCE_MIN <= value <= _importance.IMPORTANCE_MAX):
+        raise InvalidRequest(f"score must be in [0, 1], got {score!r}")
+    return value
+
+
+def _validate_importance_rationale(rationale: Any) -> Any:
+    """Validate the optional rationale: string-or-null, max 2000 chars."""
+    if rationale is None:
+        return None
+    if not isinstance(rationale, str):
+        raise InvalidRequest(f"rationale must be a string or null, got {type(rationale).__name__}")
+    cleaned = rationale.strip() or None
+    if cleaned is not None and len(cleaned) > _importance.RATIONALE_MAX_LENGTH:
+        raise InvalidRequest(
+            f"rationale must be at most {_importance.RATIONALE_MAX_LENGTH} chars, "
+            f"got {len(cleaned)}"
+        )
+    return cleaned
+
+
+def _validate_importance_reporter(reporter: Any) -> Any:
+    """Validate the optional reporter tag: string-or-null, max 100 chars."""
+    if reporter is None:
+        return None
+    if not isinstance(reporter, str):
+        raise InvalidRequest(f"reporter must be a string or null, got {type(reporter).__name__}")
+    cleaned = reporter.strip() or None
+    if cleaned is not None and len(cleaned) > _importance.REPORTER_MAX_LENGTH:
+        raise InvalidRequest(
+            f"reporter must be at most {_importance.REPORTER_MAX_LENGTH} chars, got {len(cleaned)}"
+        )
+    return cleaned
+
+
+def set_importance(
+    identifier: str,
+    score: float,
+    rationale: str | None = None,
+    reporter: str | None = None,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    """Validated importance write; returns the updated article dict.
+
+    Blank/non-string identifiers raise `InvalidRequest` without a DB
+    round-trip, as do non-numeric or out-of-range scores and overlong
+    rationale (>2000 chars) / reporter (>100 chars). Flagged or paywalled
+    Documents are hard-capped at 0.3 by the lane before the row is written.
+    Unknown identifiers surface from the lane as `ValueError` (also
+    `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise InvalidRequest("identifier must be a non-empty string")
+    key = identifier.strip()
+    clean_score = _validate_importance_score(score)
+    clean_rationale = _validate_importance_rationale(rationale)
+    clean_reporter = _validate_importance_reporter(reporter)
+    try:
+        return _importance.set_importance(
+            key,
+            clean_score,
+            rationale=clean_rationale,
+            reporter=clean_reporter,
+            conn=conn,
+        )
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+def get_importance(identifier: str, conn: Any | None = None) -> dict[str, Any]:
+    """Validated read of one Document's latest importance annotation.
+
+    Returns the four ``importance_*`` keys (all ``None`` when unannotated).
+    Blank/non-string identifiers raise `InvalidRequest` without a DB
+    round-trip; unknown identifiers are normalised to `InvalidRequest`.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise InvalidRequest("identifier must be a non-empty string")
+    try:
+        return _importance.get_importance(identifier.strip(), conn=conn)
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None

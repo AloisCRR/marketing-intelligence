@@ -16,14 +16,20 @@ surfaces drift apart in validation or payload shape.
 - Single validated interface in `src/marketing_intelligence/service.py` (stdlib-only: no
   fastapi/mcp imports in `marketing_intelligence/`): `MAX_LIMIT=100`, `InvalidRequest`, and
   `search_articles(keyword, limit, conn)` + `get_period_context(from, to,
-  sources, limit, conn)` with ISO-string coercion, unknown-source rejection,
-  and a truthful period bundle (recency-ordered `recent_articles`, each item
-  carrying a 1-based `rank`; no empty analytics placeholders).
+  sources, limit, conn, exclude_read, per_source_limit)` with ISO-string
+  coercion, unknown-source rejection, and a truthful period bundle
+  (recency-ordered `recent_articles`, each item carrying a 1-based `rank`;
+  no empty analytics placeholders). `per_source_limit` (int in [1, 100] or
+  None) caps how many bundle items any one source may contribute — slots a
+  capped source cannot fill go to other sources in recency order — and
+  composes with the `sources` allowlist; None (default) is uncapped.
 - Thin adapters only: `src/api/app.py` (`GET /search`, `POST
-  /period-context`, `GET /sources`, `InvalidRequest` → 422, `/docs` for demo) and
-  `src/mcp/server.py` (6 tools calling the same service functions:
+  /period-context`, `GET /sources`, `POST /importance`, `GET /importance`,
+  `InvalidRequest` → 422, `/docs` for demo) and
+  `src/mcp/server.py` (8 tools calling the same service functions:
   `search_articles`, `get_period_context`, `get_article`,
-  `list_sources_inventory`, `flag_extraction`, `mark_article_read`).
+  `list_sources_inventory`, `flag_extraction`, `mark_article_read`,
+  `set_importance`, `get_importance`).
 - `src/mcp/` intentionally has **no `__init__.py`**: the directory name
   collides with the installed `mcp` distribution, so a regular package here
   would shadow the dependency (or vice versa). The server module is run as a

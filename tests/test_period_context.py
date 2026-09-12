@@ -52,12 +52,27 @@ class _PeriodCursor:
         self.last_sql = sql
         self.last_params = params
         assert params is not None
-        start, end, names, limit = params
+        # The capped lane adds a per-source cap between source names and limit.
+        if len(params) == 5:
+            start, end, names, per_source, limit = params
+        else:
+            start, end, names, limit = params
+            per_source = None
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
         if "read_at is null" in sql.lower():
             kept = [r for r in kept if not (len(r) > 10 and r[10] is not None)]
         kept.sort(key=lambda r: r[4], reverse=True)
+        if per_source is not None:
+            # Mirror ROW_NUMBER() OVER (PARTITION BY source ...) <= cap.
+            seen: dict[str, int] = {}
+            capped: list[tuple] = []
+            for row in kept:
+                rank = seen.get(row[3], 0) + 1
+                seen[row[3]] = rank
+                if rank <= int(per_source):
+                    capped.append(row)
+            kept = capped
         self._result = kept[: int(limit)]
         return self
 
@@ -372,6 +387,10 @@ def test_range_filtering_newest_first_and_provenance() -> None:
             "read",
             "read_at",
             "read_by",
+            "importance_score",
+            "importance_rationale",
+            "importance_reporter",
+            "importance_updated_at",
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
@@ -439,6 +458,86 @@ def test_invalid_inputs_rejected() -> None:
 def test_limit_bounds_results() -> None:
     ctx, _ = _context(limit=2)
     assert len(ctx["recent_articles"]) == 2
+
+
+def test_per_source_limit_bounds_a_single_source_flood() -> None:
+    """Ticket 17 flood regression: no source may monopolise the bundle.
+
+    Uncapped, the newest ``limit`` rows are all from the prolific source.
+    Capped, each source contributes at most ``per_source_limit`` and the
+    freed slots go to the next sources in recency order.
+    """
+
+    def row(source: str, title: str, when: datetime) -> tuple:
+        return (
+            title,
+            f"https://example.com/{title}/",
+            f"https://example.com/{title}/",
+            source,
+            when,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    rows = [
+        row("Social Media Today", f"Flood {i}", _utc(2026, 9, 11, 12 - i, 0)) for i in range(8)
+    ] + [
+        row("MarTech", "MarTech A", _utc(2026, 9, 10, 20, 0)),
+        row("MarTech", "MarTech B", _utc(2026, 9, 10, 19, 0)),
+        row("InfoMoney", "InfoMoney A", _utc(2026, 9, 10, 18, 0)),
+        row("JCK Online", "JCK A", _utc(2026, 9, 10, 17, 0)),
+    ]
+
+    uncapped, _ = _context(rows, limit=6)
+    assert [a["source"] for a in uncapped["recent_articles"]] == ["Social Media Today"] * 6
+
+    capped, conn = _context(rows, limit=6, per_source_limit=2)
+    articles = capped["recent_articles"]
+    assert len(articles) == 6
+    counts: dict[str, int] = {}
+    for article in articles:
+        counts[article["source"]] = counts.get(article["source"], 0) + 1
+    assert max(counts.values()) <= 2
+    # Blocked flood slots were refilled by the next sources in recency order.
+    assert set(counts) == {"Social Media Today", "MarTech", "InfoMoney", "JCK Online"}
+    # rank stays the 1-based position in the final (capped) list, newest first.
+    assert [a["rank"] for a in articles] == [1, 2, 3, 4, 5, 6]
+    assert [a["published_at"] for a in articles] == sorted(
+        (a["published_at"] for a in articles), reverse=True
+    )
+    # The capped lane is the one that carries the cap parameter.
+    assert conn.cursor_obj.last_params is not None
+    assert len(conn.cursor_obj.last_params) == 5
+    assert conn.cursor_obj.last_params[3] == 2
+    assert conn.cursor_obj.last_params[4] == 6
+
+    # Composes with the sources allowlist: only allowed sources count.
+    narrowed, _ = _context(
+        rows, limit=6, per_source_limit=2, sources=["Social Media Today", "MarTech"]
+    )
+    assert [a["source"] for a in narrowed["recent_articles"]] == [
+        "Social Media Today",
+        "Social Media Today",
+        "MarTech",
+        "MarTech",
+    ]
+
+
+def test_per_source_limit_rejects_invalid_values() -> None:
+    conn = _PeriodConnection([])
+    for bad in (0, -1, True, "2", 2.5):
+        with pytest.raises(ValueError):
+            get_period_context(
+                WEEK_FROM,
+                WEEK_TO,
+                conn=conn,
+                per_source_limit=bad,  # type: ignore[arg-type]
+            )
 
 
 def test_unread_rows_annotate_read_false() -> None:
@@ -586,6 +685,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "006_seed_all_sources.sql",
         "007_deterministic_sources_and_not_null.sql",
         "008_read_state.sql",
+        "009_importance.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

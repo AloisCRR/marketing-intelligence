@@ -2,8 +2,8 @@
 
 Covers the shared validated interface in `marketing_intelligence.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
-- 11-key search schema + provenance + tz-aware published_at
-- period bundle shape, provenance, [] trend keys, Panama tz handling
+- 18-key search schema + provenance + tz-aware published_at
+- period bundle shape, provenance, rank + annotations, Panama tz handling
 - string coercion for period bounds, bounded limit (101 rejected)
 """
 
@@ -21,6 +21,7 @@ _SRC = os.path.join(os.path.dirname(_HERE), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+from marketing_intelligence import period as _period  # noqa: E402
 from marketing_intelligence.service import (  # noqa: E402
     DEFAULT_PERIOD_LIMIT,
     DEFAULT_SEARCH_LIMIT,
@@ -46,6 +47,10 @@ SEARCH_EXPECTED_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -63,6 +68,10 @@ PERIOD_EXPECTED_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 
@@ -197,12 +206,27 @@ class _PeriodCursor:
         assert params is not None
         self.last_sql = sql
         self.last_params = params
-        start, end, names, limit = params
+        # The capped lane adds a per-source cap between source names and limit.
+        if len(params) == 5:
+            start, end, names, per_source, limit = params
+        else:
+            start, end, names, limit = params
+            per_source = None
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
         if "read_at is null" in sql.lower():
             kept = [r for r in kept if not (len(r) > 10 and r[10] is not None)]
         kept.sort(key=lambda r: r[4], reverse=True)
+        if per_source is not None:
+            # Mirror ROW_NUMBER() OVER (PARTITION BY source ...) <= cap.
+            seen: dict[str, int] = {}
+            capped: list[tuple] = []
+            for row in kept:
+                rank = seen.get(row[3], 0) + 1
+                seen[row[3]] = rank
+                if rank <= int(per_source):
+                    capped.append(row)
+            kept = capped
         self._result = kept[: int(limit)]
         return self
 
@@ -357,6 +381,92 @@ def test_period_bad_bounds_and_limits_rejected() -> None:
         get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=MAX_LIMIT + 1)
     assert DEFAULT_PERIOD_LIMIT == 50
     assert MAX_LIMIT == 100
+
+
+def test_period_per_source_limit_validated_and_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        return {"period": {}, "recent_articles": []}
+
+    monkeypatch.setattr(_period, "get_period_context", fake)
+    conn = _PeriodConnection()
+    for bad in (0, -1, MAX_LIMIT + 1, "2", 2.5, True):
+        with pytest.raises(InvalidRequest):
+            get_period_context(
+                date(2026, 9, 7),
+                date(2026, 9, 13),
+                conn=conn,
+                per_source_limit=bad,  # type: ignore[arg-type]
+            )
+    assert seen == {}  # rejected before the lane runs
+    get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, per_source_limit=3)
+    assert seen["per_source_limit"] == 3
+    get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
+    assert seen["per_source_limit"] is None
+
+
+def test_period_per_source_limit_caps_and_composes_with_sources() -> None:
+    """Adapter-level flood check: one source cannot dominate the bundle."""
+    rows = [
+        (
+            f"Flood {i}",
+            f"https://www.socialmediatoday.com/flood/{i}/",
+            f"https://www.socialmediatoday.com/flood/{i}/",
+            "Social Media Today",
+            _utc(2026, 9, 11, 12 - i, 0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        for i in range(8)
+    ] + [
+        (
+            "Signal Loss Rebuild",
+            "https://martech.org/signal-loss/2/",
+            "https://martech.org/signal-loss/2/",
+            "MarTech",
+            _utc(2026, 9, 10, 13, 0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    ]
+    uncapped = get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(rows), limit=6
+    )
+    assert {a["source"] for a in uncapped["recent_articles"]} == {"Social Media Today"}
+    capped = get_period_context(
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        conn=_PeriodConnection(rows),
+        limit=6,
+        per_source_limit=2,
+    )
+    sources = [a["source"] for a in capped["recent_articles"]]
+    assert sources.count("Social Media Today") == 2
+    assert "MarTech" in sources
+    assert [a["rank"] for a in capped["recent_articles"]] == list(range(1, len(sources) + 1))
+    # Composes with the allowlist: capping still applies within the narrowed set.
+    narrowed = get_period_context(
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        conn=_PeriodConnection(rows),
+        sources=["Social Media Today"],
+        per_source_limit=2,
+    )
+    assert len(narrowed["recent_articles"]) == 2
 
 
 # --- read state ---------------------------------------------------------------

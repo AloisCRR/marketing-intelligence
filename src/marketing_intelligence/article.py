@@ -3,9 +3,11 @@
 Domain contract (stable): ``get_article(identifier)`` returns a single dict
 with keys ``title, url, canonical_url, source, published_at, author,
 content`` plus the Extraction Flag annotation (``flag_reason, flag_detail,
-flagged_at, flagged_by`` — ``None`` when unflagged) and the Read State
+flagged_at, flagged_by`` — ``None`` when unflagged), the Read State
 annotation (``read`` bool derived from ``read_at IS NOT NULL``, plus
-``read_at, read_by`` — ``None`` when unread) — the full stored body
+``read_at, read_by`` — ``None`` when unread), and the latest Importance
+annotation (``importance_score, importance_rationale, importance_reporter,
+importance_updated_at`` — ``None`` when unannotated) — the full stored body
 (clean Markdown/text, never a snippet).
 Matching tries the exact URL first, then the canonical URL via
 ``marketing_intelligence.normalize.canonicalize_url``. Unknown identifiers raise
@@ -33,9 +35,20 @@ from marketing_intelligence.normalize import canonicalize_url
 _ARTICLE_BY_URL_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
-       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
+       imp.score AS importance_score,
+       imp.rationale AS importance_rationale,
+       imp.reporter AS importance_reporter,
+       imp.created_at AS importance_updated_at
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
+  LEFT JOIN LATERAL (
+      SELECT i.score, i.rationale, i.reporter, i.created_at
+        FROM document_importance i
+       WHERE i.document_id = d.id
+       ORDER BY i.created_at DESC, i.id DESC
+       LIMIT 1
+  ) imp ON true
  WHERE d.url = %s
  LIMIT 1\
 """
@@ -43,9 +56,20 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
 _ARTICLE_BY_CANONICAL_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
-       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by
+       d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
+       imp.score AS importance_score,
+       imp.rationale AS importance_rationale,
+       imp.reporter AS importance_reporter,
+       imp.created_at AS importance_updated_at
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
+  LEFT JOIN LATERAL (
+      SELECT i.score, i.rationale, i.reporter, i.created_at
+        FROM document_importance i
+       WHERE i.document_id = d.id
+       ORDER BY i.created_at DESC, i.id DESC
+       LIMIT 1
+  ) imp ON true
  WHERE d.canonical_url = %s
  LIMIT 1\
 """
@@ -76,6 +100,10 @@ _RESULT_KEYS = (
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 )
 
 
@@ -114,9 +142,15 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         flagged_by = row.get("flagged_by")
         read_at = row.get("read_at")
         read_by = row.get("read_by")
+        importance_score = row.get("importance_score")
+        importance_rationale = row.get("importance_rationale")
+        importance_reporter = row.get("importance_reporter")
+        importance_updated_at = row.get("importance_updated_at")
     else:
-        # Tuple rows predate the read annotation (11 cols); newer rows carry
-        # read_at/read_by (13 cols). Both shapes are accepted.
+        # Tuple rows: base shape is 11 provenance/flag cols; 13-col rows also
+        # carry read_at/read_by inline (older fakes); the current base SELECT
+        # is 15 cols (11 + 4 importance). Read state is normally fetched
+        # separately and overrides any inline values.
         items = tuple(row)
         (
             title,
@@ -131,8 +165,27 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
             flagged_at,
             flagged_by,
         ) = items[:11]
-        read_at = items[11] if len(items) > 11 else None
-        read_by = items[12] if len(items) > 12 else None
+        if len(items) >= 15:
+            importance_score = items[11]
+            importance_rationale = items[12]
+            importance_reporter = items[13]
+            importance_updated_at = items[14]
+            read_at = items[15] if len(items) > 15 else None
+            read_by = items[16] if len(items) > 16 else None
+        elif len(items) > 11:
+            importance_score = None
+            importance_rationale = None
+            importance_reporter = None
+            importance_updated_at = None
+            read_at = items[11]
+            read_by = items[12] if len(items) > 12 else None
+        else:
+            importance_score = None
+            importance_rationale = None
+            importance_reporter = None
+            importance_updated_at = None
+            read_at = None
+            read_by = None
     return {
         "title": title,
         "url": url,
@@ -148,6 +201,10 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "read": read_at is not None,
         "read_at": read_at,
         "read_by": read_by,
+        "importance_score": importance_score,
+        "importance_rationale": importance_rationale,
+        "importance_reporter": importance_reporter,
+        "importance_updated_at": importance_updated_at,
     }
 
 
@@ -201,7 +258,10 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         author, content`` plus ``flag_reason, flag_detail, flagged_at,
         flagged_by`` (``None`` when unflagged) and the Read State annotation
         (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
-        read_by`` — ``None`` when unread). ``published_at`` and set
+        read_by`` — ``None`` when unread), and the latest Importance
+        annotation (``importance_score, importance_rationale,
+        importance_reporter, importance_updated_at`` — ``None`` when
+        unannotated). ``published_at`` and set
         ``flagged_at``/``read_at`` values are isoformat tz-aware strings;
         ``content`` is the full stored body (never a snippet).
 
@@ -245,4 +305,5 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     item["published_at"] = _to_iso_tz_aware(item["published_at"])
     item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
     item["read_at"] = _to_iso_tz_aware(item["read_at"])
+    item["importance_updated_at"] = _to_iso_tz_aware(item["importance_updated_at"])
     return {k: item[k] for k in _RESULT_KEYS}

@@ -128,15 +128,17 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_six_tools() -> None:
+def test_mcp_registers_exactly_eight_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
     assert sorted(t.name for t in tools) == [
         "flag_extraction",
         "get_article",
+        "get_importance",
         "get_period_context",
         "list_sources_inventory",
         "mark_article_read",
         "search_articles",
+        "set_importance",
     ]
 
 
@@ -145,8 +147,11 @@ def test_mutating_tools_are_not_read_only() -> None:
     assert tools["search_articles"].annotations.readOnlyHint is True
     assert tools["get_period_context"].annotations.readOnlyHint is True
     assert tools["get_article"].annotations.readOnlyHint is True
+    assert tools["get_importance"].annotations.readOnlyHint is True
     assert tools["flag_extraction"].annotations.readOnlyHint is False
     assert tools["mark_article_read"].annotations.readOnlyHint is False
+    assert tools["set_importance"].annotations.readOnlyHint is False
+    assert tools["set_importance"].annotations.idempotentHint is False
     assert tools["mark_article_read"].annotations.idempotentHint is False
 
 
@@ -283,6 +288,24 @@ def test_period_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> Non
         == PERIOD_PAYLOAD
     )
     assert seen["exclude_read"] is True
+
+
+def test_period_per_source_limit_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    def fake(from_date: object, to_date: object, **kw: object) -> dict:
+        seen.update(kw)
+        return PERIOD_PAYLOAD
+
+    monkeypatch.setattr(service, "get_period_context", fake)
+    body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
+    assert MCP_SERVER.get_period_context(**body) == PERIOD_PAYLOAD
+    assert seen["per_source_limit"] is None  # default preserves current behaviour
+    out = asyncio.run(
+        MCP_SERVER.mcp.call_tool("get_period_context", dict(body, per_source_limit=4))
+    )
+    assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
+    assert seen["per_source_limit"] == 4
 
 
 def test_mark_read_api_equals_mcp_tool(stubbed_service: None) -> None:

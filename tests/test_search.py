@@ -162,6 +162,10 @@ def test_keyword_match_returns_provenance(monkeypatch) -> None:
             "read",
             "read_at",
             "read_by",
+            "importance_score",
+            "importance_rationale",
+            "importance_reporter",
+            "importance_updated_at",
         }
         # Provenance: every result carries its source name.
         assert r["source"] in ("Social Media Today", "Professional Jeweller")

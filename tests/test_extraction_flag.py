@@ -58,6 +58,10 @@ ARTICLE_EXPECTED_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 SEARCH_EXPECTED_KEYS = {
@@ -75,6 +79,10 @@ SEARCH_EXPECTED_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -92,6 +100,10 @@ PERIOD_EXPECTED_KEYS = {
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 }
 
 

@@ -156,6 +156,7 @@ def test_live_real_migrations_pending_only_and_rerunnable(scratch_db: str) -> No
         "006_seed_all_sources",
         "007_deterministic_sources_and_not_null",
         "008_read_state",
+        "009_importance",
     ]
     assert db.apply_migrations() == []
     assert db.pending_migrations() == []
@@ -168,6 +169,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
 
     db.apply_migrations()
     assert db.rollback_migrations(99) == [
+        "009_importance",
         "008_read_state",
         "007_deterministic_sources_and_not_null",
         "006_seed_all_sources",
@@ -188,6 +190,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "006_seed_all_sources",
         "007_deterministic_sources_and_not_null",
         "008_read_state",
+        "009_importance",
     ]
     assert db.apply_migrations() == [
         "001_init",
@@ -197,5 +200,6 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "006_seed_all_sources",
         "007_deterministic_sources_and_not_null",
         "008_read_state",
+        "009_importance",
     ]
     assert db.pending_migrations() == []

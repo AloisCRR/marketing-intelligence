@@ -25,9 +25,20 @@ _SEARCH_SQL = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
        d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
-       d.read_at, d.read_by
+       d.read_at, d.read_by,
+       imp.score AS importance_score,
+       imp.rationale AS importance_rationale,
+       imp.reporter AS importance_reporter,
+       imp.created_at AS importance_updated_at
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
+  LEFT JOIN LATERAL (
+      SELECT i.score, i.rationale, i.reporter, i.created_at
+        FROM document_importance i
+       WHERE i.document_id = d.id
+       ORDER BY i.created_at DESC, i.id DESC
+       LIMIT 1
+  ) imp ON true
  WHERE (d.title ILIKE %s OR d.content ILIKE %s)
  ORDER BY d.published_at DESC
  LIMIT %s\
@@ -37,9 +48,20 @@ _SEARCH_SQL_EXCLUDE_READ = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
        d.flag_reason, d.flag_detail, d.flagged_at, d.flagged_by,
-       d.read_at, d.read_by
+       d.read_at, d.read_by,
+       imp.score AS importance_score,
+       imp.rationale AS importance_rationale,
+       imp.reporter AS importance_reporter,
+       imp.created_at AS importance_updated_at
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
+  LEFT JOIN LATERAL (
+      SELECT i.score, i.rationale, i.reporter, i.created_at
+        FROM document_importance i
+       WHERE i.document_id = d.id
+       ORDER BY i.created_at DESC, i.id DESC
+       LIMIT 1
+  ) imp ON true
  WHERE (d.title ILIKE %s OR d.content ILIKE %s)
    AND d.read_at IS NULL
  ORDER BY d.published_at DESC
@@ -63,6 +85,10 @@ _RESULT_KEYS = (
     "read",
     "read_at",
     "read_by",
+    "importance_score",
+    "importance_rationale",
+    "importance_reporter",
+    "importance_updated_at",
 )
 
 
@@ -116,9 +142,14 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         flagged_by = row.get("flagged_by")
         read_at = row.get("read_at")
         read_by = row.get("read_by")
+        importance_score = row.get("importance_score")
+        importance_rationale = row.get("importance_rationale")
+        importance_reporter = row.get("importance_reporter")
+        importance_updated_at = row.get("importance_updated_at")
     else:
         # Tuple rows predate the read annotation (11 cols); newer rows carry
-        # read_at/read_by (13 cols). Both shapes are accepted.
+        # read_at/read_by (13 cols); current rows append the 4 importance
+        # columns (17 cols). All shapes are accepted.
         items = tuple(row)
         (
             title,
@@ -135,6 +166,10 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         ) = items[:11]
         read_at = items[11] if len(items) > 11 else None
         read_by = items[12] if len(items) > 12 else None
+        importance_score = items[13] if len(items) > 13 else None
+        importance_rationale = items[14] if len(items) > 14 else None
+        importance_reporter = items[15] if len(items) > 15 else None
+        importance_updated_at = items[16] if len(items) > 16 else None
     return {
         "title": title,
         "url": url,
@@ -150,6 +185,10 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "read": read_at is not None,
         "read_at": read_at,
         "read_by": read_by,
+        "importance_score": importance_score,
+        "importance_rationale": importance_rationale,
+        "importance_reporter": importance_reporter,
+        "importance_updated_at": importance_updated_at,
     }
 
 
@@ -171,9 +210,12 @@ def search_articles(
     Returns:
         List of dicts with keys ``title, url, canonical_url, source,
         published_at, author, snippet`` plus the Extraction Flag annotation
-        (``flag_reason, flag_detail, flagged_at, flagged_by``) and the Read
+        (``flag_reason, flag_detail, flagged_at, flagged_by``), the Read
         State annotation (``read`` bool derived from ``read_at IS NOT NULL``,
-        plus ``read_at, read_by`` — ``None`` when unread). ``published_at``
+        plus ``read_at, read_by`` — ``None`` when unread), and the latest
+        Importance annotation (``importance_score, importance_rationale,
+        importance_reporter, importance_updated_at`` — ``None`` when
+        unannotated). ``published_at``
         is an isoformat tz-aware string; ``author`` may be ``None``;
         ``snippet`` is a content excerpt around the match. Empty/blank
         keyword returns ``[]``.
@@ -219,6 +261,7 @@ def search_articles(
         item["published_at"] = _to_iso_tz_aware(item["published_at"])
         item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
         item["read_at"] = _to_iso_tz_aware(item["read_at"])
+        item["importance_updated_at"] = _to_iso_tz_aware(item["importance_updated_at"])
         item["snippet"] = _snippet(content, item["title"], term)
         results.append({k: item[k] for k in _RESULT_KEYS})
     return results
