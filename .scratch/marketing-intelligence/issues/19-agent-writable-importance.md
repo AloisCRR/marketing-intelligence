@@ -4,9 +4,9 @@
 
 **Blocked by:** 16 — Truthful Period Context API (annotations land on the honest bundle shape).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Setting, re-setting, and reading back an importance annotation round-trips per Document with reporter identity and timestamp; latest write wins and history is retained
-- [ ] Scores outside 0–1 are rejected as caller errors; extraction-flagged or paywalled Documents are hard-capped at 0.3 by the server regardless of the submitted score
-- [ ] Importance is visible wherever Documents are read (search results, single read, period bundle items) without extra calls
-- [ ] Both caller surfaces expose the write identically through the Service Adapter with 422 on invalid input
+- [x] Setting, re-setting, and reading back an importance annotation round-trips per Document with reporter identity and timestamp; latest write wins and history is retained
+- [x] Scores outside 0–1 are rejected as caller errors; extraction-flagged or paywalled Documents are hard-capped at 0.3 by the server regardless of the submitted score
+- [x] Importance is visible wherever Documents are read (search results, single read, period bundle items) without extra calls
+- [x] Both caller surfaces expose the write identically through the Service Adapter with 422 on invalid input

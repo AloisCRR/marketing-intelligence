@@ -198,3 +198,39 @@ def set_document_topics(body: TopicsRequest, _: None = Depends(require_bearer)) 
         body.topics,
         reporter=body.reporter,
     )
+
+
+class DigestPicksRequest(BaseModel):
+    digest_date: str
+    identifiers: list[str]
+    reporter: str | None = None
+
+
+@app.post("/digest-picks")
+def record_digest_picks(
+    body: DigestPicksRequest, _: None = Depends(require_bearer)
+) -> dict[str, Any]:
+    """Record a digest's pick set for one date; returns the set + added/removed diff."""
+    return service.record_digest_picks(
+        body.digest_date,
+        body.identifiers,
+        reporter=body.reporter,
+    )
+
+
+@app.get("/digest-picks")
+def get_digest_picks(
+    digest_date: str = Query(..., description="Digest date, ISO YYYY-MM-DD"),
+    _: None = Depends(require_bearer),
+) -> dict[str, Any]:
+    """Read back one digest date's pick set (identity + reporter + timestamp)."""
+    return service.get_digest_picks(digest_date)
+
+
+@app.delete("/digest-picks")
+def clear_digest_picks(
+    digest_date: str = Query(..., description="Digest date, ISO YYYY-MM-DD"),
+    _: None = Depends(require_bearer),
+) -> dict[str, Any]:
+    """Clear one digest date's pick set (returns how many picks were removed)."""
+    return service.clear_digest_picks(digest_date)

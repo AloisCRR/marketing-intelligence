@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from marketing_intelligence import article as _article
+from marketing_intelligence import digests as _digests
 from marketing_intelligence import flag as _flag
 from marketing_intelligence import importance as _importance
 from marketing_intelligence import period as _period
@@ -773,6 +774,121 @@ def set_document_topics(
         return _topics.set_document_topics(
             identifier.strip(), clean_topics, reporter=clean_reporter, conn=conn
         )
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+# --- Digest picks trace (Ticket 22) ----------------------------------------
+#
+# Which Documents each digest date selected. `record_digest_picks` reconciles
+# the stored set to the caller's (possibly human-edited) URL list and returns
+# the added/removed diff — the re-scoring signal for a published digest;
+# `get_digest_picks` reads a date's set back; `clear_digest_picks` removes it.
+# Both caller surfaces go through these three functions so payloads/errors
+# stay identical by construction (unknown URL / bad date -> 422).
+
+
+def _validate_digest_date(value: Any) -> date:
+    """Accept a date/datetime or ISO date/datetime string; failure is 422.
+
+    Only the calendar date is kept (`datetime`/timestamp inputs lose the time
+    part) because a digest edition is named by its date.
+    """
+    bound = _coerce_bound(value, label="digest_date")
+    return bound.date() if isinstance(bound, datetime) else bound
+
+
+def _validate_digest_identifiers(identifiers: Any) -> list[str]:
+    """Validate a digest pick list: list/tuple of non-blank article URLs, or 422.
+
+    An empty list is accepted and reconciles the set to empty; duplicates and
+    URL/canonical-URL spellings of one Document collapse to a single pick
+    downstream.
+    """
+    if isinstance(identifiers, (str, bytes)) or not isinstance(identifiers, (list, tuple)):
+        raise InvalidRequest("identifiers must be a list of article URLs")
+    for item in identifiers:
+        if not isinstance(item, str) or not item.strip():
+            raise InvalidRequest(f"identifiers must be non-empty strings, got {item!r}")
+    return [item.strip() for item in identifiers]
+
+
+def _validate_digest_reporter(reporter: Any) -> Any:
+    """Validate the optional digest reporter tag: string-or-null, max 100 chars."""
+    if reporter is None:
+        return None
+    if not isinstance(reporter, str):
+        raise InvalidRequest(f"reporter must be a string or null, got {type(reporter).__name__}")
+    cleaned = reporter.strip() or None
+    if cleaned is not None and len(cleaned) > _digests.REPORTER_MAX_LENGTH:
+        raise InvalidRequest(
+            f"reporter must be at most {_digests.REPORTER_MAX_LENGTH} chars, got {len(cleaned)}"
+        )
+    return cleaned
+
+
+def record_digest_picks(
+    digest_date: date | datetime | str,
+    identifiers: list[str],
+    reporter: str | None = None,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    """Validated digest-pick write; returns the set plus the added/removed diff.
+
+    The stored pick set for `digest_date` becomes exactly the Documents named
+    by `identifiers` (new ones inserted, dropped ones deleted; re-recording an
+    unchanged pick does not duplicate it or reset its `picked_at`). The
+    `added`/`removed` lists in the result are the re-scoring signal: pass the
+    URL set a human edited the digest down to and the diff names the Documents
+    whose importance was under- or over-weighted. A blank/non-list
+    `identifiers` argument, a non-string/blank URL, an overlong reporter
+    (>100 chars) or a malformed date raise `InvalidRequest` without a DB
+    round-trip; unknown URLs surface from the lane and are normalised too.
+    """
+    clean_date = _validate_digest_date(digest_date)
+    clean_identifiers = _validate_digest_identifiers(identifiers)
+    clean_reporter = _validate_digest_reporter(reporter)
+    try:
+        return _digests.record_digest_picks(
+            clean_date, clean_identifiers, reporter=clean_reporter, conn=conn
+        )
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+def get_digest_picks(digest_date: date | datetime | str, conn: Any | None = None) -> dict[str, Any]:
+    """Validated read of one digest date's pick set.
+
+    Returns `{"digest_date", "picks"}`; each pick carries the Document
+    identity (`url`, `canonical_url`, `title`, `source`, `published_at`) plus
+    `reporter` and `picked_at`. A malformed date raises `InvalidRequest`
+    without a DB round-trip; an empty set is a normal `picks: []`.
+    """
+    clean_date = _validate_digest_date(digest_date)
+    try:
+        return _digests.get_digest_picks(clean_date, conn=conn)
+    except InvalidRequest:
+        raise
+    except (ValueError, TypeError, LookupError) as exc:
+        raise InvalidRequest(str(exc)) from None
+
+
+def clear_digest_picks(
+    digest_date: date | datetime | str, conn: Any | None = None
+) -> dict[str, Any]:
+    """Validated clear of one digest date's pick set.
+
+    Returns `{"digest_date", "cleared", "picks"}` (`cleared` is the number of
+    rows removed, `picks` the read-back set, always `[]` after a successful
+    clear). A malformed date raises `InvalidRequest` without a DB round-trip.
+    """
+    clean_date = _validate_digest_date(digest_date)
+    try:
+        return _digests.clear_digest_picks(clean_date, conn=conn)
     except InvalidRequest:
         raise
     except (ValueError, TypeError, LookupError) as exc:

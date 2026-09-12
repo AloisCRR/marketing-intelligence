@@ -4,9 +4,9 @@
 
 **Blocked by:** 16 — Truthful Period Context API; 19 — Agent-writable importance (shares the annotation history design).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A read-only vocabulary listing lets the agent discover canonical Topic slugs without leaving the caller surface
-- [ ] Setting Topics accepts synonyms and canonicalizes them server-side; unknown tags are rejected or canonicalized, never stored silently as-is
-- [ ] Topic tags are visible wherever Documents are read, and vocabulary changes stay additive (retire by aliasing, never deleting)
-- [ ] Both caller surfaces expose tag writes and vocabulary reads identically through the Service Adapter with 422 on invalid input
+- [x] A read-only vocabulary listing lets the agent discover canonical Topic slugs without leaving the caller surface
+- [x] Setting Topics accepts synonyms and canonicalizes them server-side; unknown tags are rejected or canonicalized, never stored silently as-is
+- [x] Topic tags are visible wherever Documents are read, and vocabulary changes stay additive (retire by aliasing, never deleting)
+- [x] Both caller surfaces expose tag writes and vocabulary reads identically through the Service Adapter with 422 on invalid input

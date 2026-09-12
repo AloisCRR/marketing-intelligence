@@ -4,9 +4,9 @@
 
 **Blocked by:** 21 — Annotation-aware retrieval (picks reference the filtered week).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Recording digest selection per Document round-trips (set → read back → clear) with digest date, reporter, and timestamp
-- [ ] The rebuilt digest prompt drives the full funnel (recall week → score → tag → source-balanced select → summarize) against the new filters, with the importance rubric versioned in the prompt, not server code
-- [ ] Human edits to a published digest are capturable as re-scoring signal against the recorded picks
-- [ ] Both caller surfaces expose picks identically through the Service Adapter
+- [x] Recording digest selection per Document round-trips (set → read back → clear) with digest date, reporter, and timestamp
+- [x] The rebuilt digest prompt drives the full funnel (recall week → score → tag → source-balanced select → summarize) against the new filters, with the importance rubric versioned in the prompt, not server code
+- [x] Human edits to a published digest are capturable as re-scoring signal against the recorded picks
+- [x] Both caller surfaces expose picks identically through the Service Adapter

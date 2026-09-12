@@ -130,16 +130,19 @@ def _unwrap_call_tool(out: Any) -> Any:
     return out
 
 
-def test_mcp_registers_exactly_ten_tools() -> None:
+def test_mcp_registers_exactly_thirteen_tools() -> None:
     tools = asyncio.run(MCP_SERVER.mcp.list_tools())
     assert sorted(t.name for t in tools) == [
+        "clear_digest_picks",
         "flag_extraction",
         "get_article",
+        "get_digest_picks",
         "get_importance",
         "get_period_context",
         "list_sources_inventory",
         "list_vocabulary",
         "mark_article_read",
+        "record_digest_picks",
         "search_articles",
         "set_document_topics",
         "set_importance",

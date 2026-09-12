@@ -4,9 +4,9 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The recency-ordered list is exposed under a truthful name and every item carries its rank position or equivalent ordering signal, never an implied score
-- [ ] Empty analytics placeholders (top stories, emerging topics, movements, entities, convergence) are gone from the bundle until a later ticket computes them for real
-- [ ] Both caller surfaces stay in parity by construction through the Service Adapter, with caller-side validation errors still surfacing as 422 over HTTP
-- [ ] The digest and investigate prompt scaffolds describe only what the bundle actually contains
+- [x] The recency-ordered list is exposed under a truthful name and every item carries its rank position or equivalent ordering signal, never an implied score
+- [x] Empty analytics placeholders (top stories, emerging topics, movements, entities, convergence) are gone from the bundle until a later ticket computes them for real
+- [x] Both caller surfaces stay in parity by construction through the Service Adapter, with caller-side validation errors still surfacing as 422 over HTTP
+- [x] The digest and investigate prompt scaffolds describe only what the bundle actually contains

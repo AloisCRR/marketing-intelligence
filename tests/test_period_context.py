@@ -688,6 +688,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "008_read_state.sql",
         "009_importance.sql",
         "010_topics.sql",
+        "011_digest_picks.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

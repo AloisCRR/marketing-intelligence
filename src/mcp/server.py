@@ -56,7 +56,11 @@ SERVER_INSTRUCTIONS = (
     "filter is set. Draft only from what that bundle contains — keep provenance "
     "URLs attached. "
     "A digest is just one usage of a bundle: the caller picks any range and builds "
-    "the digest from it — there is no built-in schedule. "
+    "the digest from it — there is no built-in schedule. Record which Documents a "
+    "digest selected with record_digest_picks(digest_date, urls, reporter), read "
+    "that trace back with get_digest_picks, and capture human edits by re-recording "
+    "the edited URL set — its added/removed diff is the re-scoring signal. "
+    "clear_digest_picks drops a discarded edition's trace. "
     "Use flag_extraction only to report improperly extracted content (thin body, JS shell, "
     "paywall challenge, truncated text, wrong body) — never for factual disagreements. "
     "Use set_importance to record how much a Document matters (0-1 score + rationale + "
@@ -65,7 +69,8 @@ SERVER_INSTRUCTIONS = (
     "Documents with canonical pillar/region/content-type slugs (synonyms are "
     "canonicalized server-side, unknown tags rejected). "
     "Prefer read-only tools for exploration; flag_extraction, mark_article_read, "
-    "set_importance and set_document_topics are the mutating tools."
+    "set_importance, set_document_topics, record_digest_picks and "
+    "clear_digest_picks are the mutating tools."
 )
 
 
@@ -282,9 +287,9 @@ def flag_extraction(
 
     Use only for improperly extracted content (thin body, JS shell,
     paywall/bot challenge, truncated text, wrong body) — never for factual
-    disputes about an otherwise well-extracted article. This is one of four
-    mutating tools on this server (with mark_article_read, set_importance and
-    set_document_topics).
+    disputes about an otherwise well-extracted article. This is one of the
+    mutating tools on this server (with mark_article_read, set_importance,
+    set_document_topics, record_digest_picks and clear_digest_picks).
 
     Args:
         identifier: Article URL or canonical URL.
@@ -365,8 +370,9 @@ def set_importance(
     Use to mark evidence the digest consumer should prefer. History is
     retained append-only; flagged or paywalled articles are hard-capped at
     0.3 server-side regardless of the submitted score, so they can never
-    outrank clean evidence. This is a mutating tool (with flag_extraction
-    and mark_article_read).
+    outrank clean evidence. This is a mutating tool (with flag_extraction,
+    mark_article_read, set_document_topics, record_digest_picks and
+    clear_digest_picks).
 
     Args:
         identifier: Article URL or canonical URL.
@@ -457,6 +463,94 @@ def set_document_topics(
     return service.set_document_topics(identifier, topics, reporter=reporter)
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
+def record_digest_picks(
+    digest_date: Annotated[str, "Digest edition date, ISO YYYY-MM-DD."],
+    identifiers: Annotated[
+        list[str],
+        "Article URLs picked for that digest; [] reconciles the set to empty.",
+    ],
+    reporter: Annotated[str | None, "Reporter label (<=100 chars)."] = None,
+) -> dict[str, Any]:
+    """Record which articles a digest date selected (idempotent per article).
+
+    Use to leave a trace of the digest's pick set, and to capture human edits:
+    re-record the edited URL set and the returned ``added``/``removed`` lists
+    are the re-scoring signal — revisit those Documents' importance with
+    set_importance (added = under-weighted, removed = over-weighted). The
+    stored set for the date becomes exactly ``identifiers``: new Documents are
+    inserted, missing ones deleted, unchanged ones untouched (their original
+    ``picked_at`` survives). Recording the same set twice is a no-op. This is
+    a mutating tool (with flag_extraction, mark_article_read, set_importance,
+    set_document_topics and clear_digest_picks).
+
+    Args:
+        digest_date: Digest edition date, ISO ``YYYY-MM-DD``.
+        identifiers: Article URLs (or canonical URLs) the digest picked; an
+            empty list reconciles the date's set to empty.
+        reporter: Reporter label, max 100 chars.
+
+    Returns:
+        ``{digest_date, reporter, picks, added, removed}`` — the read-back
+        pick set (``url``/``canonical_url``/``title``/``source``/
+        ``published_at``/``reporter``/``picked_at`` per pick) plus the
+        canonical identifiers this call added and removed.
+
+    Raises:
+        InvalidRequest: If the date is malformed, an identifier is blank,
+            unknown, or not a string, or reporter is invalid.
+    """
+    return service.record_digest_picks(digest_date, identifiers, reporter=reporter)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
+def get_digest_picks(
+    digest_date: Annotated[str, "Digest edition date, ISO YYYY-MM-DD."],
+) -> dict[str, Any]:
+    """Read back one digest date's pick set.
+
+    Use to review what a digest actually selected (each pick carries its
+    Document identity, the ``reporter`` who recorded it and the ``picked_at``
+    timestamp). Read-only; a date that never picked anything returns
+    ``picks: []``.
+
+    Args:
+        digest_date: Digest edition date, ISO ``YYYY-MM-DD``.
+
+    Returns:
+        ``{digest_date, picks}`` where each pick has ``url``,
+        ``canonical_url``, ``title``, ``source``, ``published_at``,
+        ``reporter`` and ``picked_at``.
+
+    Raises:
+        InvalidRequest: If the date is malformed.
+    """
+    return service.get_digest_picks(digest_date)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
+def clear_digest_picks(
+    digest_date: Annotated[str, "Digest edition date, ISO YYYY-MM-DD."],
+) -> dict[str, Any]:
+    """Clear one digest date's pick set (for a discarded edition).
+
+    Use when a digest is abandoned rather than edited — unlike re-recording
+    an edited set, this drops the trace without a diff. Read-back after a
+    clear is always ``picks: []``; ``cleared`` reports how many picks were
+    removed (0 when the date had none).
+
+    Args:
+        digest_date: Digest edition date, ISO ``YYYY-MM-DD``.
+
+    Returns:
+        ``{digest_date, cleared, picks}`` with ``picks: []``.
+
+    Raises:
+        InvalidRequest: If the date is malformed.
+    """
+    return service.clear_digest_picks(digest_date)
+
+
 @mcp.resource("brain://about", mime_type="application/json")
 def read_about() -> str:
     """Static overview: coverage and recommended workflow."""
@@ -472,7 +566,10 @@ def read_about() -> str:
             "(a digest is built from a caller-chosen range; filters: min_importance, "
             "topics, per_source_limit) -> set_importance to record "
             "why evidence matters -> list_vocabulary + set_document_topics to tag "
-            "evidence canonically -> flag_extraction for bad content.",
+            "evidence canonically -> record_digest_picks(digest_date, urls) to leave "
+            "the digest trace (re-record an edited set for its added/removed "
+            "re-scoring diff; get_digest_picks reads it, clear_digest_picks drops it) "
+            "-> flag_extraction for bad content.",
             "resources": ["brain://about", "article://{identifier}", "period://{from}/{to}"],
             "prompts": ["period_digest", "investigate_topic"],
         }
@@ -493,22 +590,58 @@ def read_period_bundle(from_date: str, to_date: str) -> str:
 
 @mcp.prompt()
 def period_digest(period: str, focus: str | None = None) -> str:
-    """Scaffold for drafting a digest from a period evidence bundle.
+    """Scaffold for the full digest funnel over a period evidence bundle.
+
+    The funnel is recall -> score -> tag -> select -> summarize -> record. The
+    importance rubric is versioned here, in the prompt text, so a digest can
+    cite the rubric it was scored against; it is not implemented in server
+    code.
 
     Args:
-        period: Human label for the bundle range (e.g. "2026-08-31 to 2026-09-07").
+        period: Human label for the bundle range whose two ISO dates bound the
+            funnel (e.g. "2026-08-31 to 2026-09-07").
         focus: Optional theme to emphasize (e.g. "GenZ culture").
     """
     scope = f" with focus on {focus}" if focus else ""
     return (
-        f"Draft a digest for {period}{scope} "
-        "from get_period_context recent_articles only — recency-ordered by "
-        "default (rank is item position, not importance; pass min_importance "
-        "to order by importance and topics/per_source_limit to focus and "
-        "spread the set). "
-        "Cite every claim with its article URL/provenance, "
-        "separate observations from interpretations, "
-        "and flag (do not silently fix) any badly extracted content via flag_extraction."
+        f"Draft a digest for {period}{scope} by running the full funnel below "
+        "against the stored evidence. Never skip a step; never invent evidence.\n"
+        "\n"
+        "IMPORTANCE RUBRIC v1 (cite it in the digest; the prompt owns the rubric, "
+        "not the server):\n"
+        "  0.9-1.0 structural  — a durable shift in consumer behaviour, a major "
+        "brand/market move, or proprietary data the business must act on.\n"
+        "  0.7-0.8 strategic   — directly on-pillar news with clear commercial "
+        "implications for jewellery/fashion/GenZ marketing.\n"
+        "  0.4-0.6 context     — useful background, adjacent-market signal, or "
+        "early/partial reporting of a strategic story.\n"
+        "  0.1-0.3 noise       — routine PR, listicles, rehashed commentary, or "
+        "poorly extracted/paywalled bodies (the server caps flagged or "
+        "paywalled Documents at 0.3).\n"
+        "\n"
+        "1. RECALL the week: call get_period_context(from_date, to_date) with "
+        f"the range behind {period} (raise limit if needed). This "
+        "recent_articles list is the candidate pool — nothing else is evidence.\n"
+        "2. SCORE each candidate worth considering: set_importance(identifier, "
+        "score, rationale, reporter) using RUBRIC v1 above (0.5-0.6 is a fine "
+        "default for on-pillar context; do not inflate).\n"
+        "3. TAG the scored candidates: list_vocabulary for the canonical slugs, "
+        "then set_document_topics(identifier, [...]) with the pillar/region/"
+        "content-type tags that describe them.\n"
+        "4. SELECT the source-balanced shortlist: re-call get_period_context "
+        "for the same range with min_importance=<floor, e.g. 0.6>, "
+        "topics=<canonical slugs covering the focus; omit to keep every topic> "
+        "and per_source_limit=2. The returned bundle (recent_articles, rank = "
+        "importance order) is the digest's evidence set.\n"
+        "5. SUMMARIZE from that shortlist only: cite every claim with its "
+        "article URL/canonical_url, separate observations from interpretations, "
+        "and flag (do not silently fix) badly extracted content via "
+        "flag_extraction.\n"
+        "6. RECORD the trace: record_digest_picks(digest_date, [picked urls], "
+        "reporter=...). If a human later edits the published digest, call "
+        "record_digest_picks again with the edited URL set — its added/removed "
+        "lists are re-scoring signal: revisit those Documents with "
+        "set_importance (added = under-weighted, removed = over-weighted)."
     )
 
 

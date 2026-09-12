@@ -4,8 +4,8 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] One read-only listing returns name, article count, last-ingest time, and cadence per Source across all 20 V1 Sources
-- [ ] Available identically on both caller surfaces through the Service Adapter
-- [ ] Empty or never-ingested Sources report explicitly instead of disappearing from the list
+- [x] One read-only listing returns name, article count, last-ingest time, and cadence per Source across all 20 V1 Sources
+- [x] Available identically on both caller surfaces through the Service Adapter
+- [x] Empty or never-ingested Sources report explicitly instead of disappearing from the list

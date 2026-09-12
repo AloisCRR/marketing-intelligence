@@ -4,9 +4,9 @@
 
 **Blocked by:** 17 — Per-source quotas; 19 — Agent-writable importance; 20 — Controlled topic vocabulary.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The period bundle accepts importance floor, Topic filter, and per-source cap together in one call
-- [ ] Keyword search accepts the same Topic and importance filters so deep dives reuse the annotation layer
-- [ ] Unannotated Documents behave sanely under filtered queries (documented, never silently dropped or silently top-ranked)
-- [ ] Both caller surfaces expose all filters identically through the Service Adapter with 422 on invalid input; success criterion: importance ≥ 0.7 plus pillar filter plus per-source cap returns an on-pillar, source-spread week with zero manual juggling
+- [x] The period bundle accepts importance floor, Topic filter, and per-source cap together in one call
+- [x] Keyword search accepts the same Topic and importance filters so deep dives reuse the annotation layer
+- [x] Unannotated Documents behave sanely under filtered queries (documented, never silently dropped or silently top-ranked)
+- [x] Both caller surfaces expose all filters identically through the Service Adapter with 422 on invalid input; success criterion: importance ≥ 0.7 plus pillar filter plus per-source cap returns an on-pillar, source-spread week with zero manual juggling

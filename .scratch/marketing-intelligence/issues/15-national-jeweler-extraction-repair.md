@@ -4,9 +4,9 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Per-domain post-processing strips related-content blocks and nav sidebars and converts inline editorial anchors to plain words for the affected Source family
-- [ ] Every returned Document still carries full provenance and its lede is present
-- [ ] Regression fixtures pin one polluted body before and the cleaned body after, including the Gen Z self-purchase item and the store-closure item from the review
-- [ ] Existing Extraction Flag round-trip (set → read back → clear) still passes; previously flagged items re-ingest clean
+- [x] Per-domain post-processing strips related-content blocks and nav sidebars and converts inline editorial anchors to plain words for the affected Source family
+- [x] Every returned Document still carries full provenance and its lede is present
+- [x] Regression fixtures pin one polluted body before and the cleaned body after, including the Gen Z self-purchase item and the store-closure item from the review
+- [x] Existing Extraction Flag round-trip (set → read back → clear) still passes; previously flagged items re-ingest clean

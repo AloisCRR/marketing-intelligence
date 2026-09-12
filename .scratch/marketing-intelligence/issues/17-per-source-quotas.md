@@ -4,9 +4,9 @@
 
 **Blocked by:** 16 — Truthful Period Context API (builds on the renamed recency list shape).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Callers can cap items per Source on the period bundle (and the cap composes with the existing Source allowlist)
-- [ ] Default behavior without the cap is unchanged, so existing callers see no surprise
-- [ ] Both caller surfaces expose the cap identically through the Service Adapter with 422 on invalid values
-- [ ] A regression case pins a flood scenario: uncapped bundle dominated by one Source, capped bundle bounded per Source with remaining slots filled by others
+- [x] Callers can cap items per Source on the period bundle (and the cap composes with the existing Source allowlist)
+- [x] Default behavior without the cap is unchanged, so existing callers see no surprise
+- [x] Both caller surfaces expose the cap identically through the Service Adapter with 422 on invalid values
+- [x] A regression case pins a flood scenario: uncapped bundle dominated by one Source, capped bundle bounded per Source with remaining slots filled by others
