@@ -18,7 +18,9 @@ lane is deliberately narrow and deterministic:
   data destruction.
 - **Raw post JSON is kept.** Every run stores the full post result beside its
   document (``payloads.write_document_payloads``, after the upsert) so the
-  deferred comment/metric/image work needs no re-scrape.
+  deferred comment/metric/image/hashtag work needs no re-scrape. Nothing is
+  ever dropped ingest-side: every billed post is upserted, and the
+  `hashtag_filter` stanza is a query-time hint only.
 - **Secret discipline.** ``APIFY_API_TOKEN`` is read from the environment at
   call time, sent as a bearer header, and never logged; build/run inputs are
   never logged either.
@@ -242,42 +244,23 @@ def run_actor(actor_input: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
-def _normalize_hashtag(value: Any) -> str:
-    """Lowercase hashtag token: surrounding space and any leading ``#`` dropped."""
-    return str(value).strip().lstrip("#").strip().lower()
-
-
-def _matches_hashtag_filter(post: dict[str, Any], tag: str) -> bool:
-    """Client-side hashtag match: the post's `hashtags` list or the caption."""
-    needle = _normalize_hashtag(tag)
-    if not needle:
-        return True
-    hashtags = post.get("hashtags")
-    if isinstance(hashtags, list):
-        for entry in hashtags:
-            if _normalize_hashtag(entry) == needle:
-                return True
-    return f"#{needle}" in str(post.get("caption") or "").lower()
-
-
 def fetch_instagram_posts(
     source_label: str, conn: Any | None = None
 ) -> tuple[list[dict[str, Any]], int]:
-    """Pointer → actor input → run → client-side hashtag filter.
+    """Pointer → actor input → run → ingest-all.
 
-    Returns ``(posts, raw_count)`` where `raw_count` is the actor's unfiltered
-    result count (the billing/observability number). With no `hashtag_filter`
-    stanza the posts pass through untouched.
+    Every billed post is returned for upsert + payload write; nothing is
+    dropped ingest-side. The `hashtag_filter` stanza is a query-time hint
+    only (caption holds `#tag` text, payload JSONB holds `hashtags[]`), so
+    filtering costs zero extra billing. Returns ``(posts, raw_count)`` where
+    `raw_count` is the actor's result count (the billing/observability
+    number) — always ``len(posts)`` since nothing is filtered.
     """
     config = get_retrieval_config(source_label)
     username = str(config.get("username") or "").strip() or _username_from_label(source_label)
     pointer = pointer_for_source(source_label, conn)
     items = run_actor(build_actor_input(username, pointer))
-    raw_count = len(items)
-    tag = config.get("hashtag_filter")
-    if tag:
-        items = [post for post in items if _matches_hashtag_filter(post, str(tag))]
-    return items, raw_count
+    return items, len(items)
 
 
 #: Cap (chars) on a collapsed failure detail carried into the run result.

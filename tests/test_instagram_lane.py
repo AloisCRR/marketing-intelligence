@@ -12,7 +12,8 @@ Pinned observable behavior:
   on every input
 - overlap/bleed re-emits dedupe via the documents UNIQUE constraint
   (inserted/skipped), and the whole run is rerunnable
-- client-side hashtag filter; explicit failure shape; missing token raises
+- ingest-all: every billed post is upserted (the hashtag stanza never gates
+  ingest — it is a query-time hint); explicit failure shape; missing token raises
 - the flow's instagram branch never reaches enrichment
 """
 
@@ -239,7 +240,11 @@ def test_run_actor_rejects_non_list_payload(monkeypatch: pytest.MonkeyPatch) -> 
 # --- fetch --------------------------------------------------------------------
 
 
-def test_fetch_applies_hashtag_filter_client_side(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_ingests_all_posts_regardless_of_hashtag_stanza(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Never drop billed data: even posts without the tag are returned for
+    # upsert + payload write; filtering happens at query time.
     posts = [
         {
             "shortCode": "A1",
@@ -255,9 +260,9 @@ def test_fetch_applies_hashtag_filter_client_side(monkeypatch: pytest.MonkeyPatc
         lambda label: {"username": "sabrikolod", "hashtag_filter": "ChismecitoMarketinero"},
     )
     monkeypatch.setattr(instagram, "run_actor", lambda actor_input: posts)
-    filtered, raw_count = instagram.fetch_instagram_posts(SOURCE, conn=FakeConnection())
+    kept, raw_count = instagram.fetch_instagram_posts(SOURCE, conn=FakeConnection())
     assert raw_count == 3
-    assert [post["shortCode"] for post in filtered] == ["A1", "A2"]
+    assert kept == posts
 
 
 def test_fetch_passes_all_posts_without_hashtag_stanza(monkeypatch: pytest.MonkeyPatch) -> None:

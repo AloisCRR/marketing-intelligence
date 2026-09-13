@@ -1,6 +1,6 @@
 # 03 — Pointer-based caption lane (10-bootstrap, 15-cap, 60s overlap)
 
-**What to build:** Instagram lane module emitting `NormalizedDocument` per post: run 0 = `resultsLimit: 10`, no date filter; run N = `onlyPostsNewerThan: <MAX(published_at) − 60s>`, `resultsLimit: 15` hard cap + per-run max charge. Identity: canonical `/p/<code>/` URL (`/reel/` normalized), title = first caption line else `@handle — <shortcode>`. Mapping: caption→`content`, handle→`author`, IG `timestamp`→`published_at`, `es` language. Hashtag filter client-side post-fetch. Enrichment bypassed (`force_off`-style). Branch in `ingest_source_flow` lane switch converging on upsert → payload write.
+**What to build:** Instagram lane module emitting `NormalizedDocument` per post: run 0 = `resultsLimit: 10`, no date filter; run N = `onlyPostsNewerThan: <MAX(published_at) − 60s>`, `resultsLimit: 15` hard cap + per-run max charge. Identity: canonical `/p/<code>/` URL (`/reel/` normalized), title = first caption line else `@handle — <shortcode>`. Mapping: caption→`content`, handle→`author`, IG `timestamp`→`published_at`, `es` language. Ingest-all: every billed post is upserted + payload-written; `hashtag_filter` is a query-time hint only, never an ingest gate (2026-09-14: never drop paid data). Enrichment bypassed (`force_off`-style). Branch in `ingest_source_flow` lane switch converging on upsert → payload write.
 
 **Blocked by:** 02
 
