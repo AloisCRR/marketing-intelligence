@@ -1,7 +1,8 @@
 """Deterministic source seeds + NULL-source quarantine (DB lane).
 
-TDD for migration 007:
-- (a) all 20 curated sources seeded idempotently (ON CONFLICT DO NOTHING),
+TDD for migration 007 (+ the 012 re-assert of the ADR-0013 account row):
+- (a) all 20 curated feed sources seeded idempotently (ON CONFLICT DO NOTHING),
+  with `ig:sabrikolod` re-asserted by 012 (007 is immutable once applied),
 - (b) existing NULL source_id rows quarantined explicitly (no silent drop),
 - (c) rerun is idempotent.
 
@@ -32,7 +33,12 @@ import marketing_intelligence.db as db  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_007 = ROOT / "migrations" / "007_deterministic_sources_and_not_null.sql"
+PAYLOADS_MIGRATION = ROOT / "migrations" / "012_document_payloads.sql"
 CURATED = ROOT / ".scratch" / "marketing-intelligence" / "curated-sources.json"
+
+#: ADR-0013 premium account row: seeded off the feed migrations (007 is
+#: immutable and already applied) and re-asserted by migration 012.
+IG_SOURCE = "ig:sabrikolod"
 
 _LANG_CODE = {"English": "en", "Portuguese": "pt", "Spanish": "es"}
 
@@ -48,15 +54,34 @@ def _read_007() -> str:
     return MIGRATION_007.read_text(encoding="utf-8")
 
 
+def _read_payloads() -> str:
+    """012 re-asserts the ADR-0013 ``ig:sabrikolod`` row (007 stays immutable)."""
+    assert PAYLOADS_MIGRATION.exists(), f"expected migration missing: {PAYLOADS_MIGRATION}"
+    return PAYLOADS_MIGRATION.read_text(encoding="utf-8")
+
+
+def _seed_sql() -> str:
+    """Every migration that seeds deterministic source ids (007 + 012)."""
+    return _read_007() + _read_payloads()
+
+
 # --- SQL text contract -------------------------------------------------------
 
 
-def test_007_seeds_all_20_curated_sources() -> None:
-    curated = _curated_names()
+def test_007_seeds_all_20_curated_feed_sources() -> None:
+    # 007 keeps the 20 feed sources; the ADR-0013 Instagram account is
+    # re-asserted by 012 (007 is immutable and already applied).
+    curated = _curated_names() - {IG_SOURCE}
     assert len(curated) == 20
     sql = _read_007()
     for name in curated:
         assert name in sql, f"007 missing curated source: {name}"
+
+
+def test_012_reasserts_the_instagram_source_row() -> None:
+    sql = _read_payloads()
+    assert IG_SOURCE in sql
+    assert str(db.source_uuid(IG_SOURCE)) in sql
 
 
 def test_007_seed_is_idempotent_on_conflict_do_nothing() -> None:
@@ -64,13 +89,13 @@ def test_007_seed_is_idempotent_on_conflict_do_nothing() -> None:
     assert "ON CONFLICT (name) DO NOTHING" in sql
 
 
-def test_007_ids_are_deterministic_uuid5() -> None:
+def test_seed_ids_are_deterministic_uuid5() -> None:
     """Embedded ids must equal marketing_intelligence.db.source_uuid(name) (stdlib uuid5, no new dep)."""
-    sql = _read_007()
+    sql = _seed_sql()
     found = _UUID_RE.findall(sql)
-    assert len(found) >= 20, f"expected >=20 UUID literals in 007, found {len(found)}"
+    assert len(found) >= 21, f"expected >=21 UUID literals in 007+012, found {len(found)}"
     for name in _curated_names():
-        assert str(db.source_uuid(name)) in sql, f"007 missing deterministic id for: {name}"
+        assert str(db.source_uuid(name)) in sql, f"seed SQL missing deterministic id for: {name}"
 
 
 def test_007_quarantines_null_source_rows_explicitly() -> None:
@@ -106,21 +131,21 @@ def test_source_uuid_is_deterministic_and_unique_per_name() -> None:
         assert str(db.source_uuid(name))  # stable, non-empty
 
 
-def test_seed_sources_helper_covers_all_20_curated() -> None:
+def test_seed_sources_helper_covers_all_21_curated() -> None:
     assert {name for name, _, _, _ in db.SEED_SOURCES} == _curated_names()
 
 
 def test_seed_sources_helper_is_idempotent_shape() -> None:
     """First run inserts; a rerun (rowcount 0, i.e. ON CONFLICT) only skips."""
     fake = FakeConn(rowcount=1)
-    assert db.seed_sources(conn=fake) == (20, 0)  # type: ignore[arg-type]
+    assert db.seed_sources(conn=fake) == (21, 0)  # type: ignore[arg-type]
     assert fake.committed
     for sql, params in fake.statements:
         assert "ON CONFLICT (name) DO NOTHING" in sql
         assert params is not None and str(params[0]) == str(db.source_uuid(params[1]))
 
     rerun = FakeConn(rowcount=0)
-    assert db.seed_sources(conn=rerun) == (0, 20)  # type: ignore[arg-type]
+    assert db.seed_sources(conn=rerun) == (0, 21)  # type: ignore[arg-type]
 
 
 def test_quarantine_helper_moves_null_rows() -> None:
@@ -210,7 +235,8 @@ def test_live_007_backfills_quarantine_and_enforces_not_null(scratch_db: str) ->
 
     with psycopg.connect(scratch_db) as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM sources")
-        assert cur.fetchone()[0] == 20
+        # 20 feed rows (007) + the ig:sabrikolod row (012).
+        assert cur.fetchone()[0] == 21
         cur.execute("SELECT COUNT(*) FROM documents WHERE source_id IS NULL")
         assert cur.fetchone()[0] == 0
         cur.execute(

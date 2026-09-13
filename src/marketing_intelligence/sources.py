@@ -64,7 +64,9 @@ DEFAULT_ENRICHMENT_POLICY: dict[str, Any] = {
 #: ``rss`` is the V1 feed lane; ``sitemap`` traverses declared sitemap
 #: index/URL-set/news feeds; ``hub`` scrapes hub-page anchors; ``sitemap+hub``
 #: runs sitemaps first with hub-anchor fallback; ``url-set`` ingests a declared
-#: URL set; ``url-set+hub`` pairs the set with hub-anchor fallback. Retrieval
+#: URL set; ``url-set+hub`` pairs the set with hub-anchor fallback; and
+#: ``instagram`` is the ADR-0013 premium exception — a per-account Instagram
+#: lane (Apify actor over declared posts), not a feed surface. Retrieval
 #: stanzas are config, not code forks — downstream ingest/flows behavior for
 #: RSS sources is unchanged.
 RETRIEVAL_TYPES: tuple[str, ...] = (
@@ -74,12 +76,16 @@ RETRIEVAL_TYPES: tuple[str, ...] = (
     "sitemap+hub",
     "url-set",
     "url-set+hub",
+    "instagram",
 )
 
-#: Allowed feed retrieval policies. The stdlib lanes are gone: every fetch
-#: runs the impersonated chain (curl_cffi Chrome + browser headers → Jina
-#: reader → Firecrawl), each leg explicit about its own failure.
-RETRIEVAL_POLICIES: tuple[str, ...] = ("impersonated-feed",)
+#: Allowed retrieval policies. ``impersonated-feed`` is the default for every
+#: feed/discovery fetch: the stdlib lanes are gone, so such a fetch runs the
+#: impersonated chain (curl_cffi Chrome + browser headers → Jina reader →
+#: Firecrawl), each leg explicit about its own failure. ``apify-premium`` is
+#: the ADR-0013 exception: the fixed-purpose ``apify/instagram-post-scraper``
+#: Instagram lane, which never issues an impersonated fetch.
+RETRIEVAL_POLICIES: tuple[str, ...] = ("impersonated-feed", "apify-premium")
 
 #: Deprecated back-compat alias: stanzas (or callers) still saying
 #: ``"stdlib-only"`` resolve to ``"impersonated-feed"``. It is never a fetch
@@ -93,6 +99,22 @@ EXTRACTOR_FAMILIES: tuple[str, ...] = ("generic", "json-ld-first")
 
 #: Default extractor when a retrieval stanza declares none.
 DEFAULT_EXTRACTOR = "generic"
+
+#: Allowed Instagram content modes (ADR-0013): v1 reads the caption only.
+#: Other postures (image-heavy account, reels transcript) are deferred to v2,
+#: so they are not valid values until a lane implements them. Carried by the
+#: `instagram` retrieval stanza; anything else drops silently.
+CONTENT_MODES: tuple[str, ...] = ("caption_first",)
+
+#: Allowed Instagram ``image_text`` handling (ADR-0013 reserves the key):
+#: v1 ignores embedded image text — OCR/vision is deferred to v2, so
+#: ``extract`` is not a valid value until that lane exists. Carried by the
+#: `instagram` stanza.
+IMAGE_TEXT_MODES: tuple[str, ...] = ("ignore",)
+
+#: Default Instagram content mode / image-text handling when undeclared.
+DEFAULT_CONTENT_MODE = "caption_first"
+DEFAULT_IMAGE_TEXT = "ignore"
 
 #: Default per-host pacing between requests (ms) when a stanza declares none.
 DEFAULT_PACING_MS = 1000
@@ -127,6 +149,7 @@ V1_SOURCES: tuple[str, ...] = (
     "Swarovski PR Newswire",
     "InfoMoney",
     "Forbes México",
+    "ig:sabrikolod",
 )
 
 _FALLBACK_SMT: dict[str, Any] = {
@@ -255,7 +278,8 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
 
     Never raises: unconfigured/invalid extras simply fall back to defaults
     (generic extractor, no sitemaps, registry hub, no link pattern, default
-    pacing/backfill). Callers must not rely on invalid values surviving.
+    pacing/backfill, no Instagram account keys). Callers must not rely on
+    invalid values surviving.
 
     ``sitemap_exclude`` entries are a small path mini-language consumed by
     ``discovery._path_excluded``: an entry is a path *substring* by default
@@ -289,6 +313,18 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
     sitemap_pattern = raw.get("sitemap_pattern")
     if isinstance(sitemap_pattern, str) and sitemap_pattern.strip():
         extras["sitemap_pattern"] = sitemap_pattern.strip()
+    username = raw.get("username")
+    if isinstance(username, str) and username.strip():
+        extras["username"] = username.strip()
+    hashtag_filter = raw.get("hashtag_filter")
+    if isinstance(hashtag_filter, str) and hashtag_filter.strip():
+        extras["hashtag_filter"] = hashtag_filter.strip()
+    content_mode = raw.get("content_mode")
+    if content_mode in CONTENT_MODES:
+        extras["content_mode"] = content_mode
+    image_text = raw.get("image_text")
+    if image_text in IMAGE_TEXT_MODES:
+        extras["image_text"] = image_text
     sitemap_exclude = raw.get("sitemap_exclude")
     if isinstance(sitemap_exclude, str):
         sitemap_exclude = [sitemap_exclude]
@@ -311,14 +347,19 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
 def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     """Return the retrieval policy for `source_name`.
 
-    Result shape is ``{"type": ..., "policy": "impersonated-feed"}``
-    plus validated optional discovery keys (``extractor``, ``sitemaps``,
+    Result shape is ``{"type": ..., "policy": ...}`` — the policy is one of
+    ``RETRIEVAL_POLICIES`` (``impersonated-feed`` for every feed/discovery
+    lane; ``apify-premium`` for the ADR-0013 Instagram lane) — plus validated
+    optional discovery keys (``extractor``, ``sitemaps``,
     ``hub``, ``hub_pages``, ``link_pattern``, ``sitemap_pattern``,
-    ``sitemap_exclude``, ``id_guard``, ``pacing_ms``, ``max_urls``) only when the
-    registry stanza declares them: RSS stanzas keep their exact
-    ``{"type", "policy"}`` shape, so RSS ingest behavior is unchanged.
-    Every fetch runs the impersonated chain: curl_cffi Chrome under
-    ``BROWSER_HEADERS``, then the Jina reader, then Firecrawl.
+    ``sitemap_exclude``, ``id_guard``, ``pacing_ms``, ``max_urls``) and the
+    Instagram stanza keys (``username``, ``hashtag_filter``, ``content_mode``,
+    ``image_text``) only when the registry stanza declares them: RSS stanzas
+    keep their exact ``{"type", "policy"}`` shape, so RSS ingest behavior is
+    unchanged. Every feed/discovery fetch runs the impersonated chain:
+    curl_cffi Chrome under ``BROWSER_HEADERS``, then the Jina reader, then
+    Firecrawl; the ADR-0013 ``apify-premium`` lane is the Instagram exception
+    and never issues such a fetch.
     The deprecated ``"stdlib-only"`` alias resolves back to
     ``"impersonated-feed"`` (accepted for back-compat, never a fetch
     identity), as do unknown policy values. Overrides come from the registry
@@ -360,6 +401,10 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
     pacing yields 1000ms and backfill yields 50 URLs. ``sitemap_exclude``
     is carried only when the stanza declares it (no empty-list default),
     so stanzas without exclusions keep their exact established shape.
+    The Instagram keys (``username``, ``hashtag_filter``, ``content_mode``,
+    ``image_text``) are carried only for stanzas that declare any of them,
+    with ``caption_first``/``ignore`` defaults for an undeclared
+    ``content_mode``/``image_text`` — feed stanzas keep their exact shape.
     Unknown (or missing) sources yield safe RSS defaults — never raises.
     Discovery consumes this, not ad-hoc dict reads.
     """
@@ -381,6 +426,16 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
         # Declared-only: stanzas without exclusions keep their exact
         # established shape (see test_retrieval_config_fills_defaults_for_ticket_08).
         config["sitemap_exclude"] = list(policy["sitemap_exclude"])
+    if policy["type"] == "instagram" or any(
+        key in policy for key in ("username", "hashtag_filter", "content_mode", "image_text")
+    ):
+        # Instagram stanza (ADR-0013): declared-only, like sitemap_exclude, so
+        # every feed stanza keeps its exact shape. The account/hashtag keys
+        # default to None; the two mode keys carry their v1 defaults.
+        config["username"] = policy.get("username")
+        config["hashtag_filter"] = policy.get("hashtag_filter")
+        config["content_mode"] = str(policy.get("content_mode", DEFAULT_CONTENT_MODE))
+        config["image_text"] = str(policy.get("image_text", DEFAULT_IMAGE_TEXT))
     if config["hub"] is None and source_name is not None:
         try:
             hub_url = get_source(source_name).get("hub_url")
@@ -394,8 +449,8 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
 def list_v1_sources() -> list[dict[str, Any]]:
     """Return registry entries for the V1 scope, in V1 order.
 
-    V1 covers all 20 curated sources in registry order (RSS plus
-    sitemap/hub/url-set lanes); explicit ``sources=[...]`` still narrows
-    period/flows queries to a subset.
+    V1 covers all 21 curated sources in registry order (RSS plus
+    sitemap/hub/url-set lanes, plus the ADR-0013 Instagram account);
+    explicit ``sources=[...]`` still narrows period/flows queries to a subset.
     """
     return [get_source(name) for name in V1_SOURCES]

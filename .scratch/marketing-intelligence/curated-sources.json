@@ -324,5 +324,21 @@
     "last_verified": "2026-09-06",
     "sample_article_url": "https://forbes.com.mx/mientras-la-moda-atraviesa-dificultades-la-joyeria-contribuira-a-definir-a-los-ganadores-del-sector-del-lujo/",
     "sample_article_date": "2026-07-27"
+  },
+  {
+    "source_name": "ig:sabrikolod",
+    "pillar": 3,
+    "scope": "latam",
+    "country": "LATAM",
+    "language": "Spanish",
+    "hub_url": "https://www.instagram.com/sabrikolod/",
+    "rss_url": null,
+    "cadence": "Daily",
+    "access": "premium",
+    "extractability": "Apify actor apify/instagram-post-scraper, caption + payload JSON",
+    "retrieval": {"type": "instagram", "policy": "apify-premium", "username": "sabrikolod", "hashtag_filter": "ChismecitoMarketinero", "content_mode": "caption_first", "image_text": "ignore"},
+    "enrichment": {"threshold": 500, "mode": "force_off"},
+    "last_verified": "2026-09-13",
+    "sample_article_url": "https://www.instagram.com/p/DdOz587EXSx/"
   }
 ]

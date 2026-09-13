@@ -159,6 +159,7 @@ def test_live_real_migrations_pending_only_and_rerunnable(scratch_db: str) -> No
         "009_importance",
         "010_topics",
         "011_digest_picks",
+        "012_document_payloads",
     ]
     assert db.apply_migrations() == []
     assert db.pending_migrations() == []
@@ -171,6 +172,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
 
     db.apply_migrations()
     assert db.rollback_migrations(99) == [
+        "012_document_payloads",
         "011_digest_picks",
         "010_topics",
         "009_importance",
@@ -197,6 +199,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "009_importance",
         "010_topics",
         "011_digest_picks",
+        "012_document_payloads",
     ]
     assert db.apply_migrations() == [
         "001_init",
@@ -209,5 +212,6 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "009_importance",
         "010_topics",
         "011_digest_picks",
+        "012_document_payloads",
     ]
     assert db.pending_migrations() == []

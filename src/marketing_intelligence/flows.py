@@ -35,6 +35,7 @@ from marketing_intelligence.ingest import (
     parse_feed_with_report,
     upsert_documents,
 )
+from marketing_intelligence.instagram import ingest_instagram_source
 from marketing_intelligence.normalize import NormalizedDocument
 from marketing_intelligence.sources import (
     V1_SOURCES,
@@ -389,6 +390,10 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     stayed RSS); all three are present only when nonzero so clean results
     keep their exact {inserted, skipped} shape.
 
+    The `instagram` lane (ADR-0013) returns the same {inserted, skipped} shape
+    plus an explicit `error` on failure; it bypasses enrichment and the
+    unrecoverable-flag loop entirely — a caption is final evidence.
+
     Successful outcomes (and unknown-source errors) are recorded to
     `ingestion_runs` on a best-effort basis — recording never changes the
     result dict and never raises, so DB-free unit tests keep passing without
@@ -430,6 +435,8 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     # Lane switch (ticket 08): RSS entries keep the exact fetch → parse path;
     # sitemap-family entries run discovery → fetch → extract instead. Both
     # lanes converge on enrich → upsert with identical downstream contracts.
+    # The ADR-0013 `instagram` lane is the third branch: a self-contained
+    # fetch → map → upsert → payload-write helper that bypasses enrichment.
     # The lane is the *effective* stanza type: `apply_retrieval_override`
     # (ticket 28) may move a source off its curated RSS lane, and it must win
     # over the still-present (dead) `rss_url`. Every entry without a stanza
@@ -438,6 +445,14 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     retrieval_type = str(
         apply_retrieval_override(source_label, get_retrieval_config(source_label))["type"]
     )
+    if retrieval_type == "instagram":
+        # ADR-0013 premium lane: Apify posts → NormalizedDocument → upsert →
+        # raw-payload side table, all inside `ingest_instagram_source`. Called
+        # as a plain helper (no oversized task params, same reason as the
+        # upsert path below); this lane emits no unrecoverable flags, so the
+        # run finishes here and never reaches `_enrich_docs` or the terminal
+        # flag loop.
+        return _finish(ingest_instagram_source(source_label))
     rss_lane = retrieval_type == "rss"
     discovery_skipped = 0
     discovery_causes: list[str] = []
@@ -575,7 +590,7 @@ def ingest_sources_flow(
     """Ingest multiple sources; one failure never blocks the others.
 
     Returns a per-source mapping of {inserted, skipped[, error]}.
-    Defaults to the V1 scope (all 20 curated sources) when `source_names`
+    Defaults to the V1 scope (all 21 curated sources) when `source_names`
     is None; pass explicit names to narrow to a subset.
 
     Each per-source subflow is invoked with `return_state=True`: a Completed

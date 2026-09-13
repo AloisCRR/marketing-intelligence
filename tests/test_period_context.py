@@ -298,7 +298,7 @@ def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-unt
 # --- V1 scope -----------------------------------------------------------------
 
 
-def test_v1_sources_constant_is_all_twenty() -> None:
+def test_v1_sources_constant_is_all_twenty_one() -> None:
     assert V1_SOURCES == (
         "JCK Online",
         "National Jeweler",
@@ -320,6 +320,7 @@ def test_v1_sources_constant_is_all_twenty() -> None:
         "Swarovski PR Newswire",
         "InfoMoney",
         "Forbes México",
+        "ig:sabrikolod",
     )
 
 
@@ -337,7 +338,7 @@ def test_period_defaults_to_v1_sources() -> None:
     ctx, conn = _context()
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
-    assert len(conn.cursor_obj.last_params[2]) == 20
+    assert len(conn.cursor_obj.last_params[2]) == 21
     assert {a["source"] for a in ctx["recent_articles"]} <= set(V1_SOURCES)
 
 
@@ -401,7 +402,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
         (a["published_at"] for a in articles), reverse=True
     )
     # Out-of-range August article and next-week boundary excluded; JCK is
-    # in V1 scope (all 20), so it is included.
+    # in V1 scope (all 21), so it is included.
     titles = {a["title"] for a in articles}
     assert "August History" not in titles
     assert "Next-week Boundary" not in titles
@@ -588,7 +589,7 @@ def test_get_source_health_reports_latest_run_per_source() -> None:
     ]
     report = get_source_health(conn=_RunsConnection(runs))
     assert [r["source"] for r in report] == list(V1_SOURCES)
-    assert len(report) == 20
+    assert len(report) == 21
     by_source = {r["source"]: r for r in report}
     assert by_source["Social Media Today"]["status"] == "ok"
     assert by_source["Social Media Today"]["inserted"] == 3
@@ -691,6 +692,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "009_importance.sql",
         "010_topics.sql",
         "011_digest_picks.sql",
+        "012_document_payloads.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

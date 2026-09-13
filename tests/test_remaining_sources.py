@@ -1,12 +1,13 @@
 """Remaining V1 sources on the 01 adapter contract (Ticket 02).
 
 Observable behavior (not privates):
-- registry returns all 20 V1 sources (RSS + sitemap/hub/url-set lanes)
+- registry returns all 21 V1 sources (RSS + sitemap/hub/url-set lanes + the
+  ADR-0013 Instagram account)
 - each RSS fixture parses to the normalized contract (incl. pt for InfoMoney)
 - rerun upsert is idempotent per source
 - unknown source flow returns an explicit error dict
 - multi-source flow: one source failing still ingests the others
-- migration SQL seeds all 20 sources (001 + 006)
+- migration SQL seeds the 20 feed sources (001 + 006; ig:sabrikolod via 012)
 """
 
 from __future__ import annotations
@@ -314,10 +315,16 @@ def test_ingest_sources_flow_covers_v1_scope_default(
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
+    # The ADR-0013 Instagram lane is self-contained (APIFY_API_TOKEN + the
+    # payload side-table write) and covered by the Instagram lane suite; here
+    # it only needs to not break the V1 default scope.
+    monkeypatch.setattr(
+        flows, "ingest_instagram_source", lambda name: {"inserted": 0, "skipped": 0}
+    )
     _stub_enrich_identity(monkeypatch)
     results = flows.ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
-    assert len(results) == 20
+    assert len(results) == 21
     for name in V1_SOURCES:
         # Expectation follows the *effective* lane (registry stanza + any
         # code-level override), not the raw rss_url: Swarovski routes to hub
@@ -335,7 +342,7 @@ def test_no_extra_registry_sources_outside_v1() -> None:
     from marketing_intelligence.sources import V1_SOURCES, list_sources
 
     assert {e["name"] for e in list_sources()} == set(V1_SOURCES)
-    assert len(V1_SOURCES) == 20
+    assert len(V1_SOURCES) == 21
 
 
 def test_explicit_subset_still_ingests_by_name(
@@ -370,8 +377,12 @@ def test_migration_seeds_all_four_sources() -> None:
     assert "https://www.infomoney.com.br/" in sql
 
 
-def test_migration_006_seeds_all_20_sources() -> None:
-    """Ticket 07 (spec story 19): persistence matches the curated set."""
+def test_migration_006_seeds_all_20_feed_sources() -> None:
+    """Ticket 07 (spec story 19): persistence matches the 20 feed sources.
+
+    ``ig:sabrikolod`` is the ADR-0013 premium exception: it is re-asserted by
+    migration 012 (payload side-table lane), not by the 001 + 006 feed seeds.
+    """
     import json
 
     root = FIXTURES.parent.parent
@@ -382,7 +393,7 @@ def test_migration_006_seeds_all_20_sources() -> None:
                 encoding="utf-8"
             )
         )
-    }
+    } - {"ig:sabrikolod"}
     assert len(curated) == 20
     seed_sql = (root / "migrations" / "001_init.sql").read_text(encoding="utf-8") + (
         root / "migrations" / "006_seed_all_sources.sql"

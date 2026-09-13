@@ -127,7 +127,7 @@ def _validate_per_source_limit(value: Any) -> int | None:
 
 
 def _known_source_names() -> set[str]:
-    """V1 names plus every registry name (V1 covers all 20; kept union for safety)."""
+    """V1 names plus every registry name (V1 covers all 21; kept union for safety)."""
     names = set(V1_SOURCES)
     try:
         from marketing_intelligence.sources import list_sources
@@ -555,7 +555,7 @@ def _pair_rows(conn: Any, sql: str, params: tuple) -> dict[str, Any]:
 
 
 def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
-    """Read-only inventory of every V1 Source, in V1 order (all 20).
+    """Read-only inventory of every V1 Source, in V1 order (all 21).
 
     Each item is ``{"name", "article_count", "last_ingest_at", "cadence"}``:
     the stored Document count, the most recent *successful* Ingestion Run's
@@ -570,7 +570,7 @@ def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
             an injected connection is never closed or committed here.
 
     Returns:
-        List of 20 dicts in ``V1_SOURCES`` order. Read-only.
+        List of 21 dicts in ``V1_SOURCES`` order. Read-only.
     """
     names = list(V1_SOURCES)
     owns_connection = conn is None
