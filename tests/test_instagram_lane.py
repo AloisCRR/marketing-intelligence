@@ -171,7 +171,7 @@ def test_steady_input_has_limit_15_and_60s_overlap() -> None:
     assert instagram.STEADY_LIMIT == 15
     assert instagram.OVERLAP_SECONDS == 60
     assert actor_input["resultsLimit"] == 15
-    assert actor_input["onlyPostsNewerThan"] == (pointer - timedelta(seconds=60)).isoformat()
+    assert actor_input["onlyPostsNewerThan"] == "2026-09-10T11:59:00Z"
     assert actor_input["dataDetailLevel"] == "basicData"
     assert actor_input["maxTotalChargeUsd"] == instagram.MAX_CHARGE_USD
 
@@ -320,7 +320,7 @@ def test_ingest_bootstrap_then_steady_dedupes_overlap_and_bleed(
     second = instagram.ingest_instagram_source(SOURCE)
     assert second == {"inserted": 0, "skipped": 4}
     assert inputs[1]["resultsLimit"] == 15
-    assert inputs[1]["onlyPostsNewerThan"] == (pointer - timedelta(seconds=60)).isoformat()
+    assert inputs[1]["onlyPostsNewerThan"] == "2026-09-10T11:59:00Z"
     assert len(payload_writes[1]) == 4
 
 

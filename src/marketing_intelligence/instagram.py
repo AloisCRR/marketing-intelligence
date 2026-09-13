@@ -209,8 +209,8 @@ def build_actor_input(username: str, pointer: datetime | None) -> dict[str, Any]
         "maxTotalChargeUsd": MAX_CHARGE_USD,
     }
     if pointer is not None:
-        since = pointer - timedelta(seconds=OVERLAP_SECONDS)
-        actor_input["onlyPostsNewerThan"] = since.astimezone(UTC).isoformat()
+        since = (pointer - timedelta(seconds=OVERLAP_SECONDS)).astimezone(UTC)
+        actor_input["onlyPostsNewerThan"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
     return actor_input
 
 
