@@ -4,6 +4,8 @@
 
 **Blocked by:** 03
 
+**Status:** ready-for-human
+
 
 - [x] 10 posts stored, captions match public source, payloads complete in side table (comment fields stored verbatim, unverified)
 - [x] Pointer = `MAX(published_at)`; second run inserts 0 new (overlap dedupes)
