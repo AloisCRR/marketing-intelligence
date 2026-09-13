@@ -92,7 +92,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.retaildive.com/sitemap.xml", "https://www.retaildive.com/google_news_sitemap.xml"], "hub": "https://www.retaildive.com/topic/consumer-trends/", "link_pattern": "/news/", "pacing_ms": 5000, "max_urls": 50},
+    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.retaildive.com/sitemap.xml", "https://www.retaildive.com/google_news_sitemap.xml"], "sitemap_exclude": ["/archive/"], "hub": "https://www.retaildive.com/topic/consumer-trends/", "link_pattern": "/news/", "pacing_ms": 5000, "max_urls": 50},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.retaildive.com/news/ultas-use-of-flock-technology-causes-upset-online/829567/",
     "sample_article_date": "2026-09-04"
@@ -157,7 +157,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.meioemensagem.com.br/sitemap_index.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.meioemensagem.com.br/sitemap_index.xml"], "sitemap_exclude": ["/podcasts/"], "pacing_ms": 1000, "max_urls": 50},
     "last_verified": "2026-09-06",
     "sample_article_url": "https://www.meioemensagem.com.br/marketing/mercado-livre-que-fortalecer-moda-com-pandora",
     "sample_article_date": "2025-07-10"
@@ -173,7 +173,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.marketingdive.com/sitemap.xml", "https://www.marketingdive.com/google_news_sitemap.xml"], "hub": "https://www.marketingdive.com/", "link_pattern": "/news/", "pacing_ms": 5000, "max_urls": 50},
+    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.marketingdive.com/sitemap.xml", "https://www.marketingdive.com/google_news_sitemap.xml"], "sitemap_exclude": ["/archive/"], "hub": "https://www.marketingdive.com/", "link_pattern": "/news/", "pacing_ms": 5000, "max_urls": 50},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.marketingdive.com/news/pepsico-hands-global-media-to-publicis-amid-transformation-at-cpg-giant/829556/",
     "sample_article_date": "2026-09-03"
@@ -189,7 +189,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
+    "retrieval": {"type": "hub", "policy": "impersonated-feed", "extractor": "generic", "hub": "https://martech.org/", "link_pattern": "-", "sitemap_exclude": ["/topic/", "/author/", "/page/", "/conference/", "/about-martech-org/", "/intelligence-reports/", "/white-papers/", "/martech-topics/", "/martechbot", "/privacy-policy/", "/terms-of-service/", "/working-with-martech-content-team/", "/the-latest-ai-powered-martech-news-and-releases/"], "pacing_ms": 1000, "max_urls": 50},
     "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://martech.org/marketing-without-signals-how-to-perform-when-the-data-disappears/",
@@ -206,7 +206,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.marketingdirecto.com/news-sitemap.xml", "https://www.marketingdirecto.com/sitemap_index.xml"], "pacing_ms": 10000, "max_urls": 50},
+    "retrieval": {"type": "hub", "policy": "impersonated-feed", "extractor": "generic", "hub": "https://www.marketingdirecto.com/", "link_pattern": "-", "sitemap_exclude": ["/wp-content/", "/temas/", "^/media-kit$", "^/diccionario-marketing-publicidad-comunicacion-nuevas-tecnologias$", "^/quienes-somos$", "^/aviso-legal$", "^/politica-de-privacidad$", "^/politica-cookies$", "^/punto-de-vista$", "^/arena-media$", "^/next-level$", "^/digital-busines-innovation-sidn-digital-thinking$", "^/guias-especiales$", "^/marketing-general$", "^/marketing-general/agencias$", "^/marketing-general/entrevistas$", "^/marketing-general/gente$", "^/marketing-general/eventos-y-formacion$", "^/marketing-general/digital-innovation-trends-by-t2o$", "^/anunciantes-general$", "^/anunciantes-general/publicaciones$", "^/anunciantes-general/medios$", "^/creacion/campanas-de-marketing$", "^/digital-general$", "^/digital-general/digital$", "^/digital-general/e-commerce$", "^/digital-general/e-mail-marketing$", "^/digital-general/social-media-marketing$", "^/digital-general/medicion-sin-filtros-gfk$", "^/digital-general/mobile-marketing$", "^/digital-general/all-about-audio-by-audioemotion$", "^/especiales/reportajes-a-fondo$", "^/especiales/cannes-lions$", "^/especiales/ipg-mediabrands$", "^/especiales/the-future-of-advertising-especiales$", "^/especiales/enamorando-al-consumidor$", "^/imprescindibles/social-media$", "^/imprescindibles/historia-marcas$", "^/imprescindibles/inteligencia-artificial$"], "pacing_ms": 10000, "max_urls": 50},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.marketingdirecto.com/anunciantes-general/marcas/canva-suma-suite-visual-mas-100-novedades-plataforma-crece-enfocada-profesionales",
     "sample_article_date": "2026-09-04"

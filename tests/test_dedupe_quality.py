@@ -213,9 +213,9 @@ def test_flow_surfaces_parse_skipped_without_breaking_clean_flows(
 
     # Clean feeds carry no new key: exact-shape backward compatibility.
     monkeypatch.setattr(
-        flows, "fetch_rss", lambda url, timeout=30: V1_FIXTURES["MarTech"].read_bytes()
+        flows, "fetch_rss", lambda url, timeout=30: V1_FIXTURES["InfoMoney"].read_bytes()
     )
-    clean = flows.ingest_source_flow(source_name="MarTech")
+    clean = flows.ingest_source_flow(source_name="InfoMoney")
     assert clean == {"inserted": 3, "skipped": 0}
 
 

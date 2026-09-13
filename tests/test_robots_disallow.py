@@ -16,6 +16,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+import marketing_intelligence.discovery as discovery
 from marketing_intelligence.discovery import (
     harvest_sitemap_source,
     plan_harvest,
@@ -40,6 +43,15 @@ RI_PUBLIC = f"{RI_HOST}/our-maisons/cartier/"
 
 #: Bounded jitter: pacing gap * (1 + uniform(0, 0.25)).
 _MAX_JITTER = 1.25
+
+
+def _install_sitemap_seam(monkeypatch: pytest.MonkeyPatch, fetch: Any) -> None:
+    """Feed sitemap traversal from the same fixture map.
+
+    Sitemap XML is fetched impersonated-only (`fetch_sitemap_bytes`), so the
+    injected `fetch` override no longer covers sitemaps.
+    """
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
 
 
 def _robots(crawl_delay: float | None = None) -> bytes:
@@ -96,7 +108,7 @@ def _sitemap_config(**overrides: Any) -> dict[str, Any]:
 # --- planning ----------------------------------------------------------------
 
 
-def test_disallowed_sitemap_url_is_planned() -> None:
+def test_disallowed_sitemap_url_is_planned(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Disallowed article URL is a normal plan entry, never a skip cause."""
     log: list[str] = []
     fetch = _make_fetch(
@@ -114,6 +126,7 @@ def test_disallowed_sitemap_url_is_planned() -> None:
         },
         log=log,
     )
+    _install_sitemap_seam(monkeypatch, fetch)
     plan = plan_harvest(_sitemap_config(), "Example", "en", fetch=fetch, sleep=lambda _: None)
     assert {job.loc for job in plan.jobs} == {URL_BLOCKED, URL_PUBLIC}
     assert plan.skipped == 0
@@ -121,7 +134,7 @@ def test_disallowed_sitemap_url_is_planned() -> None:
     assert ROBOTS_URL in log  # robots.txt still read (crawl-delay)
 
 
-def test_disallowed_article_is_fetched_and_extracted() -> None:
+def test_disallowed_article_is_fetched_and_extracted(monkeypatch: pytest.MonkeyPatch) -> None:
     log: list[str] = []
     fetch = _make_fetch(
         {
@@ -140,6 +153,7 @@ def test_disallowed_article_is_fetched_and_extracted() -> None:
         },
         log=log,
     )
+    _install_sitemap_seam(monkeypatch, fetch)
     report = harvest_sitemap_source(
         _sitemap_config(), "Example", "en", fetch=fetch, sleep=lambda _: None
     )
@@ -174,7 +188,7 @@ def test_disallowed_hub_anchor_is_harvested() -> None:
     assert URL_BLOCKED in log
 
 
-def test_real_fixture_disallowed_url_is_planned() -> None:
+def test_real_fixture_disallowed_url_is_planned(monkeypatch: pytest.MonkeyPatch) -> None:
     """Real affected source (Richemont robots.txt): Net-a-Porter is planned."""
     robots = (FIXTURES / "ri_robots.txt").read_bytes()
     fetch = _make_fetch(
@@ -193,6 +207,7 @@ def test_real_fixture_disallowed_url_is_planned() -> None:
             RI_PUBLIC: (RI_PUBLIC, _article_html("Cartier story")),
         }
     )
+    _install_sitemap_seam(monkeypatch, fetch)
     report = harvest_sitemap_source(
         _sitemap_config(sitemaps=[RI_SITEMAP_URL]),
         "Richemont",
@@ -208,7 +223,7 @@ def test_real_fixture_disallowed_url_is_planned() -> None:
 # --- politeness unchanged ----------------------------------------------------
 
 
-def test_crawl_delay_still_floors_the_pacing_gap() -> None:
+def test_crawl_delay_still_floors_the_pacing_gap(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
     fetch = _make_fetch(
         {
@@ -217,6 +232,7 @@ def test_crawl_delay_still_floors_the_pacing_gap() -> None:
             URL_PUBLIC: (URL_PUBLIC, _article_html("Public story")),
         }
     )
+    _install_sitemap_seam(monkeypatch, fetch)
     plan = plan_harvest(
         _sitemap_config(pacing_ms=1000), "Example", "en", fetch=fetch, sleep=sleeps.append
     )
@@ -226,7 +242,7 @@ def test_crawl_delay_still_floors_the_pacing_gap() -> None:
     assert all(10.0 <= s <= 10.0 * _MAX_JITTER for s in sleeps)
 
 
-def test_stanza_pacing_floor_with_jitter_unchanged() -> None:
+def test_stanza_pacing_floor_with_jitter_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
     fetch = _make_fetch(
         {
@@ -236,6 +252,7 @@ def test_stanza_pacing_floor_with_jitter_unchanged() -> None:
         }
     )
     config = _sitemap_config(pacing_ms=1000)
+    _install_sitemap_seam(monkeypatch, fetch)
     plan = plan_harvest(config, "Example", "en", fetch=fetch, sleep=sleeps.append)
     assert plan.gap_s == 1.0
     assert all(1.0 <= s <= 1.0 * _MAX_JITTER for s in sleeps)
@@ -246,7 +263,7 @@ def test_stanza_pacing_floor_with_jitter_unchanged() -> None:
     assert all(1.0 <= s <= 1.0 * _MAX_JITTER for s in harvest_sleeps)
 
 
-def test_newest_first_budget_keeps_disallowed_urls() -> None:
+def test_newest_first_budget_keeps_disallowed_urls(monkeypatch: pytest.MonkeyPatch) -> None:
     """max_urls still spends on the newest URLs; Disallow is not a budget sink."""
     oldest = f"{HOST}/posts/oldest-story"
     fetch = _make_fetch(
@@ -264,6 +281,7 @@ def test_newest_first_budget_keeps_disallowed_urls() -> None:
             ),
         }
     )
+    _install_sitemap_seam(monkeypatch, fetch)
     plan = plan_harvest(
         _sitemap_config(max_urls=2), "Example", "en", fetch=fetch, sleep=lambda _: None
     )

@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 import pytest
 from prefect_harness import no_engine
 
+import marketing_intelligence.discovery as discovery
 from marketing_intelligence.discovery import (
     ArticleFetchError,
     DiscoveryError,
@@ -191,12 +192,14 @@ def _make_fetch(
     return fake_fetch
 
 
-def _harvest(label: str, **overrides: Any) -> Any:
+def _harvest(label: str, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
     spec = SOURCES[label]
     fetch = _make_fetch(
         _fetch_map(label),
         failures={spec["url_bad"]: ArticleFetchError(spec["url_bad"], "HTTP Error 403: Forbidden")},
     )
+    # Sitemap traversal is impersonated-only: same fixture map, its own seam.
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     config = dict(get_retrieval_config(label))
     config.update(overrides)
     return harvest_sitemap_source(
@@ -236,9 +239,11 @@ def test_modaes_tracker_label_corrected_to_cookie_consent_wall() -> None:
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_harvest_end_to_end_newest_first_with_explicit_skip(label: str) -> None:
+def test_harvest_end_to_end_newest_first_with_explicit_skip(
+    label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     spec = SOURCES[label]
-    report = _harvest(label)
+    report = _harvest(label, monkeypatch)
     assert [d.url for d in report.documents] == [spec["url_a"], spec["url_c"]]
     assert {d.language for d in report.documents} == {spec["language"]}
     newest = report.documents[0]
@@ -257,8 +262,8 @@ def test_harvest_end_to_end_newest_first_with_explicit_skip(label: str) -> None:
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_harvest_bounded_backfill(label: str) -> None:
-    report = _harvest(label, max_urls=1)
+def test_harvest_bounded_backfill(label: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = _harvest(label, monkeypatch, max_urls=1)
     assert [d.url for d in report.documents] == [SOURCES[label]["url_a"]]
     assert report.skipped == 0
 
@@ -277,10 +282,11 @@ def test_discover_newest_child_first_stops_early() -> None:
     assert spec["child_old"] not in log
 
 
-def test_harvest_raises_when_nothing_discovered() -> None:
-    def dead(url: str) -> tuple[str, bytes]:
+def test_harvest_raises_when_nothing_discovered(monkeypatch: pytest.MonkeyPatch) -> None:
+    def dead(url: str, timeout: int = 30) -> tuple[str, bytes]:
         raise ArticleFetchError(url, "HTTP Error 403: Forbidden")
 
+    monkeypatch.setattr(discovery, "_impersonated_get", dead)
     with pytest.raises(DiscoveryError, match="yielded no URLs"):
         harvest_sitemap_source(
             dict(get_retrieval_config("Exame")),
@@ -291,21 +297,22 @@ def test_harvest_raises_when_nothing_discovered() -> None:
         )
 
 
-def test_modaes_ingests_full_bodies_with_no_bypass() -> None:
-    report = _harvest("Modaes")
+def test_modaes_ingests_full_bodies_with_no_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = _harvest("Modaes", monkeypatch)
     assert len(report.documents) == 2
     for doc in report.documents:
         assert len(doc.content) >= 500
         assert "cookie" not in doc.content.lower() or len(doc.content) >= 500
 
 
-def test_modaes_robots_crawl_delay_honored() -> None:
+def test_modaes_robots_crawl_delay_honored(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
     spec = SOURCES["Modaes"]
     fetch = _make_fetch(
         _fetch_map("Modaes"),
         failures={spec["url_bad"]: ArticleFetchError(spec["url_bad"], "HTTP Error 403")},
     )
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     harvest_sitemap_source(
         dict(get_retrieval_config("Modaes")),
         "Modaes",
@@ -316,13 +323,14 @@ def test_modaes_robots_crawl_delay_honored() -> None:
     assert sleeps and all(s >= 3.0 for s in sleeps)
 
 
-def test_wordpress_default_pacing_honored() -> None:
+def test_wordpress_default_pacing_honored(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
     spec = SOURCES["Propmark"]
     fetch = _make_fetch(
         _fetch_map("Propmark"),
         failures={spec["url_bad"]: ArticleFetchError(spec["url_bad"], "HTTP Error 403")},
     )
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     harvest_sitemap_source(
         dict(get_retrieval_config("Propmark")),
         "Propmark",
@@ -373,10 +381,10 @@ class FakeConnection:
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_rerun_upsert_is_noop(label: str) -> None:
+def test_rerun_upsert_is_noop(label: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from marketing_intelligence.ingest import upsert_documents
 
-    docs = _harvest(label).documents
+    docs = _harvest(label, monkeypatch).documents
     assert len(docs) == 2
     conn = FakeConnection()
     assert upsert_documents(docs, conn=conn) == (2, 0)
@@ -395,7 +403,9 @@ def test_exame_registry_carries_webstories_exclude_with_full_budget() -> None:
     assert config["max_urls"] == 50
 
 
-def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips() -> None:
+def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Ticket 14 end-to-end on the registry stanza: webstories (newest in the
     urlset) are excluded before the budget applies, the genuine article still
     inserts, and the 404 + title-less page are explicit per-URL skips."""
@@ -437,6 +447,7 @@ def test_exame_harvest_excludes_webstories_before_budget_with_explicit_skips() -
     config = dict(get_retrieval_config("Exame"))
     config["sitemaps"] = [sitemap_url]
     config["max_urls"] = 3
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     report = _harvest(config, "Exame", "pt", fetch=fetch, sleep=lambda _: None)
     # Budget of 3 covers the genuine article plus both bad URLs (webstories
     # excluded first — without exclusion the budget would hold ws_new,
@@ -463,6 +474,8 @@ def test_flow_ingests_sitemap_source_with_exact_shape(
     # One seam for the whole concurrent path: planning + article workers
     # share `discovery_fetch`, so fixture I/O flows through real logic.
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
+    # Sitemap traversal is impersonated-only, so it rides its own seam.
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     conn = FakeConnection()
     from marketing_intelligence.ingest import upsert_documents
@@ -501,6 +514,14 @@ def test_batch_ingests_all_seven_and_isolates_failure(
         return fixture_fetch(url)
 
     monkeypatch.setattr(flows, "discovery_fetch", fake_fetch)
+
+    def fake_sitemap_fetch(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        # Every Exame sitemap fails too: planning finds zero URLs there.
+        if urlsplit(url).netloc == exame_host:
+            raise ArticleFetchError(url, "sitemap discovery yielded no URLs: boom")
+        return fixture_fetch(url)
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_sitemap_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     shared: dict[str, FakeConnection] = {}
 

@@ -628,18 +628,20 @@ def test_flow_records_runs_without_changing_result_shapes(
         lambda source, result, **kw: captured.append((source, dict(result), kw)),
     )
     monkeypatch.setattr(
-        flows, "fetch_rss", lambda url, timeout=30: (FIXTURES / "martech_sample.xml").read_bytes()
+        flows,
+        "fetch_rss",
+        lambda url, timeout=30: (FIXTURES / "infomoney_sample.xml").read_bytes(),
     )
     _stub_enrich_identity(monkeypatch)
     upsert_conn = _UpsertFakeConnection()
     monkeypatch.setattr(
         flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=upsert_conn)
     )
-    result = flows.ingest_source_flow(source_name="MarTech")
+    result = flows.ingest_source_flow(source_name="InfoMoney")
     assert result == {"inserted": 3, "skipped": 0}
     assert len(captured) == 1
     source, recorded, kw = captured[0]
-    assert source == "MarTech"
+    assert source == "InfoMoney"
     assert recorded == {"inserted": 3, "skipped": 0}
     assert kw["started_at"].tzinfo is not None and kw["finished_at"].tzinfo is not None
     assert kw["finished_at"] >= kw["started_at"]
@@ -666,7 +668,7 @@ def test_flow_records_skip_reasons_on_messy_feeds(
     monkeypatch.setattr(
         flows, "upsert_documents", lambda docs: upsert_documents(docs, conn=upsert_conn)
     )
-    result = flows.ingest_source_flow(source_name="MarTech")
+    result = flows.ingest_source_flow(source_name="Professional Jeweller")
     assert result["parse_skipped"] == 3
     assert len(captured) == 1
     assert len(captured[0][2]["skipped_reasons"]) == 3

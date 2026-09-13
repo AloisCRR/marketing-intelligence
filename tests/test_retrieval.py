@@ -36,12 +36,104 @@ CURATED = (
     / "curated-sources.json"
 )
 
+#: Ticket 27: MarTech's curated retrieval stanza. `link_pattern` is the
+#: hyphen carried by martech.org's root-level article slugs; the site root
+#: ("/") and bare archive indices ("/page/2/") carry no hyphen, so they never
+#: match, while the taxonomy/author/conference families and the corporate
+#: pages are dropped by `sitemap_exclude` (honored for hub anchors too).
+MARTECH_HUB_STANZA: dict[str, Any] = {
+    "type": "hub",
+    "policy": "impersonated-feed",
+    "extractor": "generic",
+    "hub": "https://martech.org/",
+    "link_pattern": "-",
+    "sitemap_exclude": [
+        "/topic/",
+        "/author/",
+        "/page/",
+        "/conference/",
+        "/about-martech-org/",
+        "/intelligence-reports/",
+        "/white-papers/",
+        "/martech-topics/",
+        "/martechbot",
+        "/privacy-policy/",
+        "/terms-of-service/",
+        "/working-with-martech-content-team/",
+        "/the-latest-ai-powered-martech-news-and-releases/",
+    ],
+    "pacing_ms": 1000,
+    "max_urls": 50,
+}
+
+#: Ticket 29: MarketingDirecto's curated stanza. Live evidence (2026-09-12):
+#: every marketingdirecto.com sitemap URL *and* the homepage itself answer 403
+#: to the impersonated leg, while the shared reader leg serves both — so the
+#: lane is hub-only discovery (no sitemaps) over the reader-tolerant fetch.
+#: `link_pattern` "-" keeps the hyphenated Spanish article slugs. MD's section
+#: tokens are hyphenated too, so section fronts match as well; the
+#: ``^…$``-anchored excludes then drop exactly those listings
+#: (`^/digital-general/social-media-marketing$` drops the front while its
+#: `/…/<slug>` articles stay), which no substring pattern can express.
+MARKETINGDIRECTO_HUB_STANZA: dict[str, Any] = {
+    "type": "hub",
+    "policy": "impersonated-feed",
+    "extractor": "generic",
+    "hub": "https://www.marketingdirecto.com/",
+    "link_pattern": "-",
+    "sitemap_exclude": [
+        "/wp-content/",
+        "/temas/",
+        "^/media-kit$",
+        "^/diccionario-marketing-publicidad-comunicacion-nuevas-tecnologias$",
+        "^/quienes-somos$",
+        "^/aviso-legal$",
+        "^/politica-de-privacidad$",
+        "^/politica-cookies$",
+        "^/punto-de-vista$",
+        "^/arena-media$",
+        "^/next-level$",
+        "^/digital-busines-innovation-sidn-digital-thinking$",
+        "^/guias-especiales$",
+        "^/marketing-general$",
+        "^/marketing-general/agencias$",
+        "^/marketing-general/entrevistas$",
+        "^/marketing-general/gente$",
+        "^/marketing-general/eventos-y-formacion$",
+        "^/marketing-general/digital-innovation-trends-by-t2o$",
+        "^/anunciantes-general$",
+        "^/anunciantes-general/publicaciones$",
+        "^/anunciantes-general/medios$",
+        "^/creacion/campanas-de-marketing$",
+        "^/digital-general$",
+        "^/digital-general/digital$",
+        "^/digital-general/e-commerce$",
+        "^/digital-general/e-mail-marketing$",
+        "^/digital-general/social-media-marketing$",
+        "^/digital-general/medicion-sin-filtros-gfk$",
+        "^/digital-general/mobile-marketing$",
+        "^/digital-general/all-about-audio-by-audioemotion$",
+        "^/especiales/reportajes-a-fondo$",
+        "^/especiales/cannes-lions$",
+        "^/especiales/ipg-mediabrands$",
+        "^/especiales/the-future-of-advertising-especiales$",
+        "^/especiales/enamorando-al-consumidor$",
+        "^/imprescindibles/social-media$",
+        "^/imprescindibles/historia-marcas$",
+        "^/imprescindibles/inteligencia-artificial$",
+    ],
+    "pacing_ms": 10000,
+    "max_urls": 50,
+}
+
 
 # --- policy validation -------------------------------------------------------
 
 
-def test_v1_policies_all_resolve_to_impersonated_feed() -> None:
-    for name in ("Social Media Today", "InfoMoney", "MarTech", "Professional Jeweller"):
+def test_v1_rss_policies_resolve_to_impersonated_feed() -> None:
+    # MarTech is the V1 exception (hub lane, ticket 27): its policy is asserted
+    # with the hub stanza below.
+    for name in ("Social Media Today", "InfoMoney", "Professional Jeweller"):
         assert get_retrieval_policy(name) == {"type": "rss", "policy": "impersonated-feed"}, name
 
 
@@ -70,7 +162,11 @@ def test_curated_v1_stanzas() -> None:
         "policy": "impersonated-feed",
     }
     assert entries["InfoMoney"]["retrieval"] == {"type": "rss", "policy": "impersonated-feed"}
-    assert entries["MarTech"]["retrieval"] == {"type": "rss", "policy": "impersonated-feed"}
+    # Ticket 27: the curated MarTech lane is hub discovery on its live
+    # homepage (the /feed/ URL is a dead 403); the dead rss_url stays in the
+    # registry for provenance and no longer selects the lane.
+    assert entries["MarTech"]["retrieval"] == MARTECH_HUB_STANZA
+    assert entries["MarTech"]["rss_url"] == "https://martech.org/feed/"
     assert entries["Professional Jeweller"]["retrieval"] == {
         "type": "rss",
         "policy": "impersonated-feed",
@@ -100,7 +196,7 @@ def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
         "Consumidor Moderno": "sitemap",
         "Meio & Mensagem": "sitemap",
         "Marketing Dive": "sitemap+hub",
-        "MarketingDirecto": "sitemap",
+        "MarketingDirecto": "hub",
         "Propmark": "sitemap",
         "Insider Latam": "sitemap",
         "LVMH Press Releases": "sitemap",
@@ -111,6 +207,11 @@ def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
         stanza = entries[name]["retrieval"]
         assert stanza["type"] == rtype, name
         assert stanza["extractor"] in ("generic", "json-ld-first"), name
+    # Ticket 29: MarketingDirecto left the sitemap lane for the hub lane (its
+    # sitemaps and homepage are 403 impersonated); the curated stanza pins it.
+    assert entries["MarketingDirecto"]["retrieval"] == MARKETINGDIRECTO_HUB_STANZA
+    assert entries["MarketingDirecto"]["rss_url"] is None
+    assert "sitemaps" not in entries["MarketingDirecto"]["retrieval"]
     # Only Jing Daily needs JSON-LD-first extraction.
     assert entries["Jing Daily"]["retrieval"]["extractor"] == "json-ld-first"
     # Dive news sitemaps keep the proven impersonated retry lane.
@@ -120,6 +221,8 @@ def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
     assert entries["Jing Daily"]["retrieval"]["link_pattern"] == "/posts/"
     assert entries["Retail Dive"]["retrieval"]["link_pattern"] == "/news/"
     assert entries["National Jeweler"]["retrieval"]["link_pattern"] == "/articles/"
+    # MarketingDirecto (ticket 29) matches hyphenated Spanish article slugs.
+    assert entries["MarketingDirecto"]["retrieval"]["link_pattern"] == "-"
 
 
 # --- fetch_rss fakes -----------------------------------------------------------
@@ -393,15 +496,15 @@ def test_leaf_flow_threads_source_name_into_fetch_task(
     def fake_fetch_task(url: str, source_name: str | None = None) -> bytes:
         captured["url"] = url
         captured["source_name"] = source_name
-        return (FIXTURES / "martech_sample.xml").read_bytes()
+        return (FIXTURES / "infomoney_sample.xml").read_bytes()
 
     monkeypatch.setattr(flows, "fetch_task", fake_fetch_task)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    result = flows.ingest_source_flow(source_name="MarTech")
+    result = flows.ingest_source_flow(source_name="InfoMoney")
     assert result == {"inserted": 3, "skipped": 0}
-    assert captured["source_name"] == "MarTech"
-    assert captured["url"] == get_source("MarTech")["rss_url"]
+    assert captured["source_name"] == "InfoMoney"
+    assert captured["url"] == get_source("InfoMoney")["rss_url"]
 
 
 def test_impersonated_source_flow_still_succeeds_with_stubbed_fetch(
@@ -420,12 +523,12 @@ def test_impersonated_source_flow_still_succeeds_with_stubbed_fetch(
     transport.assert_no_sleep()  # RSS lane never paces
 
 
-def test_batch_keeps_shape_across_both_lanes(
+def test_batch_keeps_shape_across_rss_sources(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    by_url = {get_source(n)["rss_url"]: n for n in ("MarTech", "InfoMoney")}
+    by_url = {get_source(n)["rss_url"]: n for n in ("Professional Jeweller", "InfoMoney")}
     fixtures = {
-        "MarTech": (FIXTURES / "martech_sample.xml").read_bytes(),
+        "Professional Jeweller": (FIXTURES / "pj_sample.xml").read_bytes(),
         "InfoMoney": (FIXTURES / "infomoney_sample.xml").read_bytes(),
     }
     transport = FakeTransport({rss_url: fixtures[name] for rss_url, name in by_url.items()})
@@ -436,8 +539,8 @@ def test_batch_keeps_shape_across_both_lanes(
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = flows.ingest_sources_flow(source_names=["MarTech", "InfoMoney"])
-    assert results["MarTech"] == {"inserted": 3, "skipped": 0}
+    results = flows.ingest_sources_flow(source_names=["Professional Jeweller", "InfoMoney"])
+    assert results["Professional Jeweller"] == {"inserted": 3, "skipped": 0}
     assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
 
 
@@ -520,28 +623,25 @@ def test_legacy_stdlib_only_alias_normalizes_to_impersonated_feed(
     }
 
 
-def test_retrieval_config_fills_defaults_for_ticket_08() -> None:
+def test_marketingdirecto_retrieval_config_is_the_hub_lane() -> None:
+    """Ticket 29: MarketingDirecto's normalized stanza is hub discovery through
+    the shared reader-tolerant fetch, with no sitemap leg (its sitemaps are 403
+    impersonated, so the impersonated-only sitemap lane can never run)."""
     from marketing_intelligence.sources import get_retrieval_config
 
     cfg = get_retrieval_config("MarketingDirecto")
     assert cfg == {
-        "type": "sitemap",
-        "policy": "impersonated-feed",
-        "extractor": "generic",
-        # Verified live 2026-09-06: Yoast index + news sitemap (robots.txt
-        # declares both); pacing honors robots Crawl-delay: 10.
-        "sitemaps": [
-            "https://www.marketingdirecto.com/news-sitemap.xml",
-            "https://www.marketingdirecto.com/sitemap_index.xml",
-        ],
-        "hub": "https://www.marketingdirecto.com/",
+        **MARKETINGDIRECTO_HUB_STANZA,
+        "sitemaps": [],
         "hub_pages": [],
-        "link_pattern": None,
         "sitemap_pattern": None,
         "id_guard": False,
-        "pacing_ms": 10000,
-        "max_urls": 50,
     }
+    assert cfg["type"] == "hub"
+    assert cfg["sitemaps"] == []  # nothing rides the impersonated-only sitemap leg
+    assert cfg["hub"] == "https://www.marketingdirecto.com/"  # hub_url provenance
+    assert cfg["policy"] == "impersonated-feed"
+    assert get_retrieval_policy("MarketingDirecto")["policy"] == "impersonated-feed"
     # Unknown sources fall back to safe RSS defaults without raising.
     unknown = get_retrieval_config("No Such Source")
     assert unknown["type"] == "rss"
@@ -582,10 +682,40 @@ def test_rss_policy_shapes_unchanged_for_existing_lanes() -> None:
     # flows.py read ["policy"] exactly as before.
     for name in (
         "Social Media Today",
-        "MarTech",
         "Professional Jeweller",
         "InfoMoney",
         "JCK Online",
         "Swarovski PR Newswire",
     ):
         assert set(get_retrieval_policy(name)) == {"type", "policy"}, name
+
+
+def test_martech_retrieval_config_is_the_hub_lane() -> None:
+    """Ticket 27: MarTech's normalized stanza is hub discovery through the
+    shared policy chain, with no sitemap leg and no feed lane."""
+    from marketing_intelligence.sources import get_retrieval_config
+
+    cfg = get_retrieval_config("MarTech")
+    assert cfg == {
+        **MARTECH_HUB_STANZA,
+        "sitemaps": [],
+        "hub_pages": [],
+        "sitemap_pattern": None,
+        "id_guard": False,
+    }
+    assert cfg["type"] == "hub"
+    assert cfg["sitemaps"] == []  # nothing rides the impersonated-only sitemap leg
+    assert cfg["policy"] == "impersonated-feed"
+    assert get_retrieval_policy("MarTech")["policy"] == "impersonated-feed"
+
+
+def test_martech_hub_lane_keeps_dead_feed_as_provenance_only() -> None:
+    """The dead /feed/ URL stays registry provenance only: the effective
+    stanza type selects the lane, and the hub config declares no sitemaps."""
+    from marketing_intelligence.sources import get_retrieval_config
+
+    assert get_source("MarTech")["rss_url"] == "https://martech.org/feed/"
+    cfg = get_retrieval_config("MarTech")
+    assert cfg["type"] == "hub"
+    assert cfg["sitemaps"] == []
+    assert cfg["hub"] == "https://martech.org/"

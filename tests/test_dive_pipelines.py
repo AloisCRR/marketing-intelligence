@@ -24,6 +24,7 @@ news route is proven before lane 10 lands it.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -44,6 +45,11 @@ from marketing_intelligence.normalize import NormalizedDocument
 from marketing_intelligence.sources import get_retrieval_config, get_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+#: Pinned reference clock for the ticket-26 recency guard: the 2026/08 and
+#: 2026/09 archive children are inside the 60-day window, the 2015 child is
+#: not. Explicit so the tests never depend on the wall clock.
+NOW = datetime(2026, 9, 12, tzinfo=UTC)
 
 
 def _fixture(name: str) -> bytes:
@@ -92,6 +98,17 @@ SOURCES: dict[str, dict[str, Any]] = {
                 "lead": "Target is recruiting third-party sellers to widen its holiday assortment without taking on extra inventory risk.",
                 "extra": "The marketplace push focuses on toys, home goods and seasonal decor.",
             },
+            # Ancient archive content: reachable only through the 2015
+            # /archive/ child, which the recency guard must keep excluding.
+            "O": {
+                "url": "https://www.retaildive.com/news/archive/2015/03/12/ancient-retail-roundup/12345/",
+                "title": "Ancient retail roundup",
+                "author": "Retail Dive Staff",
+                "meta": '<meta property="article:published_time" content="2015-03-12T09:00:00+00:00">',
+                "published": "2015-03-12T09:00:00+00:00",
+                "lead": "A decade-old roundup that must never spend a backfill slot on a current run.",
+                "extra": "Historic coverage belongs to the archive, not the fresh set.",
+            },
         },
     },
     "Marketing Dive": {
@@ -135,6 +152,17 @@ SOURCES: dict[str, dict[str, Any]] = {
                 "lead": "Unilever committed upfront dollars to retail media networks, demanding clearer measurement for its beauty portfolio.",
                 "extra": "The deal ties spend to incrementality tests across three retailers.",
             },
+            # Ancient archive content: reachable only through the 2015
+            # /archive/ child, which the recency guard must keep excluding.
+            "O": {
+                "url": "https://www.marketingdive.com/news/archive/2015/03/12/ancient-campaign-roundup/12345/",
+                "title": "Ancient campaign roundup",
+                "author": "Marketing Dive Staff",
+                "meta": '<meta property="article:published_time" content="2015-03-12T09:00:00+00:00">',
+                "published": "2015-03-12T09:00:00+00:00",
+                "lead": "A decade-old roundup that must never spend a backfill slot on a current run.",
+                "extra": "Historic coverage belongs to the archive, not the fresh set.",
+            },
         },
     },
 }
@@ -151,9 +179,21 @@ def _routes(label: str) -> dict[str, str]:
         "topics": f"https://{host}/sitemap-topics.xml",
         "sept": f"https://{host}/news/archive/2026/september.xml",
         "aug": f"https://{host}/news/archive/2026/august.xml",
+        "old": f"https://{host}/news/archive/2015/march.xml",
         "news": f"https://{host}/google_news_sitemap.xml",
         "bad": f"https://{host}/news/{URL_BAD_SLUG}",
     }
+
+
+def _old_archive_sitemap(label: str) -> bytes:
+    """The 2015 archive child: its loc is 11 years old versus ``NOW``."""
+    url = SOURCES[label]["articles"]["O"]["url"]
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"<url><loc>{url}</loc><lastmod>2015-03-12T09:00:00+00:00</lastmod></url>"
+        "</urlset>"
+    ).encode()
 
 
 def _article_html(label: str, key: str) -> bytes:
@@ -186,12 +226,13 @@ def _fetch_map(label: str) -> dict[str, tuple[str, bytes]]:
         routes["index"]: (routes["index"], _fixture(f"{prefix}_sitemap_index.xml")),
         routes["sept"]: (routes["sept"], _fixture(f"{prefix}_archive_sept.xml")),
         routes["aug"]: (routes["aug"], _fixture(f"{prefix}_archive_aug.xml")),
+        routes["old"]: (routes["old"], _old_archive_sitemap(label)),
         routes["footer"]: (routes["footer"], _fixture("dive_empty_urlset.xml")),
         routes["topics"]: (routes["topics"], _fixture("dive_empty_urlset.xml")),
         routes["news"]: (routes["news"], _fixture(f"{prefix}_news_sitemap.xml")),
         spec["hub"]: (spec["hub"], _fixture(f"{prefix}_hub.html")),
     }
-    for key in ("A", "C", "N", "H"):
+    for key in spec["articles"]:
         url = spec["articles"][key]["url"]
         mapping[url] = (url, _article_html(label, key))
     return mapping
@@ -220,12 +261,14 @@ def _dive_config(label: str) -> dict[str, Any]:
     return config
 
 
-def _harvest(label: str, **overrides: Any) -> Any:
+def _harvest(label: str, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
     routes = _routes(label)
     fetch = _make_fetch(
         _fetch_map(label),
         failures={routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403: Forbidden")},
     )
+    # Sitemap traversal is impersonated-only: same fixture map, its own seam.
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     config = _dive_config(label)
     config.update(overrides)
     return harvest_sitemap_source(
@@ -234,6 +277,7 @@ def _harvest(label: str, **overrides: Any) -> Any:
         str(get_source(label)["language"]),
         fetch=fetch,
         sleep=lambda _: None,
+        now=NOW,
     )
 
 
@@ -300,6 +344,7 @@ def test_sitemap_index_lists_archive_children(label: str) -> None:
         routes["topics"],
         routes["sept"],
         routes["aug"],
+        routes["old"],
     ]
 
 
@@ -319,13 +364,18 @@ def test_news_sitemap_yields_publication_dates(label: str) -> None:
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_harvest_sitemap_first_news_and_hub_extend(label: str) -> None:
+def test_harvest_sitemap_first_news_and_hub_extend(
+    label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     spec = SOURCES[label]
     routes = _routes(label)
     arts = spec["articles"]
-    report = _harvest(label)
-    # News-only N first (newest), then archive A/C, then hub-only H (undated);
-    # the archive BAD url is an explicit skip.
+    report = _harvest(label, monkeypatch)
+    # Ticket 26 follow-up: the stanza excludes /archive/, but the recency guard
+    # still traverses the 2026/08 and 2026/09 children (inside the 60-day
+    # window at NOW), so C comes back from the August child and A/BAD from the
+    # September one. News N (newest, from the news sitemap) leads, then A, C,
+    # then hub-only H (undated, last); BAD stays an explicit skip.
     assert [d.url for d in report.documents] == [
         arts["N"]["url"],
         arts["A"]["url"],
@@ -353,16 +403,54 @@ def test_harvest_sitemap_first_news_and_hub_extend(label: str) -> None:
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_harvest_bounded_backfill(label: str) -> None:
+def test_harvest_never_fetches_the_ancient_archive_child(
+    label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recency guard is bounded: the 2015 /archive/ child and its article
+    are never fetched, while the 2026 children supply the fresh articles."""
     spec = SOURCES[label]
-    report = _harvest(label, max_urls=2)
+    routes = _routes(label)
+    log: list[str] = []
+    fetch = _make_fetch(
+        _fetch_map(label),
+        log=log,
+        failures={routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403: Forbidden")},
+    )
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
+    report = harvest_sitemap_source(
+        _dive_config(label),
+        label,
+        str(get_source(label)["language"]),
+        fetch=fetch,
+        sleep=lambda _: None,
+        now=NOW,
+    )
+    assert routes["old"] not in log
+    assert spec["articles"]["O"]["url"] not in log
+    # The guard is bounded, not disabled: the fresh 2026/08 child was still
+    # traversed (C present), while the 2015 child above was not.
+    documents = [d.url for d in report.documents]
+    assert spec["articles"]["C"]["url"] in documents
+    assert spec["articles"]["O"]["url"] not in documents
+
+
+@pytest.mark.parametrize("label", LABELS)
+def test_harvest_bounded_backfill(label: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = SOURCES[label]
+    report = _harvest(label, monkeypatch, max_urls=2)
+    # The fresh archive children fill both bound slots (A newest, then the
+    # BAD url): the bound is spent on the current window, not the 2015 child.
     assert [d.url for d in report.documents] == [spec["articles"]["A"]["url"]]
     assert report.skipped == 1
 
 
-def test_harvest_without_news_correction_still_flows_via_archives_and_hub() -> None:
-    """An index-only stanza already flows; the declared news route
-    extends it with N rather than rescuing it."""
+def test_harvest_index_only_stanza_still_flows_via_hub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An index-only stanza still flows: the fresh /archive/ children supply
+    A and C (the 2015 child stays excluded), the hub adds N and H, and the
+    declared news route then promotes N to newest with a real publication
+    date."""
     spec = SOURCES["Retail Dive"]
     routes = _routes("Retail Dive")
     fetch = _make_fetch(
@@ -372,9 +460,13 @@ def test_harvest_without_news_correction_still_flows_via_archives_and_hub() -> N
     config = dict(get_retrieval_config("Retail Dive"))
     config["sitemaps"] = [routes["index"]]
     assert routes["news"] not in config["sitemaps"]
-    report = harvest_sitemap_source(config, "Retail Dive", "en", fetch=fetch, sleep=lambda _: None)
-    # N still flows via the hub, but undated (last) and dateless: the news
-    # route promotes it to newest with a real publication date.
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
+    report = harvest_sitemap_source(
+        config, "Retail Dive", "en", fetch=fetch, sleep=lambda _: None, now=NOW
+    )
+    # Archive order (A newest, then C), then hub-only N and H (dateless):
+    # without the news sitemap N is undated, so its publication date falls
+    # back to the retrieve time.
     assert [d.url for d in report.documents] == [
         spec["articles"][k]["url"] for k in ("A", "C", "N", "H")
     ]
@@ -385,13 +477,14 @@ def test_harvest_without_news_correction_still_flows_via_archives_and_hub() -> N
     assert report.skipped == 1
 
 
-def test_dive_robots_crawl_delay_honored() -> None:
+def test_dive_robots_crawl_delay_honored(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
     routes = _routes("Retail Dive")
     fetch = _make_fetch(
         _fetch_map("Retail Dive"),
         failures={routes["bad"]: ArticleFetchError(routes["bad"], "HTTP Error 403")},
     )
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     harvest_sitemap_source(
         _dive_config("Retail Dive"),
         "Retail Dive",
@@ -510,10 +603,10 @@ class FakeConnection:
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_rerun_upsert_is_noop(label: str) -> None:
+def test_rerun_upsert_is_noop(label: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from marketing_intelligence.ingest import upsert_documents
 
-    docs = _harvest(label).documents
+    docs = _harvest(label, monkeypatch).documents
     assert len(docs) == 4
     conn = FakeConnection()
     assert upsert_documents(docs, conn=conn) == (4, 0)
@@ -522,6 +615,22 @@ def test_rerun_upsert_is_noop(label: str) -> None:
 
 
 # --- flow wiring --------------------------------------------------------------
+
+
+def _pin_planning_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anchor flow-level planning to ``NOW`` (the recency guard's clock).
+
+    `discover_task` has no `now` seam of its own, so the dive flow tests pin
+    the shared planner rather than letting the assertions ride the wall clock.
+    """
+    import marketing_intelligence.flows as flows
+
+    real_plan = discovery.plan_harvest
+
+    def pinned(config: dict[str, Any], source_label: str, language: str, **kwargs: Any) -> Any:
+        return real_plan(config, source_label, language, now=NOW, **kwargs)
+
+    monkeypatch.setattr(flows, "plan_harvest", pinned)
 
 
 def test_flow_ingests_dive_source_with_exact_shape(
@@ -537,7 +646,9 @@ def test_flow_ingests_dive_source_with_exact_shape(
     # One seam for the whole concurrent path: planning + article workers
     # share `discovery_fetch`, so fixture I/O flows through real logic.
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fixture_fetch(url))
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fixture_fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
+    _pin_planning_clock(monkeypatch)
     conn = FakeConnection()
     from marketing_intelligence.ingest import upsert_documents
 
@@ -545,8 +656,9 @@ def test_flow_ingests_dive_source_with_exact_shape(
     result = flows.ingest_source_flow(source_name=label)
     assert result["inserted"] == 4
     assert result["skipped"] == 0
+    # The one un-fetchable URL is an explicit per-URL discovery skip.
     assert result["discovery_skipped"] == 1
-    assert len(result["discovery_causes"]) == 1
+    assert any(routes["bad"] in cause for cause in result["discovery_causes"])
     assert "error" not in result
 
 
@@ -575,6 +687,14 @@ def test_batch_ingests_both_dives_and_isolates_failure(
         return fixture_fetch(url)
 
     monkeypatch.setattr(flows, "discovery_fetch", fake_fetch)
+
+    def fake_sitemap_fetch(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        # Marketing Dive sitemaps fail too: planning finds zero URLs there.
+        if urlsplit(url).netloc == failing_host:
+            raise ArticleFetchError(url, "HTTP Error 403")
+        return fixture_fetch(url)
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_sitemap_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     shared: dict[str, FakeConnection] = {}
 
@@ -585,6 +705,7 @@ def test_batch_ingests_both_dives_and_isolates_failure(
         return upsert_documents(docs, conn=conn)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
+    _pin_planning_clock(monkeypatch)
     results = flows.ingest_sources_flow(source_names=LABELS)
     assert results["Retail Dive"]["inserted"] == 4
     assert "error" not in results["Retail Dive"]

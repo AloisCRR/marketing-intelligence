@@ -38,13 +38,15 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from dateutil import parser as date_parser
 
 from marketing_intelligence.enrich import (
+    _CHALLENGE_KEYWORDS,
+    _LOCK_PAGE_MARKER,
     FetchFailed,
     ProviderMarkdown,
     article_content_chain,
@@ -137,10 +139,15 @@ def _jina_reader_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[str, byt
     urllib, data-minimizing headers, bounded 429 retries) and re-raises the
     shared failure as :class:`ArticleFetchError`. The payload comes back as
     delivered — possibly empty; :func:`article_content_chain` tags it
-    :class:`ProviderMarkdown` for the extract site.
+    :class:`ProviderMarkdown` for the extract site. The fetch identity stays
+    the requested URL: the reader base (``r.jina.ai``) is a provider hop, not
+    the article's final URL, so an article served by this leg keeps its real
+    identity (and the planned URL is never trusted to a provider-supplied
+    ``URL Source:`` header).
     """
     try:
-        return fetch_reader(url, timeout)
+        _, body = fetch_reader(url, timeout)
+        return (url, body)
     except FetchFailed as exc:
         raise ArticleFetchError(url, str(exc)) from exc
 
@@ -150,7 +157,9 @@ def policy_get(
 ) -> tuple[str, bytes]:
     """GET `url` under the stanza policy; return (final_url, body).
 
-    Every policy walks the one shared article-content chain
+    Article and hub/listing fetches only — sitemap discovery is
+    impersonated-only through :func:`fetch_sitemap_bytes` and never walks this
+    chain. Every policy walks the one shared article-content chain
     (:func:`marketing_intelligence.enrich.article_content_chain`): the
     impersonated primary (:func:`_impersonated_get`) first, then the Jina
     reader (:func:`_jina_reader_get`) on any primary failure, then the
@@ -173,11 +182,118 @@ def policy_get(
         raise ArticleFetchError(url, str(exc)) from exc
 
 
+#: Payload bytes inspected for challenge/bot markers on a sitemap fetch.
+_SITEMAP_CHALLENGE_SCAN_BYTES = 65536
+
+#: Opening tags of a genuine sitemap document. Their presence short-circuits
+#: the challenge scan, so a real urlset that merely mentions a marker word in
+#: an article slug (e.g. ``/challenge/``) is never misreported as a block page.
+_SITEMAP_ROOT_MARKERS = (b"<urlset", b"<sitemapindex")
+
+
+def _sitemap_challenge_detail(body: bytes) -> str | None:
+    """Explicit ``challenge`` cause when `body` is a block/non-XML page; else None.
+
+    Sitemaps are fetched impersonated-only, so a payload that is not XML is a
+    block/challenge page rather than something the XML parser should diagnose
+    as ``Unparseable sitemap``: reader-leg Markdown (``Title: ...``), HTML
+    login walls, and JS challenge shells all land here. Detection is (1) a
+    challenge marker from the shared
+    :data:`marketing_intelligence.enrich._CHALLENGE_KEYWORDS` family, or (2) a
+    payload whose first non-BOM/whitespace byte is not ``<``. Gzipped payloads
+    are decompressed for inspection only, so a genuine gzipped sitemap still
+    passes through as the served bytes. Never raises.
+    """
+    probe = bytes(body)
+    if probe[:2] == b"\x1f\x8b":
+        try:
+            probe = gzip.decompress(probe)
+        except Exception:
+            return None  # opaque gzip: parse_sitemap reports it, not a block page
+    stripped = probe.lstrip(b"\xef\xbb\xbf \t\r\n\x00")
+    if any(marker in stripped[:1024].lower() for marker in _SITEMAP_ROOT_MARKERS):
+        return None  # genuine sitemap root: pass through untouched
+    lowered = probe[:_SITEMAP_CHALLENGE_SCAN_BYTES].lower()
+    marker = next((key for key in _CHALLENGE_KEYWORDS if key.encode("ascii") in lowered), None)
+    snippet = stripped[:120].decode("utf-8", errors="replace").strip()
+    if marker is not None:
+        return f"challenge: sitemap URL served a block page (marker {marker!r}; starts {snippet!r})"
+    if not stripped.startswith(b"<"):
+        return f"challenge: sitemap URL served a non-XML payload (starts {snippet!r})"
+    return None
+
+
+def fetch_sitemap_bytes(url: str, timeout: int = DEFAULT_TIMEOUT) -> bytes:
+    """Fetch one sitemap document impersonated-only; return the served bytes.
+
+    A sitemap is XML, not an article body: the fetch goes straight through the
+    impersonated Chrome leg (:func:`_impersonated_get`) and never through the
+    Jina reader, the Firecrawl scrape, or the shared article-content chain — a
+    reader leg would hand the XML parser Markdown (``Title: XML News
+    Sitemap...``) and turn a reachable sitemap into ``Unparseable sitemap``.
+    Block/challenge payloads raise :class:`ArticleFetchError` carrying an
+    explicit ``challenge`` cause (see :func:`_sitemap_challenge_detail`)
+    instead of reaching :func:`parse_sitemap`; genuine XML, gzipped included,
+    passes through untouched.
+    """
+    _, body = _impersonated_get(url, timeout=timeout)
+    detail = _sitemap_challenge_detail(body)
+    if detail is not None:
+        raise ArticleFetchError(url, detail)
+    return body
+
+
+def _challenge_marker(detail: str) -> str | None:
+    """Shared-family challenge marker found in `detail`; None when clean.
+
+    The keyword family is :data:`marketing_intelligence.enrich._CHALLENGE_KEYWORDS`
+    (never a second copy); the keyword-less 403 lock-page marker joins it so a
+    blocked hub that names no guard still reads as a challenge rather than a
+    bare status. Never raises.
+    """
+    lowered = detail.lower()
+    if _LOCK_PAGE_MARKER in lowered:
+        return _LOCK_PAGE_MARKER
+    return next((key for key in _CHALLENGE_KEYWORDS if key in lowered), None)
+
+
+def _hub_challenge_detail(detail: str) -> str | None:
+    """``challenge`` cause for a hub fetch failure carrying block evidence.
+
+    Mirrors the :func:`_sitemap_challenge_detail` wording family: the same
+    keyword family decides, and the cause keeps the raw failure detail (so the
+    URL and HTTP status stay visible) after the explicit marker.
+    """
+    marker = _challenge_marker(detail)
+    if marker is None:
+        return None
+    return f"challenge: hub URL served a block page (marker {marker!r}; {detail})"
+
+
+def _hub_payload_challenge_detail(payload: str) -> str | None:
+    """``challenge`` cause when a served hub payload is not a usable listing.
+
+    A payload with neither an anchor nor a Markdown link *and* no HTML markup
+    at all is a block/interstitial page the reader leg mangled into Markdown
+    (a real listing, HTML or provider Markdown, always carries links). Such a
+    payload would otherwise yield zero links silently; it is recorded as an
+    explicit challenge instead. Never raises.
+    """
+    if _ANCHOR_HREF_RE.search(payload) or _MD_LINK_RE.search(payload):
+        return None  # link-bearing listing: never a block page
+    if re.search(r"<[A-Za-z!/]", payload):
+        return None  # HTML markup present: an empty listing, not a wall
+    snippet = payload.strip()[:120]
+    return f"challenge: hub URL served a non-HTML payload (starts {snippet!r})"
+
+
 def _normalize_exclude(raw: Any) -> list[str]:
-    """Normalize a sitemap-exclude stanza value to non-empty substrings.
+    """Normalize a sitemap-exclude stanza value to non-empty path patterns.
 
     Accepts a single string or a list of strings (anything else yields []);
-    whitespace-only entries are dropped. Never raises.
+    whitespace-only entries are dropped. Entries are matched by
+    :func:`_path_excluded`: substrings by default, optionally anchored with
+    ``^``/``$``. Never raises.
     """
     try:
         items: list[Any] = [raw] if isinstance(raw, str) else list(raw or [])
@@ -199,6 +315,85 @@ def _path_of(url: str) -> str:
         return urlsplit(url).path
     except ValueError:
         return ""
+
+
+def _path_excluded(path: str, excludes: list[str]) -> bool:
+    """True when `path` matches any sitemap-exclude entry.
+
+    Entries are path *substrings* by default (the historical contract, e.g.
+    ``/webstories/``). An entry wrapped in ``^…$`` matches that exact path
+    only — needed when a listing page shares its path with the article
+    children beneath it: ``^/digital-general/social-media-marketing$`` drops
+    the section front while ``/digital-general/social-media-marketing/<slug>``
+    (its articles) stays, which no substring can express. Anchor characters
+    come from the registry stanza; a bare ``^``/``$`` stays literal.
+    """
+    for pattern in excludes:
+        if pattern.startswith("^") and pattern.endswith("$") and len(pattern) > 2:
+            if path == pattern[1:-1]:
+                return True
+        elif pattern and pattern in path:
+            return True
+    return False
+
+
+#: How long an excluded sitemap child still counts as fresh (days).
+_EXCLUDED_CHILD_FRESH_DAYS = 60
+
+#: ``/<yyyy>/<mm|month-name>/`` inside a child sitemap loc (the Dive archive
+#: shape: ``/news/archive/2026/august.xml``); the month token must end at a
+#: path separator, a file extension dot, or the end of the path.
+_ARCHIVE_MONTH_RE = re.compile(r"/(\d{4})/([A-Za-z]{3,9}|\d{1,2})(?=[./]|$)")
+
+_MONTH_NUMBERS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _month_number(token: str) -> int | None:
+    """Month 1–12 for a numeric or English month-name token; None when invalid."""
+    token = token.strip().lower()
+    if token.isdigit():
+        month = int(token)
+        return month if 1 <= month <= 12 else None
+    return _MONTH_NUMBERS.get(token[:3])
+
+
+def _excluded_child_is_fresh(loc: str, reference: datetime) -> bool:
+    """True when an excluded child's loc carries a year-month in the window.
+
+    The exclude test gates traversal of *children* too (a Dive
+    ``/news/archive/<year>/<month>.xml`` subtree), which would drop the newest
+    archive children — and those hold the current and previous month's
+    articles, i.e. live content, not the stale backfill the exclude targets. A
+    child loc whose ``/<yyyy>/<mm|month-name>/`` falls inside the last
+    :data:`_EXCLUDED_CHILD_FRESH_DAYS` days is therefore still traversed. A
+    loc without a parseable year-month, or dated outside the window, is
+    excluded exactly as before, so ancient subtrees still cost no traffic.
+    """
+    match = _ARCHIVE_MONTH_RE.search(_path_of(loc))
+    if match is None:
+        return False
+    month = _month_number(match.group(2))
+    if month is None:
+        return False
+    try:
+        child_month = datetime(int(match.group(1)), month, 1, tzinfo=UTC)
+    except ValueError:
+        return False
+    age = reference - child_month
+    return timedelta(0) <= age <= timedelta(days=_EXCLUDED_CHILD_FRESH_DAYS)
 
 
 def _local(tag: str) -> str:
@@ -278,6 +473,7 @@ def discover_urls(
     prefer_pattern: str | None = None,
     url_filter: str | None = None,
     sitemap_exclude: list[str] | str | None = None,
+    now: datetime | None = None,
 ) -> tuple[list[SitemapUrl], list[str]]:
     """Traverse declared sitemaps newest-first; return (urls, errors).
 
@@ -294,22 +490,41 @@ def discover_urls(
     ``["/webstories/"]``) drops urlset entries whose path contains any of
     its substrings, likewise silently. Inclusion and exclusion both apply
     per urlset *before* collection, so excluded URLs never consume the
-    `max_urls` backfill budget — genuine articles fill it instead.
-    Traversal stops fetching new children once `max_urls` is reached — the
-    bounded backfill. One bad sitemap is recorded in `errors` and never aborts
-    the rest. Results are sorted newest-first by lastmod (undated last),
-    deduped by canonical URL, and bounded to `max_urls`.
+    `max_urls` backfill budget — genuine articles fill it instead. The same
+    substring test gates traversal itself: a declared sitemap or index child
+    whose path matches (e.g. a Dive ``/news/archive/<year>/<month>.xml``) is
+    normally never fetched and never recorded as an error, so stale subtrees
+    cost no traffic and the bound refills from fresh sitemaps and the hub —
+    except when the child's own loc carries a year-month inside the last 60
+    days versus `now` (default: current UTC), because the newest archive
+    children also hold the current/previous month's live articles
+    (:func:`_excluded_child_is_fresh`). `now` is tz-aware-or-naive like the
+    rest of the module (naive is read as UTC). Traversal stops fetching new
+    children once `max_urls` is reached — the bounded backfill. One bad
+    sitemap is recorded in `errors` and never aborts the rest. Results are
+    sorted newest-first by lastmod (undated last), deduped by canonical URL,
+    and bounded to `max_urls`.
     """
     collected: list[SitemapUrl] = []
     errors: list[str] = []
     visited: set[str] = set()
     stop = False
+    reference = coerce_tz_aware(now or datetime.now(UTC))
     excludes = _normalize_exclude(sitemap_exclude)
 
     def _collect(sitemap_url: str, depth: int) -> None:
         nonlocal stop
         if stop or sitemap_url in visited:
             return
+        if excludes and _path_excluded(_path_of(sitemap_url), excludes):
+            if not _excluded_child_is_fresh(sitemap_url, reference):
+                # Excluded subtree (declared sitemap or index child, e.g. a
+                # Dive `/news/archive/<year>/<month>.xml`): never fetched,
+                # never an error — the same silent drop urlset entries get,
+                # applied one level up so stale trees cost no traffic and the
+                # bound refills from fresh sitemaps/hub. A child dated inside
+                # the freshness window is live content and still traversed.
+                return
         visited.add(sitemap_url)
         try:
             body = fetch_body(sitemap_url)
@@ -324,7 +539,7 @@ def discover_urls(
         if url_filter:
             urls = [u for u in urls if url_filter in _path_of(u.loc)]
         if excludes:
-            urls = [u for u in urls if not any(x in _path_of(u.loc) for x in excludes)]
+            urls = [u for u in urls if not _path_excluded(_path_of(u.loc), excludes)]
         collected.extend(urls)
         if len(collected) >= max_urls:
             stop = True
@@ -370,24 +585,34 @@ def discover_urls(
 
 
 def extract_hub_links(html: str, base_url: str, link_pattern: str) -> list[str]:
-    """Article URLs from hub-page anchors matching the stanza link pattern.
+    """Article URLs from hub-page anchors and reader Markdown links.
 
-    Pure function over markup: every ``<a href>`` is absolutized against the
-    hub URL, kept only when same-host http(s) and its path contains
-    `link_pattern` (e.g. ``/posts/``), deduped in document order. Never
-    raises on garbled markup — unparseable hrefs are skipped.
+    Pure function over markup: every ``<a href>`` and every Markdown link
+    ``[label](target)`` — including labels that embed a thumbnail image
+    (``[![alt](src) Kicker ## Headline](target)``), the reader-leg listing
+    shape — is absolutized against the hub URL, kept only when same-host
+    http(s) and its path contains `link_pattern` (e.g. ``/posts/``), deduped
+    in document order. A bare image is not a link; an image wrapped in a link
+    contributes the link target. Never raises on garbled markup —
+    unparseable hrefs are skipped.
     """
     try:
         host = urlsplit(base_url).netloc.lower()
     except ValueError:
         return []
-    found: list[str] = []
-    seen: set[str] = set()
+    candidates: list[tuple[int, str]] = []
     for match in _ANCHOR_HREF_RE.finditer(html or ""):
         raw = next((g for g in match.groups() if g is not None), None)
-        if not raw or not raw.strip():
-            continue
-        href = raw.strip()
+        if raw and raw.strip():
+            candidates.append((match.start(), raw.strip()))
+    for match in _MD_LINK_RE.finditer(html or ""):
+        raw = match.group(1)
+        if raw and raw.strip():
+            candidates.append((match.start(), raw.strip()))
+    candidates.sort(key=lambda item: item[0])
+    found: list[str] = []
+    seen: set[str] = set()
+    for _, href in candidates:
         if href.lower().startswith(("javascript:", "mailto:", "#")):
             continue
         try:
@@ -417,7 +642,11 @@ def discover_hub_urls(
 ) -> tuple[list[SitemapUrl], list[str]]:
     """Fetch hub listings and extract pattern-matching anchors.
 
-    One bad hub page is recorded in `errors` and never aborts the rest.
+    One bad hub page is recorded in `errors` and never aborts the rest. A
+    failure whose detail carries block evidence from the shared challenge
+    family — or a served payload that is neither HTML nor link-bearing
+    Markdown, i.e. an interstitial the reader leg mangled — is recorded as an
+    explicit ``challenge`` cause naming the hub URL, never as a bare status.
     Hub URLs carry no lastmod (undated → sorted last downstream).
     """
     collected: list[SitemapUrl] = []
@@ -427,7 +656,9 @@ def discover_hub_urls(
         try:
             body = fetch_body(hub_url)
         except Exception as exc:
-            errors.append(f"{hub_url}: {exc}")
+            detail = str(exc)
+            challenge = _hub_challenge_detail(detail)
+            errors.append(f"{hub_url}: {challenge if challenge else detail}")
             continue
         try:
             html = body.decode("utf-8", errors="replace")
@@ -439,6 +670,10 @@ def discover_hub_urls(
         except Exception as exc:  # defensive: markup never aborts discovery
             errors.append(f"{hub_url}: anchor extraction failed ({exc})")
             continue
+        if not links:
+            mangled = _hub_payload_challenge_detail(html)
+            if mangled is not None:
+                errors.append(f"{hub_url}: {mangled}")
         for link in links:
             key = canonicalize_url(link)
             if key in seen:
@@ -492,6 +727,28 @@ _ANCHOR_HREF_RE = re.compile(
     r'<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'`>]+))',
     re.IGNORECASE,
 )
+#: Markdown links, for the hub payloads the reader leg serves as provider
+#: Markdown (Jina emits no HTML anchors at all). One form covers both a plain
+#: link (``[label](target)``) and a link whose label embeds a thumbnail image,
+#: with or without kicker text around it — ``[![alt](src)](target)`` and
+#: ``[![alt](src) Kicker ## Headline](target)`` (the listing shape of several
+#: hubs) both contribute the link target. A bare image is never a link: the
+#: negative lookbehind keeps ``![alt](src)`` out.
+_MD_LINK_RE = re.compile(
+    r"(?<!!)\[(?:!\[[^\]]*\]\([^)]*\))?[^\]]*\]\(\s*([^)\s]+)",
+    re.MULTILINE,
+)
+#: Reader-leg (Jina) Markdown header block: ``Title:``, ``URL Source:``,
+#: ``Published Time:``, ``Author:`` lines before the body marker. The start
+#: pattern identifies a payload that really carries that block, so scrape-leg
+#: Markdown (no header) is never truncated at a body marker it happens to
+#: mention.
+_MD_HEADER_RE = re.compile(
+    r"^[ \t]*(Title|URL Source|Published Time|Author)[ \t]*:[ \t]*(.*?)[ \t]*$",
+    re.MULTILINE,
+)
+_MD_HEADER_START_RE = re.compile(r"[ \t\r\n]*Title[ \t]*:", re.IGNORECASE)
+_MD_CONTENT_MARKER = "Markdown Content:"
 
 
 def _tag_attr(tag: str, name: str) -> str | None:
@@ -738,21 +995,55 @@ def extract_published_raw(html: str) -> str | None:
     return None
 
 
+def _markdown_header(text: str, name: str) -> str | None:
+    """Value of a reader-leg Markdown header line (`Title: X`, ...); else None.
+
+    The reader leg serves provider Markdown whose head is a ``key: value``
+    block (``Title:``, ``URL Source:``, ``Published Time:``, ``Author:``)
+    before the ``Markdown Content:`` marker. Never raises.
+    """
+    try:
+        for match in _MD_HEADER_RE.finditer(text or ""):
+            if match.group(1).lower() == name.lower():
+                value = match.group(2).strip()
+                return value or None
+    except Exception:  # defensive: garbled headers are simply absent
+        return None
+    return None
+
+
+def _markdown_body(text: str) -> str:
+    """Reader-leg Markdown without its leading provider header block.
+
+    Only a payload that actually starts with the reader's ``Title:`` header
+    block is stripped (a scrape-leg payload carries no header, so it is
+    returned unchanged); the stored body never includes the reader chrome.
+    """
+    body = text or ""
+    if not _MD_HEADER_START_RE.match(body):
+        return body
+    marker = body.find(_MD_CONTENT_MARKER)
+    if marker < 0:
+        return body
+    return body[marker + len(_MD_CONTENT_MARKER) :].lstrip("\r\n")
+
+
 def _extract_body(
     html: str, final_url: str, url: str, extractor: str, markdown: bool = False
 ) -> str:
     """Select the article body text under the stanza extractor family.
 
     `markdown` marks a provider payload (reader/scrape leg): it arrives
-    already extracted and is returned as-is after the caller's emptiness
-    check, never run back through the HTML cleaner. Otherwise
-    ``json-ld-first`` reads the embedded JSON-LD ``articleBody`` first (also
-    provider text, returned as-is) and falls back to generic
-    HTML-to-Markdown; every other value cleans the HTML directly. Raises
-    :class:`ArticleExtractError` when nothing usable survives.
+    already extracted and is returned after the caller's emptiness check —
+    never run back through the HTML cleaner — with the reader's header block
+    stripped when present. Otherwise ``json-ld-first`` reads the embedded
+    JSON-LD ``articleBody`` first (also provider text, returned as-is) and
+    falls back to generic HTML-to-Markdown; every other value cleans the HTML
+    directly. Raises :class:`ArticleExtractError` when nothing usable
+    survives.
     """
     if markdown:
-        return html
+        return _markdown_body(html)
     if extractor == "json-ld-first":
         try:
             structured = extract_json_ld_body(html)
@@ -795,7 +1086,10 @@ def extract_article(
     falls back to generic extraction. Unknown values yield generic.
     `markdown` marks a provider payload (``ProviderMarkdown`` from the
     reader/scrape legs): it is already extracted, so it is stored as-is
-    instead of being run back through the HTML cleaner.
+    instead of being run back through the HTML cleaner, and its reader
+    header block (``Title:`` / ``Published Time:`` / ``Author:`` before
+    ``Markdown Content:``) supplies the title, timestamp, and author the
+    HTML meta tags would have carried.
     Thin bodies are still returned — the thin threshold governs keep-vs-flag
     downstream (enrichment-keep + Extraction Flag path), never circumvention.
 
@@ -815,6 +1109,9 @@ def extract_article(
     if extractor not in EXTRACTOR_FAMILIES:
         extractor = "generic"
     title = extract_title(html)
+    if not title and markdown:
+        # Reader-leg Markdown carries no HTML head; its header block does.
+        title = _markdown_header(html, "Title")
     if not title:
         raise ArticleExtractError(url, "unparseable article: missing title")
     body = _extract_body(html, final_url, url, extractor, markdown)
@@ -822,6 +1119,8 @@ def extract_article(
         raise ArticleExtractError(url, "unparseable article body: empty after cleaning")
     published_at = fallback_published
     raw_published = extract_published_raw(html)
+    if not raw_published and markdown:
+        raw_published = _markdown_header(html, "Published Time")
     if raw_published:
         try:
             published_at = coerce_tz_aware(date_parser.parse(raw_published))
@@ -852,6 +1151,8 @@ def extract_article(
     clean_title = normalize_text(title)
     clean_body = body.strip()
     author = extract_author(html)
+    if not author and markdown:
+        author = _markdown_header(html, "Author")
     return NormalizedDocument(
         source=source,
         url=final_url,
@@ -1024,6 +1325,16 @@ def plan_harvest(
     :class:`HarvestPlan` of immutable :class:`ArticleJob` units. Every
     discovered article URL is planned and fetched alike — robots Disallow
     is not an exclusion ground; only crawl-delay floors the pacing gap.
+    Sitemap traversal fetches impersonated-only (:func:`fetch_sitemap_bytes`);
+    the injected `fetch` override covers robots.txt, hub listings, and article
+    bodies, whose shared chain keeps its reader/scrape fallback. A
+    block/challenge payload on a sitemap URL is an explicit ``challenge``
+    cause, never an XML-parse error; a hub whose fetch detail or served
+    payload carries block evidence reads the same way. Excluded sitemap
+    children are still traversed while their own loc's year-month is inside
+    the freshness window (:func:`_excluded_child_is_fresh`), so the newest
+    archive children do not drop the current month's live articles. `now`
+    also anchors that window (default: current UTC).
     Raises
     :class:`DiscoveryError` when discovery yields zero URLs — the flow
     converts that into the explicit per-source error, exactly as a dead RSS
@@ -1072,21 +1383,37 @@ def plan_harvest(
             crawl_delay = 0.0
     gap = max(pacing_ms / 1000.0, crawl_delay)
 
-    def _paced_fetch(url: str) -> tuple[str, bytes]:
+    def _pace() -> None:
+        """One pacing gap: the shared gap plus bounded jitter."""
         sleep(gap * (1.0 + random.uniform(0.0, 0.25)))
+
+    def _paced_fetch(url: str) -> tuple[str, bytes]:
+        _pace()
         return fetch_fn(url)
 
     def _fetch_body(url: str) -> bytes:
         _, body = _paced_fetch(url)
         return body
 
+    def _fetch_sitemap_body(url: str) -> bytes:
+        """Paced sitemap fetch: impersonated-only, never the reader/scrape legs.
+
+        Sitemap traversal is the one lane that must not fall back to a
+        Markdown provider (see :func:`fetch_sitemap_bytes`), so it bypasses
+        the injected `fetch` — that override stays the article/hub/robots
+        seam. Same pacing rhythm as every other planning fetch.
+        """
+        _pace()
+        return fetch_sitemap_bytes(url)
+
     discovered, errors = discover_urls(
         sitemap_urls,
-        fetch_body=_fetch_body,
+        fetch_body=_fetch_sitemap_body,
         max_urls=max_urls,
         prefer_pattern=sitemap_pattern or link_pattern or None,
         url_filter=sitemap_pattern or None,
         sitemap_exclude=excludes or None,
+        now=retrieved_at,
     )
     if hub_url:
         # The hub is the listing, not an article: never ingest it as one.
@@ -1102,7 +1429,7 @@ def plan_harvest(
         errors.extend(hub_errors)
         known = {canonicalize_url(entry.loc) for entry in discovered}
         for entry in hub_found:
-            if excludes and any(x in _path_of(entry.loc) for x in excludes):
+            if _path_excluded(_path_of(entry.loc), excludes):
                 continue
             if canonicalize_url(entry.loc) not in known:
                 known.add(canonicalize_url(entry.loc))

@@ -104,34 +104,35 @@ def test_per_item_skips_still_parse_partially() -> None:
 def test_leaf_flow_empty_feed_raises_no_silent_zero(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    """MarTech has no fallback route: an empty feed must raise out of the leaf
-    flow (red subflow) rather than return a silent {inserted: 0, skipped: 0}."""
+    """Professional Jeweller has no fallback route: an empty feed must raise
+    out of the leaf flow (red subflow) rather than return a silent
+    {inserted: 0, skipped: 0}."""
 
     def empty_fetch(url: str, source_name: str | None = None) -> bytes:
         return EMPTY_JCK_SKELETON
 
     monkeypatch.setattr(flows, "fetch_task", empty_fetch)
     with pytest.raises(EmptyFeedError):
-        flows.ingest_source_flow(source_name="MarTech")
+        flows.ingest_source_flow(source_name="Professional Jeweller")
 
 
 def test_batch_converts_empty_feed_to_explicit_error(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    martech_url = get_source("MarTech")["rss_url"]
+    good_url = get_source("InfoMoney")["rss_url"]
     pj_url = get_source("Professional Jeweller")["rss_url"]
 
     def fake_fetch(url: str, source_name: str | None = None) -> bytes:
         if url == pj_url:
             return EMPTY_JCK_SKELETON
-        assert url == martech_url
-        return (FIXTURES / "martech_sample.xml").read_bytes()
+        assert url == good_url
+        return (FIXTURES / "infomoney_sample.xml").read_bytes()
 
     monkeypatch.setattr(flows, "fetch_task", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    results = flows.ingest_sources_flow(source_names=["MarTech", "Professional Jeweller"])
-    assert results["MarTech"] == {"inserted": 3, "skipped": 0}
+    results = flows.ingest_sources_flow(source_names=["InfoMoney", "Professional Jeweller"])
+    assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
     assert results["Professional Jeweller"]["inserted"] == 0
     assert results["Professional Jeweller"]["skipped"] == 0
     assert "error" in results["Professional Jeweller"]
@@ -264,21 +265,21 @@ def test_upsert_unknown_source_raises_no_null_insert() -> None:
 def test_batch_rerunnable_with_explicit_partial_failure(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
-    martech_url = get_source("MarTech")["rss_url"]
+    good_url = get_source("InfoMoney")["rss_url"]
     pj_url = get_source("Professional Jeweller")["rss_url"]
 
     def fake_fetch(url: str, source_name: str | None = None) -> bytes:
         if url == pj_url:
             return EMPTY_JCK_SKELETON
-        assert url == martech_url
-        return (FIXTURES / "martech_sample.xml").read_bytes()
+        assert url == good_url
+        return (FIXTURES / "infomoney_sample.xml").read_bytes()
 
     monkeypatch.setattr(flows, "fetch_task", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    names = ["MarTech", "Professional Jeweller"]
+    names = ["InfoMoney", "Professional Jeweller"]
     first = flows.ingest_sources_flow(source_names=names)
     second = flows.ingest_sources_flow(source_names=names)
     assert first == second  # independently rerunnable: stable across reruns
-    assert first["MarTech"] == {"inserted": 3, "skipped": 0}
+    assert first["InfoMoney"] == {"inserted": 3, "skipped": 0}
     assert "error" in first["Professional Jeweller"]  # explicit partial failure

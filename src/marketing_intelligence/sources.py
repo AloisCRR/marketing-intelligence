@@ -256,6 +256,15 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
     Never raises: unconfigured/invalid extras simply fall back to defaults
     (generic extractor, no sitemaps, registry hub, no link pattern, default
     pacing/backfill). Callers must not rely on invalid values surviving.
+
+    ``sitemap_exclude`` entries are a small path mini-language consumed by
+    ``discovery._path_excluded``: an entry is a path *substring* by default
+    (e.g. ``/webstories/``), while an entry wrapped in ``^`` and ``$``
+    matches that exact path only (``^/digital-general/social-media-marketing$``
+    drops the section front but keeps its ``/<slug>`` articles, which no
+    substring can express). A bare ``^`` or ``$`` with no matching pair stays
+    a literal substring character, so only a ``^…$`` pair changes the
+    semantics.
     """
     extras: dict[str, Any] = {}
     extractor = raw.get("extractor")

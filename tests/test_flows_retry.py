@@ -27,6 +27,7 @@ from marketing_intelligence.sources import get_source
 FIXTURES = Path(__file__).parent / "fixtures"
 
 MARTECH = "MarTech"
+SMT = "Social Media Today"
 PJ = "Professional Jeweller"
 INFOMONEY = "InfoMoney"
 
@@ -77,6 +78,7 @@ def _stub_enrich_identity(monkeypatch: pytest.MonkeyPatch) -> None:
 def _fixture_slug(name: str) -> str:
     return {
         "MarTech": "martech_sample",
+        "Social Media Today": "smt_sample",
         "Professional Jeweller": "pj_sample",
         "InfoMoney": "infomoney_sample",
     }[name]
@@ -138,7 +140,7 @@ def test_source_flow_propagates_stage_failure(
 
     monkeypatch.setattr(flows, "fetch_task", dead_fetch)
     with pytest.raises(RuntimeError, match="boom"):
-        flows.ingest_source_flow(source_name=MARTECH)
+        flows.ingest_source_flow(source_name=PJ)
 
 
 def test_unknown_source_still_returns_explicit_error_dict(no_engine: None) -> None:
@@ -159,7 +161,7 @@ def test_batch_isolates_failed_subflow_and_records_it(
     def fake_fetch(url: str, source_name: str | None = None) -> bytes:
         if url == failing_url:
             raise RuntimeError("boom")
-        for name in (MARTECH, INFOMONEY):
+        for name in (SMT, INFOMONEY):
             if url == get_source(name)["rss_url"]:
                 return (FIXTURES / f"{_fixture_slug(name)}.xml").read_bytes()
         raise AssertionError(f"unexpected url: {url}")
@@ -181,8 +183,8 @@ def test_batch_isolates_failed_subflow_and_records_it(
         "record_ingestion_run",
         lambda source, result, **kw: recorded.append((source, dict(result))),
     )
-    results = flows.ingest_sources_flow(source_names=[MARTECH, PJ, INFOMONEY])
-    assert results[MARTECH] == {"inserted": 3, "skipped": 0}
+    results = flows.ingest_sources_flow(source_names=[SMT, PJ, INFOMONEY])
+    assert results[SMT] == {"inserted": 3, "skipped": 0}
     assert results[INFOMONEY] == {"inserted": 3, "skipped": 0}
     assert results[PJ]["inserted"] == 0
     assert results[PJ]["skipped"] == 0

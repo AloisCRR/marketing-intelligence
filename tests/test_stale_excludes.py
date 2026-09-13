@@ -1,0 +1,276 @@
+"""Ticket 26: stale / non-article sitemap excludes (Dive family + Meio & Mensagem).
+
+Observable behavior (not privates), on the proven 08/09/14 path
+(sitemap -> exclude -> bounded backfill):
+
+- Retail Dive, Marketing Dive (``/archive/``) and Meio & Mensagem
+  (``/podcasts/``) declare their exclude in the curated stanza and it
+  survives normalization into :func:`get_retrieval_config`, without
+  disturbing any other stanza key or the pre-existing Exame exclude
+- the exclude drops matching URLs *before* the ``max_urls`` backfill
+  bound: without it the stale route consumes the whole budget and the
+  fresh route is never reached; with it the budget refills with genuine
+  articles
+- excluded URLs are never fetched as articles and never surface as
+  per-URL fetch failures (no ``causes``, no ``skipped``)
+
+The stale children here are 2012/2014 (and the Exame webstories urls live
+under a non-dated path): explicit ``NOW`` pins the ticket-26 recency guard
+so the assertions never ride the wall clock — these children stay outside
+the 60-day freshness window forever.
+
+All network is stub-backed (in-memory sitemaps); no live HTTP in tests.
+The excluded slugs (``/archive/``, ``/podcasts/``) are the ones the live
+routes expose (checked 2026-09-12).
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+import pytest
+
+import marketing_intelligence.discovery as discovery
+from marketing_intelligence.discovery import discover_urls, harvest_sitemap_source
+from marketing_intelligence.sources import get_retrieval_config
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+STANZA_EXCLUDE = {
+    "Retail Dive": "/archive/",
+    "Marketing Dive": "/archive/",
+    "Meio & Mensagem": "/podcasts/",
+}
+
+#: Per-source stub routes. ``index`` is the stanza's first declared sitemap;
+#: ``declared`` is the sitemap list discovery walks; ``index_children`` is the
+#: index's document order (real indexes list newest first, and discovery walks
+#: children reversed, so the stale child is reached first); ``fresh`` is the
+#: genuine-articles route reached only once the stale one is excluded.
+CASES: dict[str, dict[str, Any]] = {
+    "Retail Dive": {
+        "language": "en",
+        "index": "https://www.retaildive.com/sitemap.xml",
+        "declared": (
+            "https://www.retaildive.com/sitemap.xml",
+            "https://www.retaildive.com/google_news_sitemap.xml",
+        ),
+        "index_children": ("https://www.retaildive.com/news/archive/2012/december.xml",),
+        "stale_child": "https://www.retaildive.com/news/archive/2012/december.xml",
+        "stale": (
+            "https://www.retaildive.com/news/archive/2012/12/29/j-crew-ceo-defends-online-shopping/85387/",
+            "https://www.retaildive.com/news/archive/2012/12/29/walmart-pledges-safeguards/85384/",
+            "https://www.retaildive.com/news/archive/2012/12/28/office-depot-retains-ranking/85280/",
+        ),
+        "fresh": "https://www.retaildive.com/google_news_sitemap.xml",
+        "genuine": (
+            "https://www.retaildive.com/news/reformation-first-earnings-double-store-fleet/830162/",
+            "https://www.retaildive.com/news/nordstrom-alum-takes-the-ceo-reins/830155/",
+            "https://www.retaildive.com/news/destination-xl-turnaround-plan-q2/830143/",
+        ),
+    },
+    "Marketing Dive": {
+        "language": "en",
+        "index": "https://www.marketingdive.com/sitemap.xml",
+        "declared": (
+            "https://www.marketingdive.com/sitemap.xml",
+            "https://www.marketingdive.com/google_news_sitemap.xml",
+        ),
+        "index_children": ("https://www.marketingdive.com/news/archive/2014/september.xml",),
+        "stale_child": "https://www.marketingdive.com/news/archive/2014/september.xml",
+        "stale": (
+            "https://www.marketingdive.com/news/archive/2014/09/30/brand-recap-september/90501/",
+            "https://www.marketingdive.com/news/archive/2014/09/29/campaign-of-the-week/90488/",
+            "https://www.marketingdive.com/news/archive/2014/09/25/media-buying-briefing/90452/",
+        ),
+        "fresh": "https://www.marketingdive.com/google_news_sitemap.xml",
+        "genuine": (
+            "https://www.marketingdive.com/news/pepsico-hands-global-media-to-publicis/829556/",
+            "https://www.marketingdive.com/news/nike-splits-global-creative-between-shops/829521/",
+            "https://www.marketingdive.com/news/coca-cola-holiday-campaign-creators/829530/",
+        ),
+    },
+    "Meio & Mensagem": {
+        "language": "pt",
+        "index": "https://www.meioemensagem.com.br/sitemap_index.xml",
+        "declared": ("https://www.meioemensagem.com.br/sitemap_index.xml",),
+        # Newest-first document order; reversed traversal reaches the
+        # podcast child first.
+        "index_children": (
+            "https://www.meioemensagem.com.br/post-news.xml",
+            "https://www.meioemensagem.com.br/podcast-sitemap.xml",
+        ),
+        "stale_child": "https://www.meioemensagem.com.br/podcast-sitemap.xml",
+        "stale": (
+            "https://www.meioemensagem.com.br/podcasts/women-to-watch/lideranca-e-gestao/",
+            "https://www.meioemensagem.com.br/podcasts/women-to-watch/vacinas-e-gestao/",
+            "https://www.meioemensagem.com.br/podcasts/podcasts/serie-criatividade-6a-temporada/",
+        ),
+        "fresh": "https://www.meioemensagem.com.br/post-news.xml",
+        "genuine": (
+            "https://www.meioemensagem.com.br/midia/sbt-confirma-fim-de-contrato-com-rodrigo-bocardi",
+            "https://www.meioemensagem.com.br/marketing/msp-estudios-colecao-de-halloween",
+            "https://www.meioemensagem.com.br/comunicacao/campanhas-da-semana-conexao-humana",
+        ),
+    },
+}
+
+LABELS = list(CASES)
+MAX_URLS = 2
+
+#: Pinned reference clock for the discovery recency guard: the 2012/2014
+#: archive children and the undated podcast child all fall outside the
+#: 60-day freshness window, so exclusion is asserted time-independently.
+NOW = datetime(2026, 9, 12, tzinfo=UTC)
+
+
+def _urlset(entries: tuple[str, ...]) -> bytes:
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    ]
+    for loc in entries:
+        parts.append(f"<url><loc>{loc}</loc></url>")
+    parts.append("</urlset>")
+    return "".join(parts).encode("utf-8")
+
+
+def _index(children: tuple[str, ...]) -> bytes:
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    ]
+    for loc in children:
+        parts.append(f"<sitemap><loc>{loc}</loc></sitemap>")
+    parts.append("</sitemapindex>")
+    return "".join(parts).encode("utf-8")
+
+
+def _case(label: str) -> dict[str, Any]:
+    return {**CASES[label], "label": label}
+
+
+def _bodies(case: dict[str, Any]) -> dict[str, bytes]:
+    return {
+        case["index"]: _index(tuple(case["index_children"])),
+        case["stale_child"]: _urlset(tuple(case["stale"])),
+        case["fresh"]: _urlset(tuple(case["genuine"])),
+    }
+
+
+# --- registry: the stanza excludes reach the retrieval config -----------------
+
+
+@pytest.mark.parametrize("label", LABELS)
+def test_stanza_declares_exclude_through_retrieval_config(label: str) -> None:
+    config = get_retrieval_config(label)
+    assert config["sitemap_exclude"] == [STANZA_EXCLUDE[label]]
+    assert config["max_urls"] == 50  # backfill bound unchanged by the exclude
+
+
+def test_stanza_excludes_leave_other_stanzas_untouched() -> None:
+    """Merge, never overwrite: Exame keeps its webstories exclude, and
+    stanzas without an exclude keep their exact established shape."""
+    assert get_retrieval_config("Exame")["sitemap_exclude"] == ["/webstories/"]
+    assert "sitemap_exclude" not in get_retrieval_config("Consumidor Moderno")
+
+
+def test_curated_copies_stay_byte_identical() -> None:
+    """The dev override (.scratch) and the shipped copy must not drift."""
+    root = FIXTURES.parent.parent
+    scratch = root / ".scratch" / "marketing-intelligence" / "curated-sources.json"
+    shipped = root / "src" / "marketing_intelligence" / "data" / "curated-sources.json"
+    assert scratch.read_bytes() == shipped.read_bytes()
+
+
+# --- discovery seam: excludes drop URLs before the max_urls bound -------------
+
+
+@pytest.mark.parametrize("label", LABELS)
+def test_discover_without_stanza_exclude_spends_budget_on_stale(label: str) -> None:
+    """Bug premise: without the exclude, the stale route is walked first
+    and consumes the whole backfill bound."""
+    case = _case(label)
+    bodies = _bodies(case)
+    urls, errors = discover_urls(
+        list(case["declared"]),
+        fetch_body=bodies.__getitem__,
+        max_urls=MAX_URLS,
+    )
+    assert errors == []
+    assert [u.loc for u in urls] == list(case["stale"][:MAX_URLS])
+
+
+@pytest.mark.parametrize("label", LABELS)
+def test_discover_stanza_exclude_refills_budget_with_articles(label: str) -> None:
+    """The registry exclude drops the stale URLs before the bound applies,
+    so the budget refills with genuine articles and the fresh route is
+    reached; excluded URLs are never fetched."""
+    case = _case(label)
+    bodies = _bodies(case)
+    log: list[str] = []
+    config = get_retrieval_config(label)
+
+    def fetch_body(url: str) -> bytes:
+        log.append(url)
+        return bodies[url]
+
+    urls, errors = discover_urls(
+        list(case["declared"]),
+        fetch_body=fetch_body,
+        max_urls=MAX_URLS,
+        sitemap_exclude=config["sitemap_exclude"],
+        now=NOW,
+    )
+    assert errors == []
+    assert [u.loc for u in urls] == list(case["genuine"][:MAX_URLS])
+    assert not set(log) & set(case["stale"])
+
+
+# --- harvest: excluded URLs are never fetched as articles --------------------
+
+
+@pytest.mark.parametrize("label", LABELS)
+def test_harvest_never_fetches_excluded_articles(
+    label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end with the registry stanza: the excluded URLs never reach the
+    article fetch, and they are silent drops, not per-URL fetch failures."""
+    case = _case(label)
+    host = urlsplit(case["index"]).netloc
+    article = (FIXTURES / "md_article_canva.html").read_bytes()
+    sitemaps = _bodies(case)
+    bodies: dict[str, bytes] = {f"https://{host}/robots.txt": b"User-agent: *\nDisallow:\n"}
+    for url in case["genuine"]:
+        bodies[url] = article
+    if label in ("Retail Dive", "Marketing Dive"):
+        hub = get_retrieval_config(label)["hub"]
+        bodies[hub] = b"<html><body><p>listing without matching anchors</p></body></html>"
+
+    # Sitemap traversal is impersonated-only (never the injected seam);
+    # `fetch` stays the robots/hub/article override.
+    monkeypatch.setattr(
+        discovery, "_impersonated_get", lambda url, timeout=30: (url, sitemaps[url])
+    )
+
+    log: list[str] = []
+
+    def fetch(url: str) -> tuple[str, bytes]:
+        log.append(url)
+        if url in case["stale"]:
+            raise AssertionError(f"excluded URL was fetched as an article: {url}")
+        return (url, bodies[url])
+
+    config = dict(get_retrieval_config(label))
+    config["max_urls"] = MAX_URLS
+    report = harvest_sitemap_source(
+        config, label, case["language"], fetch=fetch, sleep=lambda _: None, now=NOW
+    )
+
+    assert [d.url for d in report.documents] == list(case["genuine"][:MAX_URLS])
+    assert report.skipped == 0
+    assert report.causes == []
+    assert not set(log) & set(case["stale"])

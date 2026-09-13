@@ -18,6 +18,10 @@ import urllib.error
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
+from marketing_intelligence import discovery
+
 
 class FakeTransport:
     """Fixture-backed fetch + recording sleep for the retrieval seam."""
@@ -68,6 +72,16 @@ class FakeTransport:
     def as_kwargs(self) -> dict[str, Any]:
         """Injectable ``{fetch, sleep}`` pair for harvest functions."""
         return {"fetch": self.fetch, "sleep": self.sleep}
+
+    def install_sitemap_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Feed sitemap traversal from this transport's fixture map.
+
+        Sitemap XML is fetched impersonated-only
+        (:func:`marketing_intelligence.discovery.fetch_sitemap_bytes`), so the
+        injectable ``fetch``/``sleep`` pair no longer covers sitemaps: tests put
+        the same fixture map behind the impersonated leg here.
+        """
+        monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: self.fetch(url))
 
     def assert_no_sleep(self) -> None:
         """Prove a lane never paced (RSS lane, unmapped transports)."""

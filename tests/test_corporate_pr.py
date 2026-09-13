@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 import pytest
 from prefect_harness import no_engine
 
+import marketing_intelligence.discovery as discovery
 from marketing_intelligence.discovery import (
     ArticleExtractError,
     discover_urls,
@@ -34,6 +35,15 @@ from marketing_intelligence.normalize import NormalizedDocument
 from marketing_intelligence.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _install_sitemap_seam(monkeypatch: pytest.MonkeyPatch, fetch: Any) -> None:
+    """Feed sitemap traversal from the same fixture map.
+
+    Sitemap XML is fetched impersonated-only (`fetch_sitemap_bytes`), so the
+    injected `fetch` override no longer covers sitemaps.
+    """
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
 
 
 NJ = "National Jeweler"
@@ -452,9 +462,10 @@ def test_guard_ignores_id_free_slug_changes() -> None:
 # --- National Jeweler harvest (url-set + hub, generic, id guard) ---------------
 
 
-def test_nj_harvest_url_set_first_hub_extends() -> None:
+def test_nj_harvest_url_set_first_hub_extends(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
     fetch = _make_fetch(_nj_fetch_map())
+    _install_sitemap_seam(monkeypatch, fetch)
     report = harvest_sitemap_source(
         dict(get_retrieval_config(NJ)), NJ, "en", fetch=fetch, sleep=sleeps.append
     )
@@ -488,20 +499,22 @@ def test_nj_harvest_url_set_first_hub_extends() -> None:
     assert sleeps and all(s >= 1.0 for s in sleeps)
 
 
-def _nj_docs() -> list[NormalizedDocument]:
+def _nj_docs(monkeypatch: pytest.MonkeyPatch) -> list[NormalizedDocument]:
+    fetch = _make_fetch(_nj_fetch_map())
+    _install_sitemap_seam(monkeypatch, fetch)
     return harvest_sitemap_source(
         dict(get_retrieval_config(NJ)),
         NJ,
         "en",
-        fetch=_make_fetch(_nj_fetch_map()),
+        fetch=fetch,
         sleep=lambda _: None,
     ).documents
 
 
-def test_nj_rerun_upsert_is_noop() -> None:
+def test_nj_rerun_upsert_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     from marketing_intelligence.ingest import upsert_documents
 
-    docs = _nj_docs()
+    docs = _nj_docs(monkeypatch)
     conn = FakeConnection()
     assert upsert_documents(docs, conn=conn) == (5, 0)
     assert upsert_documents(docs, conn=conn) == (0, 5)
@@ -511,9 +524,12 @@ def test_nj_rerun_upsert_is_noop() -> None:
 # --- Richemont harvest (url-set, generic) --------------------------------------
 
 
-def test_ri_harvest_releases_with_full_provenance() -> None:
+def test_ri_harvest_releases_with_full_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     log: list[str] = []
     fetch = _make_fetch(_ri_fetch_map(), log=log)
+    _install_sitemap_seam(monkeypatch, fetch)
     report = harvest_sitemap_source(
         dict(get_retrieval_config(RI)), RI, "en", fetch=fetch, sleep=lambda _: None
     )
@@ -530,14 +546,16 @@ def test_ri_harvest_releases_with_full_provenance() -> None:
     assert "https://www.richemont.com/news-media/press-releases-news/" not in log
 
 
-def test_ri_rerun_upsert_is_noop() -> None:
+def test_ri_rerun_upsert_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     from marketing_intelligence.ingest import upsert_documents
 
+    fetch = _make_fetch(_ri_fetch_map())
+    _install_sitemap_seam(monkeypatch, fetch)
     docs = harvest_sitemap_source(
         dict(get_retrieval_config(RI)),
         RI,
         "en",
-        fetch=_make_fetch(_ri_fetch_map()),
+        fetch=fetch,
         sleep=lambda _: None,
     ).documents
     conn = FakeConnection()
@@ -548,9 +566,12 @@ def test_ri_rerun_upsert_is_noop() -> None:
 # --- LVMH harvest (per-locale sitemap index, sitemap-only) ----------------------
 
 
-def test_lvmh_harvest_covers_locales_sitemap_only() -> None:
+def test_lvmh_harvest_covers_locales_sitemap_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     log: list[str] = []
     fetch = _make_fetch(_lvmh_fetch_map(), log=log)
+    _install_sitemap_seam(monkeypatch, fetch)
     report = harvest_sitemap_source(
         dict(get_retrieval_config(LVMH)), LVMH, "en", fetch=fetch, sleep=lambda _: None
     )
@@ -577,22 +598,25 @@ def test_lvmh_harvest_covers_locales_sitemap_only() -> None:
     assert "https://www.lvmh.com/news-documents/press-releases/" not in log
 
 
-def test_lvmh_bounded_backfill() -> None:
+def test_lvmh_bounded_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
     fetch = _make_fetch(_lvmh_fetch_map())
+    _install_sitemap_seam(monkeypatch, fetch)
     config = dict(get_retrieval_config(LVMH))
     config["max_urls"] = 2
     report = harvest_sitemap_source(config, LVMH, "en", fetch=fetch, sleep=lambda _: None)
     assert [d.url for d in report.documents] == [LVMH_JP_NEWS, LVMH_IT_NEWS]
 
 
-def test_lvmh_rerun_upsert_is_noop() -> None:
+def test_lvmh_rerun_upsert_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     from marketing_intelligence.ingest import upsert_documents
 
+    fetch = _make_fetch(_lvmh_fetch_map())
+    _install_sitemap_seam(monkeypatch, fetch)
     docs = harvest_sitemap_source(
         dict(get_retrieval_config(LVMH)),
         LVMH,
         "en",
-        fetch=_make_fetch(_lvmh_fetch_map()),
+        fetch=fetch,
         sleep=lambda _: None,
     ).documents
     conn = FakeConnection()
@@ -649,6 +673,8 @@ def _flow_fetch(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, tuple[str, b
     # share `discovery_fetch`, so fixture I/O flows through real logic.
     fetch = _make_fetch(mapping)
     monkeypatch.setattr(flows, "discovery_fetch", lambda url, policy, gap_s: fetch(url))
+    # Sitemap traversal is impersonated-only, so it rides its own seam.
+    monkeypatch.setattr(discovery, "_impersonated_get", lambda url, timeout=30: fetch(url))
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
 
 
@@ -712,6 +738,14 @@ def test_batch_ingests_all_three_and_isolates_failure(
         return fixture_fetch(url)
 
     monkeypatch.setattr(flows, "discovery_fetch", fake_fetch)
+
+    def fake_sitemap_fetch(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        # Every Richemont sitemap fails too: planning finds zero URLs there.
+        if urlsplit(url).netloc == "www.richemont.com":
+            raise ArticleFetchError(url, "sitemap discovery yielded no URLs: boom")
+        return fixture_fetch(url)
+
+    monkeypatch.setattr(discovery, "_impersonated_get", fake_sitemap_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     shared: dict[str, FakeConnection] = {}
 

@@ -27,6 +27,7 @@ from marketing_intelligence.health import record_ingestion_run
 from marketing_intelligence.ingest import (
     SOURCE_ID_SQL,
     EmptyFeedError,
+    apply_retrieval_override,
     count_feed_entries,
     feed_candidate_urls,
     fetch_rss,
@@ -164,13 +165,15 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
     harvest exactly; per-host politeness (slot + pacing + jitter) lives in
     `discovery_fetch`.
 
-    Consumes `get_retrieval_config` (never raises). One bad
-    sitemap/article is an explicit per-document skip (counted with causes);
-    zero discovered URLs raise DiscoveryError, which propagates like a dead
-    RSS feed so the Ingestion Run parent records the explicit per-source
-    error.
+    Consumes `get_retrieval_config` (never raises), with any code-level lane
+    override applied (`apply_retrieval_override`): a source routed off its
+    dead RSS feed runs the same hub/sitemap planning as any declared
+    discovery Source. One bad sitemap/article is an explicit per-document
+    skip (counted with causes); zero discovered URLs raise DiscoveryError,
+    which propagates like a dead RSS feed so the Ingestion Run parent
+    records the explicit per-source error.
     """
-    config = get_retrieval_config(source_name)
+    config = apply_retrieval_override(source_name, get_retrieval_config(source_name))
     source = get_source(source_name)
     language = str(source.get("language") or "en")
     policy = str(config.get("policy") or "impersonated-feed")
@@ -427,10 +430,18 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     # Lane switch (ticket 08): RSS entries keep the exact fetch → parse path;
     # sitemap-family entries run discovery → fetch → extract instead. Both
     # lanes converge on enrich → upsert with identical downstream contracts.
-    retrieval_type = get_retrieval_config(source_label)["type"]
+    # The lane is the *effective* stanza type: `apply_retrieval_override`
+    # (ticket 28) may move a source off its curated RSS lane, and it must win
+    # over the still-present (dead) `rss_url`. Every entry without a stanza
+    # resolves to type "rss" (get_retrieval_config's default), so the curated
+    # rss_url no longer needs to re-force the lane here.
+    retrieval_type = str(
+        apply_retrieval_override(source_label, get_retrieval_config(source_label))["type"]
+    )
+    rss_lane = retrieval_type == "rss"
     discovery_skipped = 0
     discovery_causes: list[str] = []
-    if retrieval_type == "rss" or source.get("rss_url"):
+    if rss_lane:
         # source_name threads the per-source retrieval policy into fetch_task.
         # Fallback routing (ticket 13): a dead/emptied primary feed raises
         # EmptyFeedError and the next code-level candidate (feed_candidate_urls)
@@ -483,7 +494,7 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
             logger.warning("unrecoverable flag failed url=%s (%s)", flag_url, exc)
     result = {"inserted": inserted, "skipped": upsert_skipped}
     reasons: list[str] | None = None
-    if retrieval_type == "rss" or source.get("rss_url"):
+    if rss_lane:
         try:
             entries = count_feed_entries(xml)
         except Exception:
