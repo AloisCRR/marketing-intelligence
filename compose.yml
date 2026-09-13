@@ -132,6 +132,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
       PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
       PREFECT_API_AUTH_STRING: ${PREFECT_API_AUTH_STRING:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

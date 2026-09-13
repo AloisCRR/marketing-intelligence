@@ -157,7 +157,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.meioemensagem.com.br/sitemap_index.xml"], "sitemap_exclude": ["/podcasts/"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.meioemensagem.com.br/sitemap_index.xml"], "sitemap_exclude": ["/podcasts/", "/patrocinado/"], "pacing_ms": 1000, "max_urls": 50},
     "last_verified": "2026-09-06",
     "sample_article_url": "https://www.meioemensagem.com.br/marketing/mercado-livre-que-fortalecer-moda-com-pandora",
     "sample_article_date": "2025-07-10"

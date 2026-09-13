@@ -4,9 +4,9 @@ Observable behavior (not privates), on the proven 08/09/14 path
 (sitemap -> exclude -> bounded backfill):
 
 - Retail Dive, Marketing Dive (``/archive/``) and Meio & Mensagem
-  (``/podcasts/``) declare their exclude in the curated stanza and it
-  survives normalization into :func:`get_retrieval_config`, without
-  disturbing any other stanza key or the pre-existing Exame exclude
+  (``/podcasts/``, ``/patrocinado/``) declare their excludes in the curated
+  stanza, and they survive normalization into :func:`get_retrieval_config`
+  without disturbing any other stanza key or the pre-existing Exame exclude
 - the exclude drops matching URLs *before* the ``max_urls`` backfill
   bound: without it the stale route consumes the whole budget and the
   fresh route is never reached; with it the budget refills with genuine
@@ -20,8 +20,8 @@ so the assertions never ride the wall clock — these children stay outside
 the 60-day freshness window forever.
 
 All network is stub-backed (in-memory sitemaps); no live HTTP in tests.
-The excluded slugs (``/archive/``, ``/podcasts/``) are the ones the live
-routes expose (checked 2026-09-12).
+The excluded slugs (``/archive/``, ``/podcasts/``, ``/patrocinado/``) are the
+ones the live routes expose (checked 2026-09-12).
 """
 
 from __future__ import annotations
@@ -39,10 +39,12 @@ from marketing_intelligence.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-STANZA_EXCLUDE = {
+#: Declared ``sitemap_exclude`` per source: a bare string is the one-entry list
+#: ``get_retrieval_config`` returns (only Meio & Mensagem declares two entries).
+STANZA_EXCLUDE: dict[str, str | list[str]] = {
     "Retail Dive": "/archive/",
     "Marketing Dive": "/archive/",
-    "Meio & Mensagem": "/podcasts/",
+    "Meio & Mensagem": ["/podcasts/", "/patrocinado/"],
 }
 
 #: Per-source stub routes. ``index`` is the stanza's first declared sitemap;
@@ -161,14 +163,56 @@ def _bodies(case: dict[str, Any]) -> dict[str, bytes]:
     }
 
 
+def _declared_exclude(label: str) -> list[str]:
+    """The stanza's declared exclude as ``get_retrieval_config`` returns it."""
+    declared = STANZA_EXCLUDE[label]
+    return [declared] if isinstance(declared, str) else list(declared)
+
+
 # --- registry: the stanza excludes reach the retrieval config -----------------
 
 
 @pytest.mark.parametrize("label", LABELS)
 def test_stanza_declares_exclude_through_retrieval_config(label: str) -> None:
     config = get_retrieval_config(label)
-    assert config["sitemap_exclude"] == [STANZA_EXCLUDE[label]]
+    assert config["sitemap_exclude"] == _declared_exclude(label)
     assert config["max_urls"] == 50  # backfill bound unchanged by the exclude
+
+
+#: A Meio & Mensagem sponsored-content landing path: a section front, not an
+#: article, so the stanza excludes it alongside the podcast routes.
+MEIO_SPONSORED_URL = "https://www.meioemensagem.com.br/patrocinado/sebrae-conteudo-especial/"
+
+
+def test_meio_sponsored_section_is_excluded_before_fetch() -> None:
+    """``/patrocinado/`` is declared and applied like the podcast routes: the
+    exclude helper discovery runs over every candidate URL drops a sponsored
+    URL, so it consumes no backfill budget and is never fetched."""
+    exclude = get_retrieval_config("Meio & Mensagem")["sitemap_exclude"]
+    assert "/patrocinado/" in exclude
+    # The helper discovery applies to urlset entries and traversed children.
+    assert discovery._path_excluded(discovery._path_of(MEIO_SPONSORED_URL), exclude)
+
+    declared = CASES["Meio & Mensagem"]["declared"][0]
+    article = CASES["Meio & Mensagem"]["genuine"][0]
+    # Sponsored URL first: without the exclude it takes the single slot.
+    bodies = {declared: _urlset((MEIO_SPONSORED_URL, article))}
+    fetched: list[str] = []
+
+    def fetch_body(url: str) -> bytes:
+        fetched.append(url)
+        return bodies[url]
+
+    urls, errors = discover_urls(
+        [declared],
+        fetch_body=fetch_body,
+        max_urls=1,
+        sitemap_exclude=exclude,
+        now=NOW,
+    )
+    assert errors == []
+    assert [u.loc for u in urls] == [article]
+    assert MEIO_SPONSORED_URL not in fetched
 
 
 def test_stanza_excludes_leave_other_stanzas_untouched() -> None:
