@@ -5,8 +5,8 @@ Observable behavior (not privates):
   those URLs — no "disallowed by robots.txt" skip, no pre-fetch drop — and
   they are fetched/extracted alongside their allowed siblings
 - politeness: robots crawl-delay still floors the pacing gap
-  (max(stanza pacing, crawl-delay) plus bounded jitter) and newest-first
-  `max_urls` budgeting still keeps the newest URLs, Disallowed or not
+  (min(max(stanza pacing, crawl-delay), 60s) plus bounded jitter) and
+  newest-first `max_urls` budgeting still keeps the newest URLs, Disallowed or not
 
 All network is fake-fetch backed; no live HTTP in tests.
 """
@@ -240,6 +240,26 @@ def test_crawl_delay_still_floors_the_pacing_gap(monkeypatch: pytest.MonkeyPatch
     assert [job.gap_s for job in plan.jobs] == [10.0]
     assert sleeps  # planning traversal is paced too
     assert all(10.0 <= s <= 10.0 * _MAX_JITTER for s in sleeps)
+
+
+def test_absurd_crawl_delay_is_capped_at_sixty_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bot-deterrent crawl-delay (martech.org declares 600) caps at 60s."""
+    sleeps: list[float] = []
+    fetch = _make_fetch(
+        {
+            ROBOTS_URL: (ROBOTS_URL, _robots(crawl_delay=600)),
+            SITEMAP_URL: (SITEMAP_URL, _sitemap_xml([(URL_PUBLIC, "2026-09-05T10:00:00+00:00")])),
+            URL_PUBLIC: (URL_PUBLIC, _article_html("Public story")),
+        }
+    )
+    _install_sitemap_seam(monkeypatch, fetch)
+    plan = plan_harvest(
+        _sitemap_config(pacing_ms=1000), "Example", "en", fetch=fetch, sleep=sleeps.append
+    )
+    assert plan.gap_s == 60.0
+    assert [job.gap_s for job in plan.jobs] == [60.0]
+    assert sleeps
+    assert all(60.0 <= s <= 60.0 * _MAX_JITTER for s in sleeps)
 
 
 def test_stanza_pacing_floor_with_jitter_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -15,8 +15,8 @@ exactly as the RSS lane.
   after a thin-check, never re-cleaned. Still-thin results are kept-aside
   with explicit causes (flag path), never bypassed.
 - Politeness: robots.txt crawl-delay honored (effective pacing is
-  max(stanza pacing, crawl-delay) plus jitter), sequential requests with
-  explicit timeouts; the article chain is curl_cffi Chrome impersonation
+  min(max(stanza pacing, crawl-delay), 60s) plus jitter), sequential requests
+  with explicit timeouts; the article chain is curl_cffi Chrome impersonation
   first, then the Jina reader, then Firecrawl under the impersonated-feed
   policy — there is no stdlib fetch lane, and persistent denials are
   recorded as explicit per-document errors.
@@ -74,6 +74,12 @@ from marketing_intelligence.sources import (
 #: in marketing_intelligence.ingest, 15s articles here). Every lane of the
 #: article chain honors the caller's timeout.
 DEFAULT_TIMEOUT = 15
+
+#: Upper bound (s) on the effective pacing gap. Robots crawl-delay values above
+#: this are bot-deterrents (martech.org declares 600), not real politeness
+#: budgets — honoring them literally stalls a source for hours. The effective
+#: gap stays min(max(stanza pacing, crawl-delay), this cap).
+MAX_PACING_GAP_S = 60.0
 
 #: Maximum sitemap-nesting depth traversed (index → nested index → URL set).
 MAX_SITEMAP_DEPTH = 2
@@ -1324,7 +1330,8 @@ def plan_harvest(
     hub-anchor fallback) and returns a
     :class:`HarvestPlan` of immutable :class:`ArticleJob` units. Every
     discovered article URL is planned and fetched alike — robots Disallow
-    is not an exclusion ground; only crawl-delay floors the pacing gap.
+    is not an exclusion ground; only crawl-delay floors the pacing gap
+    (capped at MAX_PACING_GAP_S).
     Sitemap traversal fetches impersonated-only (:func:`fetch_sitemap_bytes`);
     the injected `fetch` override covers robots.txt, hub listings, and article
     bodies, whose shared chain keeps its reader/scrape fallback. A
@@ -1381,7 +1388,7 @@ def plan_harvest(
             crawl_delay = robots_crawl_delay(robots_body.decode("utf-8", errors="replace"))
         except Exception:
             crawl_delay = 0.0
-    gap = max(pacing_ms / 1000.0, crawl_delay)
+    gap = min(max(pacing_ms / 1000.0, crawl_delay), MAX_PACING_GAP_S)
 
     def _pace() -> None:
         """One pacing gap: the shared gap plus bounded jitter."""
