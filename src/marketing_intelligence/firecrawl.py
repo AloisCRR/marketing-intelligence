@@ -45,8 +45,11 @@ _ERROR_BODY_CAP = 512
 #: Stand-in for anything that could echo the API key.
 _REDACTED = "<redacted>"
 
-#: Matches header-shaped credentials even when the literal key is unknown.
-_TOKEN_RE = re.compile(r"(?i)\b(?:bearer\s+\S+|fc-[A-Za-z0-9_-]{8,})")
+#: Matches header-shaped credentials even when the literal key is unknown. The
+#: Bearer alternative stops at whitespace, a quote, or a backslash: the JSON
+#: text it scrubs may be parsed again (the with-payload envelope), so swallowing
+#: a closing quote would leave an unterminated string behind.
+_TOKEN_RE = re.compile(r"(?i)\b(?:bearer\s+[^\s\"\\]+|fc-[A-Za-z0-9_-]{8,})")
 
 #: Response header carrying 429's backoff hint (seconds, or an HTTP-date).
 _RETRY_AFTER_HEADER = "Retry-After"
@@ -226,21 +229,14 @@ def _markdown_from_payload(payload: object) -> str:
     return markdown if isinstance(markdown, str) else ""
 
 
-def fetch_via_firecrawl(url: str, timeout: int = FIRECRAWL_TIMEOUT) -> bytes:
-    """Scrape `url` through Firecrawl (v2); return Markdown bytes.
+def _scrape_payload(url: str, key: str, timeout: int) -> dict:
+    """Run the v2 scrape request loop; return the validated JSON envelope.
 
-    Sends Bearer auth only (no cookies, no other credentials). Raises
-    :class:`FirecrawlFailed` when ``FIRECRAWL_API_KEY`` is unset or blank
-    (explicit skipped cause, zero request traffic), on transport failure, on an
-    HTTP error status, when the API envelope reports ``success: false``, when
-    the page itself failed (``data.metadata.statusCode``), or when the payload
-    carries no Markdown. Retryable statuses and client timeouts are retried up
-    to ``FIRECRAWL_MAX_RETRIES`` times. The API key never appears in any message
-    or chained exception.
+    Shared by the bytes-only and with-payload variants so the retry, error,
+    and page-status contract stays single-sourced. Raises
+    :class:`FirecrawlFailed` on every failure path; success guarantees a dict
+    carrying non-blank Markdown.
     """
-    key = _api_key()
-    if not key:
-        raise FirecrawlFailed("firecrawl skipped: missing FIRECRAWL_API_KEY")
     body = {
         "url": url,
         "formats": ["markdown"],
@@ -329,9 +325,60 @@ def fetch_via_firecrawl(url: str, timeout: int = FIRECRAWL_TIMEOUT) -> bytes:
                 f"firecrawl scrape failed for {url}: no markdown in response"
                 + _empty_context(page_status, page_error, data.get("warning"), key)
             )
-        return markdown.encode("utf-8")
+        return payload
     # Unreachable: every iteration above returns or raises. Kept for the type
     # checker, which cannot prove the range below is non-empty.
     raise FirecrawlFailed(
         _redact(f"firecrawl scrape failed for {url}: retries exhausted", key)
     ) from None
+
+
+def fetch_via_firecrawl_with_payload(
+    url: str, timeout: int = FIRECRAWL_TIMEOUT
+) -> tuple[bytes, dict[str, object]]:
+    """Scrape `url` through Firecrawl (v2); return (Markdown bytes, raw envelope).
+
+    Same request/retry/parse contract as :func:`fetch_via_firecrawl`, except
+    the accepted response also yields its raw JSON envelope so a caller can
+    persist the billed provider payload beside the extracted Markdown. The
+    envelope is redacted (``_redact`` over its JSON text with the call key)
+    before return, so the Bearer key can never reach the side table even when
+    the API echoes request metadata. Raises :class:`FirecrawlFailed` on every
+    path the bytes-only variant raises.
+    """
+    key = _api_key()
+    if not key:
+        raise FirecrawlFailed("firecrawl skipped: missing FIRECRAWL_API_KEY")
+    payload = _scrape_payload(url, key, timeout)
+    markdown = _markdown_from_payload(payload)
+    scrubbed = json.loads(_redact(json.dumps(payload, ensure_ascii=False), key))
+    envelope: dict[str, object] = scrubbed if isinstance(scrubbed, dict) else {}
+    return (markdown.encode("utf-8"), envelope)
+
+
+def fetch_via_firecrawl(url: str, timeout: int = FIRECRAWL_TIMEOUT) -> bytes:
+    """Scrape `url` through Firecrawl (v2); return Markdown bytes.
+
+    Sends Bearer auth only (no cookies, no other credentials). Raises
+    :class:`FirecrawlFailed` when ``FIRECRAWL_API_KEY`` is unset or blank
+    (explicit skipped cause, zero request traffic), on transport failure, on an
+    HTTP error status, when the API envelope reports ``success: false``, when
+    the page itself failed (``data.metadata.statusCode``), or when the payload
+    carries no Markdown. Retryable statuses and client timeouts are retried up
+    to ``FIRECRAWL_MAX_RETRIES`` times. The API key never appears in any message
+    or chained exception.
+    """
+    key = _api_key()
+    if not key:
+        raise FirecrawlFailed("firecrawl skipped: missing FIRECRAWL_API_KEY")
+    payload = _scrape_payload(url, key, timeout)
+    return _markdown_from_payload(payload).encode("utf-8")
+
+
+#: The shipped fetch entry points, captured after definition. The
+#: article-content chain consults these to tell a real leg from the
+#: monkeypatched stand-in a test or embed installs (``fetch_via_firecrawl`` is
+#: the historical patch target), so it can honor either patch without
+#: duplicating the request loop or re-running a billed scrape.
+SHIPPED_FETCH_WITH_PAYLOAD = fetch_via_firecrawl_with_payload
+SHIPPED_FETCH_BYTES = fetch_via_firecrawl

@@ -28,13 +28,16 @@ with sitemap discovery: the impersonated primary (:func:`fetch_impersonated`),
 the Jina reader (:func:`fetch_reader`, a zero-ops HTTPS GET with
 data-minimizing headers: explicit User-Agent, ``Accept: text/*``, never any
 Cookie/Authorization credentials, backoff on 429 honoring Retry-After up to 2
-retries), then ``fetch_via_firecrawl`` (the paid last resort, imported lazily
-from :mod:`marketing_intelligence.firecrawl`; Bearer key from
+retries), then ``fetch_via_firecrawl_with_payload`` (the paid last resort,
+imported lazily from :mod:`marketing_intelligence.firecrawl`; Bearer key from
 ``FIRECRAWL_API_KEY`` read at call time, never logged, absent key an explicit
-skipped cause). Enrichment enters the chain only on a primary-miss signal
-(discovery walks it ungated) and thin-checks each provider payload; provider
-Markdown is stored as-is — never run back through the HTML cleaner. Any
-fallback failure raises a typed error that chains every prior cause through
+skipped cause). The with-payload variant is preferred so a scrape win carries
+its redacted billed envelope beside the Markdown for the flow to persist; a
+monkeypatched bytes-only ``fetch_via_firecrawl`` (the historical test seam)
+stands in as the whole leg. Enrichment enters the chain only on a primary-miss
+signal (discovery walks it ungated) and thin-checks each provider payload;
+provider Markdown is stored as-is — never run back through the HTML cleaner.
+Any fallback failure raises a typed error that chains every prior cause through
 one credential-free detail, so :func:`enrich_document_or_keep` still keeps the
 RSS body.
 
@@ -54,6 +57,7 @@ import urllib.error
 import urllib.request
 import zlib
 from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from marketing_intelligence.ingest import USER_AGENT
@@ -576,9 +580,40 @@ def _leg_cause(exc: Exception) -> str:
     return detail if isinstance(detail, str) and detail else str(exc)
 
 
+#: Raw billed Firecrawl envelope carried beside a chain payload: set on the
+#: winning :class:`ProviderMarkdown` bytes and copied onto the enriched
+#: document, so the flow can persist it without touching the fetch contract or
+#: any task tuple. The envelope is the redacted v2 response dict released by
+#: ``fetch_via_firecrawl_with_payload`` (never the API key).
+FIRECRAWL_PAYLOAD_ATTR = "firecrawl_payload"
+
 #: One chain leg: ``(url, timeout) -> (final_url, payload)``. A provider leg's
 #: payload is already-extracted Markdown; the primary's is raw HTML.
 ContentLeg = Callable[[str, int], tuple[str, bytes]]
+
+
+def _firecrawl_leg(url: str, timeout: int) -> tuple[bytes, dict[str, Any] | None]:
+    """Run the paid Firecrawl leg, honoring a monkeypatched entry point.
+
+    The module is imported lazily (no import cycle; the key is read per call).
+    ``fetch_via_firecrawl_with_payload`` is preferred so a win carries its
+    billed envelope. When only ``fetch_via_firecrawl`` is patched — the
+    historical bytes-only seam tests and embeds replace — that stand-in *is*
+    the whole leg and yields no envelope, instead of the shipped wrapper
+    running a second, real (billed) scrape.
+    """
+    from marketing_intelligence import firecrawl  # lazy: no cycle
+
+    with_payload = firecrawl.fetch_via_firecrawl_with_payload
+    if with_payload is firecrawl.SHIPPED_FETCH_WITH_PAYLOAD:
+        bytes_only = firecrawl.fetch_via_firecrawl
+        if bytes_only is not firecrawl.SHIPPED_FETCH_BYTES:
+            return (bytes_only(url, timeout), None)
+    result = with_payload(url, timeout)
+    if isinstance(result, tuple) and len(result) == 2:
+        payload, envelope = result
+        return (payload, envelope if isinstance(envelope, dict) else None)
+    return (result, None)
 
 
 def article_content_chain(
@@ -595,14 +630,18 @@ def article_content_chain(
     `primary` is the impersonated-Chrome leg; ``None`` means it already ran
     (enrichment's gated path) and `primary_cause` carries its miss reason.
     `reader` is the Jina-reader leg. The paid Firecrawl scrape is the shared
-    final leg, imported lazily so its API key never touches this module.
+    final leg, imported lazily so its API key never touches this module; a
+    monkeypatched ``firecrawl.fetch_via_firecrawl`` (the historical bytes-only
+    seam) or ``firecrawl.fetch_via_firecrawl_with_payload`` stands in for it,
+    the latter preferred so a stubbed win can still carry an envelope.
 
     Provider payloads come back tagged :class:`ProviderMarkdown`, so the
-    extract site stores them as-is instead of re-cleaning. With `min_chars`
-    set (enrichment) a payload thinner than the threshold counts as a miss and
-    the next leg runs; with ``None`` (discovery) the first leg that returns
-    bytes wins. When every leg fails, one bounded, credential-free detail
-    names each leg exactly once.
+    extract site stores them as-is instead of re-cleaning. A Firecrawl win
+    also carries its billed envelope on ``FIRECRAWL_PAYLOAD_ATTR`` (read it
+    with :func:`firecrawl_payload_of`). With `min_chars` set (enrichment) a
+    payload thinner than the threshold counts as a miss and the next leg runs;
+    with ``None`` (discovery) the first leg that returns bytes wins. When
+    every leg fails, one bounded, credential-free detail names each leg once.
     """
     primary_detail = primary_cause or ""
     if primary is not None:
@@ -619,15 +658,20 @@ def article_content_chain(
             return (final_url, ProviderMarkdown(payload))
         reader_detail = "delivered no substantive text"
 
-    from marketing_intelligence.firecrawl import fetch_via_firecrawl  # lazy: no cycle
-
     try:
-        payload = fetch_via_firecrawl(url, timeout)
+        payload, envelope = _firecrawl_leg(url, timeout)
     except Exception as exc:  # FirecrawlFailed: missing key, transport, HTTP, payload
         firecrawl_detail = _leg_cause(exc)
     else:
         if min_chars is None or not is_thin(payload.decode("utf-8", errors="replace"), min_chars):
-            return (url, ProviderMarkdown(payload))
+            tagged = ProviderMarkdown(payload)
+            if envelope is not None:
+                tagged.__dict__[FIRECRAWL_PAYLOAD_ATTR] = {
+                    "provider": "firecrawl",
+                    "url": url,
+                    "response": envelope,
+                }
+            return (url, tagged)
         firecrawl_detail = "delivered no substantive text"
     raise FetchFailed(
         _chain_detail(url, primary_detail or "primary failed", reader_detail, firecrawl_detail)
@@ -639,13 +683,19 @@ def _enrichment_reader_leg(url: str, timeout: int) -> tuple[str, bytes]:
     return (url, try_fallback_reader(url, timeout).encode("utf-8"))
 
 
+def firecrawl_payload_of(doc: object) -> dict[str, Any] | None:
+    """Raw billed Firecrawl envelope carried on `doc`, if the winning leg set one."""
+    raw = getattr(doc, "__dict__", {}).get(FIRECRAWL_PAYLOAD_ATTR)
+    return raw if isinstance(raw, dict) else None
+
+
 def _fallback_after_primary_miss(
     url: str,
     timeout: int,
     primary_desc: str,
     threshold: int = DEFAULT_THIN_THRESHOLD,
-) -> str:
-    """Walk the shared gated fallback chain; raise (chaining every cause) on failure.
+) -> tuple[str, dict[str, Any] | None]:
+    """Walk the shared gated fallback chain; return (markdown, firecrawl payload).
 
     Enrichment's entry into :func:`article_content_chain`: the primary already
     ran, `primary_desc` carries its miss reason, and the reader then the paid
@@ -653,7 +703,8 @@ def _fallback_after_primary_miss(
     to each leg's payload. A leg whose output is thin, missing, or failed
     counts as a miss — reader stubs, error pages, and empty scrape payloads
     must never become the canonical stored body — and the raised error names
-    the primary cause plus every fallback leg cause.
+    the primary cause plus every fallback leg cause. The payload element is
+    the winning Firecrawl envelope when that leg won, else None.
     """
     _, payload = article_content_chain(
         url,
@@ -662,7 +713,7 @@ def _fallback_after_primary_miss(
         primary_cause=primary_desc,
         min_chars=threshold,
     )
-    return payload.decode("utf-8", errors="replace")
+    return (payload.decode("utf-8", errors="replace"), firecrawl_payload_of(payload))
 
 
 def enrich_document(
@@ -686,19 +737,22 @@ def enrich_document(
     """
     if not force and not is_thin(doc.content, threshold):
         return (doc, METHOD_RSS, None)
+    firecrawl_payload: dict[str, Any] | None = None
     try:
         markdown = fetch_and_clean(doc.url, timeout)
     except UnparseableBody as exc:
-        markdown = _fallback_after_primary_miss(
+        markdown, firecrawl_payload = _fallback_after_primary_miss(
             doc.url, timeout, f"empty primary output ({exc})", threshold
         )
     except FetchFailed as exc:
         if not _primary_miss_from_error(exc):
             raise
-        markdown = _fallback_after_primary_miss(doc.url, timeout, str(exc), threshold)
+        markdown, firecrawl_payload = _fallback_after_primary_miss(
+            doc.url, timeout, str(exc), threshold
+        )
     else:
         if _looks_like_js_shell(markdown, threshold):
-            markdown = _fallback_after_primary_miss(
+            markdown, firecrawl_payload = _fallback_after_primary_miss(
                 doc.url, timeout, "primary output looked like a JS shell", threshold
             )
     enriched = make_document(
@@ -711,6 +765,8 @@ def enrich_document(
         retrieved_at=doc.retrieved_at,
         language=doc.language,
     )
+    if firecrawl_payload is not None:
+        enriched.__dict__[FIRECRAWL_PAYLOAD_ATTR] = firecrawl_payload
     return (enriched, METHOD_ENRICHED, None)
 
 

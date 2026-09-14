@@ -47,6 +47,7 @@ from dateutil import parser as date_parser
 from marketing_intelligence.enrich import (
     _CHALLENGE_KEYWORDS,
     _LOCK_PAGE_MARKER,
+    FIRECRAWL_PAYLOAD_ATTR,
     FetchFailed,
     ProviderMarkdown,
     article_content_chain,
@@ -1311,6 +1312,9 @@ def fetch_extract_one(
         return (None, f"{job.loc}: {exc.detail}")
     except Exception as exc:  # defensive: extraction never aborts the harvest
         return (None, f"{job.loc}: extraction failed ({exc})")
+    raw_payload = getattr(raw, "__dict__", {}).get(FIRECRAWL_PAYLOAD_ATTR)
+    if raw_payload is not None:
+        doc.__dict__[FIRECRAWL_PAYLOAD_ATTR] = raw_payload
     return (doc, None)
 
 

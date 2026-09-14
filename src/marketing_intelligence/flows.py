@@ -21,7 +21,11 @@ from marketing_intelligence.discovery import (
     paced_policy_fetch,
     plan_harvest,
 )
-from marketing_intelligence.enrich import DEFAULT_THIN_THRESHOLD, enrich_document_or_keep
+from marketing_intelligence.enrich import (
+    DEFAULT_THIN_THRESHOLD,
+    enrich_document_or_keep,
+    firecrawl_payload_of,
+)
 from marketing_intelligence.flag import flag_unrecoverable
 from marketing_intelligence.health import record_ingestion_run
 from marketing_intelligence.ingest import (
@@ -37,6 +41,7 @@ from marketing_intelligence.ingest import (
 )
 from marketing_intelligence.instagram import ingest_instagram_source
 from marketing_intelligence.normalize import NormalizedDocument
+from marketing_intelligence.payloads import write_document_payloads
 from marketing_intelligence.sources import (
     V1_SOURCES,
     get_enrichment_policy,
@@ -394,6 +399,11 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     plus an explicit `error` on failure; it bypasses enrichment and the
     unrecoverable-flag loop entirely — a caption is final evidence.
 
+    The RSS and sitemap lanes additionally persist the billed Firecrawl
+    envelope of every document whose winning enrichment leg was Firecrawl
+    (`payloads.write_document_payloads`, ADR-0013 side table): best-effort
+    after the upsert, so it never raises and never changes the result dict.
+
     Successful outcomes (and unknown-source errors) are recorded to
     `ingestion_runs` on a best-effort basis — recording never changes the
     result dict and never raises, so DB-free unit tests keep passing without
@@ -499,6 +509,20 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     # {inserted, skipped} shape match the old `upsert_task` call exactly.
     inserted, upsert_skipped = upsert_documents(docs)
     logger.info("upsert docs=%d inserted=%d skipped=%d", len(docs), inserted, upsert_skipped)
+    # Billed Firecrawl evidence: a document whose winning enrichment leg was
+    # Firecrawl carries its redacted v2 envelope on `firecrawl_payload`; store
+    # those beside the rows just upserted (ADR-0013 side table, same helper and
+    # post-upsert placement as the instagram lane). Best-effort only: an
+    # unknown URL or DB failure must never fail an Ingestion Run, and the
+    # result shape and the flag/enrich accounting below are untouched.
+    payload_pairs = [
+        (doc, payload) for doc in docs if (payload := firecrawl_payload_of(doc)) is not None
+    ]
+    if payload_pairs:
+        try:
+            write_document_payloads(payload_pairs)
+        except Exception as exc:
+            logger.warning("payload write failed docs=%d (%s)", len(payload_pairs), exc)
     # Terminal unrecoverable flags: the flag lane is an UPDATE keyed on the
     # article URL, so it runs after the upsert. Best-effort and never
     # blocking: an unknown URL or DB failure only logs.
