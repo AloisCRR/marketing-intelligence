@@ -8,7 +8,7 @@ deployments:
     work_pool:
       name: brain-pool
     schedules:
-      - cron: "0 5 * * *"
+      - cron: "0 5 * * 1"
         timezone: "America/Panama"
-        slug: "daily-5am-panama"
+        slug: "weekly-monday-5am-panama"
         active: true
