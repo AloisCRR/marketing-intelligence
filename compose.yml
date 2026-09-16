@@ -133,6 +133,7 @@ services:
       PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
       PREFECT_API_AUTH_STRING: ${PREFECT_API_AUTH_STRING:-}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
