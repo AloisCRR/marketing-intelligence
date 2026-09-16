@@ -635,6 +635,157 @@ def test_extract_empty_body_raises() -> None:
         )
 
 
+def test_extract_h1_only_article_stores_title() -> None:
+    """A hub-article page whose only headline is the visible <h1> stores.
+
+    Headless-CMS and challenge-adjacent shells skip every declared title
+    source; the first non-empty <h1> text is still a deterministic title, so
+    the document extracts instead of skipping as ``missing title``.
+    """
+    html = (
+        "<html><body><main><h1>Solo headline en H1</h1>"
+        "<p>" + "Cuerpo con señales suficientes para el extractor. " * 40 + "</p>"
+        "</main></body></html>"
+    )
+    doc = extract_article(
+        url="http://example.com/h1-only",
+        final_url="http://example.com/h1-only",
+        html=html,
+        source=MD,
+        language="es",
+        retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+    )
+    assert doc.title == "Solo headline en H1"
+    assert len(doc.content) > 500
+
+
+def test_extract_meta_headline_fallbacks() -> None:
+    """meta name=headline and itemprop=headline close the title chain."""
+    base = "http://example.com/meta-headline"
+    for attr in ("name", "itemprop"):
+        html = (
+            "<html><head>"
+            f'<meta {attr}="headline" content="Titular via meta {attr}">'
+            "</head><body><p>Cuerpo. </p></body></html>"
+        )
+        doc = extract_article(
+            url=base,
+            final_url=base,
+            html=html,
+            source=MD,
+            language="es",
+            retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        )
+        assert doc.title == f"Titular via meta {attr}"
+
+
+def test_provider_markdown_without_header_uses_first_h1() -> None:
+    """A header-less provider payload (scrape leg) keeps its own Markdown H1.
+
+    The reader leg carries a ``Title:`` header block; the Firecrawl scrape leg
+    emits plain Markdown whose first H1 is the only headline left.
+    """
+    url = "http://example.com/md-h1"
+    body = "# Salesforce bets CRM experience can give its AI an edge\n\n" + "Cuerpo. " * 200
+    doc = extract_article(
+        url=url,
+        final_url=url,
+        html=body,
+        source=MD,
+        language="es",
+        retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        markdown=True,
+    )
+    assert doc.title == "Salesforce bets CRM experience can give its AI an edge"
+
+    # The reader header block still outranks the body's own H1.
+    with_header = f"Title: Reader Title\n\nURL Source: {url}\n\nMarkdown Content:\n\n{body}"
+    doc = extract_article(
+        url=url,
+        final_url=url,
+        html=with_header,
+        source=MD,
+        language="es",
+        retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        markdown=True,
+    )
+    assert doc.title == "Reader Title"
+
+
+def test_challenge_payload_skips_with_challenge_cause() -> None:
+    """A block page served by any chain leg skips as an explicit challenge.
+
+    The martech.org Cloudflare wall reaches extraction through the reader /
+    scrape legs as a shell with no usable title sources; the skip must name
+    the block (marker + payload head) instead of a bare ``missing title``.
+    """
+
+    url = "http://example.com/blocked"
+    titleless_wall = (
+        "<html><body><div>Please verify you are human by completing the "
+        "captcha.</div><div></div></body></html>"
+    )
+    with pytest.raises(ArticleExtractError, match="challenge: article URL served a block page"):
+        extract_article(
+            url=url,
+            final_url=url,
+            html=titleless_wall,
+            source=MD,
+            language="es",
+            retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        )
+
+    # Real Cloudflare shape: <title>Just a moment...</title>, no body text —
+    # the title parses but the body is empty, so the challenge marker must
+    # surface on the empty-body skip too, not a bare cleaning cause.
+    titled_wall = (
+        "<html><head><title>Just a moment...</title></head><body><div></div></body></html>"
+    )
+    with pytest.raises(ArticleExtractError, match="challenge: article URL served a block page"):
+        extract_article(
+            url=url,
+            final_url=url,
+            html=titled_wall,
+            source=MD,
+            language="es",
+            retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        )
+
+    # Provider-Markdown wall (scrape leg mangled the shell): same cause.
+    markdown_wall = "Just a moment...\n\nEnable JavaScript and cookies to continue"
+    with pytest.raises(ArticleExtractError, match="challenge: article URL served a block page"):
+        extract_article(
+            url=url,
+            final_url=url,
+            html=markdown_wall,
+            source=MD,
+            language="es",
+            retrieved_at=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+            markdown=True,
+        )
+
+
+def test_fetch_extract_one_surfaces_challenge_cause() -> None:
+    """The per-URL skip cause carries the challenge marker end to end."""
+    from marketing_intelligence.discovery import ArticleJob, fetch_extract_one
+
+    job = ArticleJob(
+        loc="http://example.com/blocked",
+        source_label=MD,
+        language="es",
+        retrieved_at_iso=datetime(2026, 9, 15, 12, 0, tzinfo=UTC).isoformat(),
+    )
+
+    def fetch(url: str) -> tuple[str, bytes]:
+        return (url, b"Just a moment...\n\nEnable JavaScript and cookies to continue")
+
+    doc, cause = fetch_extract_one(job, fetch_one=fetch)
+    assert doc is None
+    assert cause is not None
+    assert "challenge: article URL served a block page" in cause
+    assert "marker" in cause
+
+
 def test_thin_body_is_kept_with_cause_not_bypassed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1624,6 +1775,7 @@ def test_batch_isolates_jing_failure(monkeypatch: pytest.MonkeyPatch, no_engine:
 
 MT = "MarTech"
 MT_HUB = "https://martech.org/"
+MT_PAGE2 = "https://martech.org/page/2/"
 MT_ROBOTS = "https://martech.org/robots.txt"
 MT_FEED = "https://martech.org/feed/"
 
@@ -1636,13 +1788,27 @@ MT_ARTICLES = (
     "https://martech.org/ai-agents-move-from-pilots-to-marketing-workflows/",
 )
 
+#: Article slugs recovered from the declared hub page 2 listing, in document
+#: order (same anchor shapes as page 1: one absolute, one relative). The
+#: stanza ships ``hub_pages=[page/2/]`` so a post that scrolls off the
+#: homepage keeps a second listing surface to be discovered from.
+MT_PAGE2_ARTICLES = (
+    "https://martech.org/zero-click-search-reshapes-content-strategy/",
+    "https://martech.org/customer-data-platforms-get-smaller-and-faster/",
+)
+
+#: The declared stanza's full planned set: hub page 1, then hub page 2.
+MT_PLAN_ARTICLES = (*MT_ARTICLES, *MT_PAGE2_ARTICLES)
+
 MT_TITLES = dict(
     zip(
-        MT_ARTICLES,
+        MT_PLAN_ARTICLES,
         (
             "Marketing Without Signals: How to Perform When the Data Disappears",
             "Identity Resolution Vendors Compared: 2026 Buyer's Guide",
             "AI Agents Move From Pilots to Marketing Workflows",
+            "Zero-Click Search Reshapes Content Strategy",
+            "Customer Data Platforms Get Smaller and Faster",
         ),
         strict=True,
     )
@@ -1668,8 +1834,9 @@ def _mt_fetch_map() -> dict[str, tuple[str, bytes]]:
     mapping: dict[str, tuple[str, bytes]] = {
         MT_ROBOTS: (MT_ROBOTS, b"User-agent: *\nDisallow:\n"),
         MT_HUB: (MT_HUB, _fixture("martech_hub.html")),
+        MT_PAGE2: (MT_PAGE2, _fixture("martech_hub_page2.html")),
     }
-    for url in MT_ARTICLES:
+    for url in MT_PLAN_ARTICLES:
         mapping[url] = (url, _mt_article_html(url))
     return mapping
 
@@ -1691,7 +1858,7 @@ def test_martech_hub_anchors_recover_articles_and_drop_site_noise() -> None:
     # broken exclude rule fails here.
     plan = plan_harvest(config, MT, "en", fetch=_make_fetch(_mt_fetch_map()), sleep=lambda _: None)
     planned = [job.loc for job in plan.jobs]
-    assert planned == list(MT_ARTICLES)
+    assert planned == list(MT_PLAN_ARTICLES)
     # Taxonomy/author/corporate anchors were matched then excluded; the site
     # root and bare archive indices carry no hyphen and never match at all.
     dropped = [url for url in links if url not in set(planned)]
@@ -1721,10 +1888,11 @@ def test_martech_plan_recovers_articles_without_a_sitemap_or_feed_fetch(
         fetch=fetch,
         sleep=lambda _: None,
     )
-    assert [job.loc for job in plan.jobs] == list(MT_ARTICLES)
+    assert [job.loc for job in plan.jobs] == list(MT_PLAN_ARTICLES)
     assert plan.causes == []
-    assert log[0] == MT_ROBOTS  # robots crawl-delay first, then the hub listing
+    assert log[0] == MT_ROBOTS  # robots crawl-delay first, then the hub listings
     assert log[1] == MT_HUB
+    assert log[2] == MT_PAGE2  # the declared second listing page is really read
     assert MT_FEED not in log  # the dead feed URL is never fetched in any lane
     assert not [url for url in log if url.endswith(".xml")]  # no sitemap traffic
 
@@ -1745,7 +1913,7 @@ def test_martech_harvest_one_bad_article_never_aborts(
     report = harvest_sitemap_source(
         get_retrieval_config(MT), MT, "en", fetch=fetch, sleep=lambda _: None
     )
-    assert [doc.url for doc in report.documents] == [MT_ARTICLES[0]]
+    assert [doc.url for doc in report.documents] == [MT_ARTICLES[0], *MT_PAGE2_ARTICLES]
     assert report.documents[0].source == MT
     assert report.documents[0].language == "en"
     assert report.skipped == 2
@@ -1783,8 +1951,10 @@ def test_martech_flow_takes_the_hub_lane_not_the_dead_feed(
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     result = flows.ingest_source_flow(source_name=MT)
-    assert result == {"inserted": 3, "skipped": 0}
-    assert [doc.url for doc in written] == list(MT_ARTICLES)
+    # The declared stanza ships hub_pages=[page/2/]: both hub listings plan,
+    # so the flow run covers page 1 plus the page 2 articles.
+    assert result == {"inserted": 5, "skipped": 0}
+    assert [doc.url for doc in written] == list(MT_PLAN_ARTICLES)
     assert {doc.source for doc in written} == {MT}
 
 
@@ -1806,8 +1976,9 @@ def _mt_reader_fetch_map() -> dict[str, tuple[str, bytes]]:
     mapping: dict[str, tuple[str, bytes]] = {
         MT_ROBOTS: (MT_ROBOTS, b"User-agent: *\nDisallow:\n"),
         MT_HUB: (MT_HUB, ProviderMarkdown(_fixture("martech_hub_reader.md"))),
+        MT_PAGE2: (MT_PAGE2, ProviderMarkdown(_fixture("martech_hub_reader_page2.md"))),
     }
-    for url in MT_ARTICLES:
+    for url in MT_PLAN_ARTICLES:
         mapping[url] = (url, ProviderMarkdown(_mt_reader_markdown(url, MT_TITLES[url])))
     return mapping
 
@@ -1834,10 +2005,11 @@ def test_hub_links_match_reader_markdown_payload() -> None:
 
 
 def test_martech_plan_recovers_articles_from_reader_markdown_hub() -> None:
-    """The walled hub's reader-leg Markdown still plans the article set."""
+    """The walled hub's reader-leg Markdown still plans the article set, both
+    listing pages included."""
     fetch = _make_fetch(_mt_reader_fetch_map())
     plan = plan_harvest(get_retrieval_config(MT), MT, "en", fetch=fetch, sleep=lambda _: None)
-    assert [job.loc for job in plan.jobs] == list(MT_ARTICLES)
+    assert [job.loc for job in plan.jobs] == list(MT_PLAN_ARTICLES)
     assert plan.causes == []
 
 
@@ -1903,7 +2075,7 @@ def test_martech_flow_ingests_when_every_fetch_rides_the_reader_leg(
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     result = flows.ingest_source_flow(source_name=MT)
-    assert result == {"inserted": 3, "skipped": 0}
-    assert [doc.url for doc in written] == list(MT_ARTICLES)
-    assert [doc.title for doc in written] == [MT_TITLES[url] for url in MT_ARTICLES]
+    assert result == {"inserted": 5, "skipped": 0}
+    assert [doc.url for doc in written] == list(MT_PLAN_ARTICLES)
+    assert [doc.title for doc in written] == [MT_TITLES[url] for url in MT_PLAN_ARTICLES]
     assert all("Markdown Content:" not in doc.content for doc in written)

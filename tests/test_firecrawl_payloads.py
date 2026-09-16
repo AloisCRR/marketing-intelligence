@@ -242,6 +242,46 @@ def test_chain_honors_bytes_only_patched_fetch_with_no_envelope(
     assert enrich.firecrawl_payload_of(payload) is None
 
 
+def test_chain_floors_firecrawl_timeout_at_module_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The reported martech.org scrape: the chain's 15s article budget used to
+    # become Firecrawl's 10s request body budget, starving a page that needed
+    # slightly over 10s. The paid leg keeps its own budget (the module default);
+    # the reading legs keep the caller's.
+    seen: dict[str, list[int]] = {"primary": [], "reader": [], "firecrawl": []}
+
+    def _primary(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen["primary"].append(timeout)
+        raise enrich.FetchFailed("primary miss")
+
+    def _reader(url: str, timeout: int = 30) -> tuple[str, bytes]:
+        seen["reader"].append(timeout)
+        raise enrich.FetchFailed("reader down")
+
+    def _fake_with_payload(url: str, timeout: int = 30) -> tuple[bytes, dict[str, Any]]:
+        seen["firecrawl"].append(timeout)
+        return (BODY_MARKDOWN.encode("utf-8"), ENVELOPE)
+
+    monkeypatch.setattr(firecrawl, "fetch_via_firecrawl_with_payload", _fake_with_payload)
+
+    final_url, payload = enrich.article_content_chain(
+        URL, primary=_primary, reader=_reader, timeout=15
+    )
+
+    assert final_url == URL
+    assert isinstance(payload, ProviderMarkdown)
+    assert payload == BODY_MARKDOWN.encode("utf-8")
+    assert seen["primary"] == [15]
+    assert seen["reader"] == [15]
+    assert seen["firecrawl"] == [firecrawl.FIRECRAWL_TIMEOUT]
+    assert seen["firecrawl"][0] >= 30
+
+    enrich.article_content_chain(URL, primary=_primary, reader=_reader, timeout=60)
+
+    assert seen["firecrawl"] == [firecrawl.FIRECRAWL_TIMEOUT, 60]
+
+
 # --- propagation onto the returned document -----------------------------------
 
 

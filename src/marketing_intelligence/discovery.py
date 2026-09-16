@@ -72,8 +72,9 @@ from marketing_intelligence.sources import (
 )
 
 #: Explicit timeout (s) for article/discovery fetches (opt 4 split: 10s feeds
-#: in marketing_intelligence.ingest, 15s articles here). Every lane of the
-#: article chain honors the caller's timeout.
+#: in marketing_intelligence.ingest, 15s articles here). The primary and reader
+#: lanes honor the caller's timeout; the shared chain floors its paid Firecrawl
+#: leg at that module's own default instead.
 DEFAULT_TIMEOUT = 15
 
 #: Upper bound (s) on the effective pacing gap. Robots crawl-delay values above
@@ -277,21 +278,98 @@ def _hub_challenge_detail(detail: str) -> str | None:
     return f"challenge: hub URL served a block page (marker {marker!r}; {detail})"
 
 
-def _hub_payload_challenge_detail(payload: str) -> str | None:
+#: Hub-payload head scanned for block-page evidence. A served interstitial
+#: names its guard in the head (title or first body block); the whole payload
+#: is deliberately not scanned, so an article slug that merely mentions a
+#: marker word cannot turn a real listing into a `challenge` cause.
+_HUB_CHALLENGE_SCAN_CHARS = 4096
+
+
+def _hub_payload_challenge_detail(payload: str, link_pattern: str = "") -> str | None:
     """``challenge`` cause when a served hub payload is not a usable listing.
 
-    A payload with neither an anchor nor a Markdown link *and* no HTML markup
-    at all is a block/interstitial page the reader leg mangled into Markdown
-    (a real listing, HTML or provider Markdown, always carries links). Such a
-    payload would otherwise yield zero links silently; it is recorded as an
-    explicit challenge instead. Never raises.
+    Block evidence in the payload head — the shared
+    :data:`marketing_intelligence.enrich._CHALLENGE_KEYWORDS` family through
+    :func:`_challenge_marker`, never a second copy — decides first, because a
+    wall need not be link-free: a consent/JS interstitial serves unrelated
+    anchors and real HTML markup, so excusing it as an empty listing is exactly
+    how a blocked hub page silently yields zero URLs. A payload with neither an
+    anchor nor a Markdown link *and* no HTML markup at all is a
+    block/interstitial page the reader leg mangled into Markdown (a real
+    listing, HTML or provider Markdown, always carries links). `link_pattern`
+    names the pattern no link matched, so the cause says what was expected.
+    Only the zero-link path calls this, so a payload that really is a listing
+    never reaches it. Never raises.
     """
+    marker = _challenge_marker(payload[:_HUB_CHALLENGE_SCAN_CHARS])
+    if marker is not None:
+        return (
+            "challenge: hub URL served a block page "
+            f"(marker {marker!r}; no links matched {link_pattern!r})"
+        )
     if _ANCHOR_HREF_RE.search(payload) or _MD_LINK_RE.search(payload):
         return None  # link-bearing listing: never a block page
     if re.search(r"<[A-Za-z!/]", payload):
         return None  # HTML markup present: an empty listing, not a wall
     snippet = payload.strip()[:120]
     return f"challenge: hub URL served a non-HTML payload (starts {snippet!r})"
+
+
+#: Marker of the informational zero-link hub cause (:func:`_hub_zero_link_detail`).
+#: A hub page that served no pattern-matching link is recorded explicitly so a
+#: listing-less hub can never look like "nothing was declared"; unlike a
+#: ``challenge`` cause it is not evidence of a block, so :func:`plan_harvest`
+#: drops it once the lane has URLs from elsewhere (the sitemap lane or another
+#: hub page) and keeps it on a zero-URL lane, where it is the whole detail.
+_HUB_ZERO_LINK_MARKER = "hub listing served no links matching link_pattern"
+
+
+def _hub_zero_link_detail(html: str, link_pattern: str) -> str:
+    """Informational cause for a hub page serving no `link_pattern` link.
+
+    Names the pattern and the served anchor/Markdown-link counts, so the
+    cause is checkable against the payload. Never raises.
+    """
+    return (
+        f"{_HUB_ZERO_LINK_MARKER} {link_pattern!r} "
+        f"(anchors {len(_ANCHOR_HREF_RE.findall(html))}, "
+        f"markdown links {len(_MD_LINK_RE.findall(html))})"
+    )
+
+
+def _is_hub_zero_link_cause(cause: str) -> bool:
+    """True only for the informational zero-link hub cause.
+
+    A ``challenge``-marked cause is block evidence, never listing noise, so it
+    is never matched even when its wording mentions the unmatched pattern.
+    """
+    return _HUB_ZERO_LINK_MARKER in cause and "challenge:" not in cause
+
+
+#: Article-payload head scanned for block-page evidence at an extract skip:
+#: a challenge shell names its guard in the head (its ``<title>``/first text
+#: block), while a real article body can legitimately mention a marker word
+#: anywhere else. The scan runs only at a skip site, so the payload is already
+#: unusable and only the cause wording is at stake.
+_ARTICLE_CHALLENGE_SCAN_CHARS = 4096
+
+
+def _article_challenge_detail(payload: str) -> str | None:
+    """``challenge`` cause when an article payload that yielded no document is
+    a block page; else None.
+
+    Called only where extraction already skips (missing title, empty body):
+    the shared :data:`marketing_intelligence.enrich._CHALLENGE_KEYWORDS`
+    family through :func:`_challenge_marker` decides — never a second copy —
+    so a Cloudflare/DataDome shell served by any chain leg skips as an
+    explicit ``challenge`` instead of a bare ``missing title``, and a payload
+    that names no guard keeps the plain unparseable cause. Never raises.
+    """
+    marker = _challenge_marker(payload[:_ARTICLE_CHALLENGE_SCAN_CHARS])
+    if marker is None:
+        return None
+    snippet = " ".join(payload.strip()[:120].split())
+    return f"challenge: article URL served a block page (marker {marker!r}; starts {snippet!r})"
 
 
 def _normalize_exclude(raw: Any) -> list[str]:
@@ -653,8 +731,14 @@ def discover_hub_urls(
     failure whose detail carries block evidence from the shared challenge
     family — or a served payload that is neither HTML nor link-bearing
     Markdown, i.e. an interstitial the reader leg mangled — is recorded as an
-    explicit ``challenge`` cause naming the hub URL, never as a bare status.
-    Hub URLs carry no lastmod (undated → sorted last downstream).
+    explicit ``challenge`` cause naming the hub URL, never as a bare status. A
+    hub page that serves no link matching `link_pattern` is recorded just as
+    explicitly (block evidence first, then the served anchor/Markdown-link
+    counts), so a listing-less hub page can never look like "nothing was
+    declared". That zero-link record is informational, not block evidence:
+    :func:`plan_harvest` drops it once the lane has URLs from elsewhere, and
+    keeps it — with every other cause — when discovery yields none. Hub URLs
+    carry no lastmod (undated → sorted last downstream).
     """
     collected: list[SitemapUrl] = []
     errors: list[str] = []
@@ -678,9 +762,19 @@ def discover_hub_urls(
             errors.append(f"{hub_url}: anchor extraction failed ({exc})")
             continue
         if not links:
-            mangled = _hub_payload_challenge_detail(html)
-            if mangled is not None:
-                errors.append(f"{hub_url}: {mangled}")
+            # A hub page that yields no matching links is never silent: the
+            # cause names this hub URL, so the zero-URL DiscoveryError can
+            # never fall back to a bare "no sitemap URLs declared" for a lane
+            # that does not declare sitemaps at all. The cause is
+            # informational (no block evidence), so a lane that does have
+            # URLs from elsewhere drops it after the merge in plan_harvest.
+            challenge_detail = _hub_payload_challenge_detail(html, link_pattern)
+            detail = (
+                challenge_detail
+                if challenge_detail is not None
+                else _hub_zero_link_detail(html, link_pattern)
+            )
+            errors.append(f"{hub_url}: {detail}")
         for link in links:
             key = canonicalize_url(link)
             if key in seen:
@@ -756,6 +850,16 @@ _MD_HEADER_RE = re.compile(
 )
 _MD_HEADER_START_RE = re.compile(r"[ \t\r\n]*Title[ \t]*:", re.IGNORECASE)
 _MD_CONTENT_MARKER = "Markdown Content:"
+
+#: First HTML ``<h1>`` element (title fallback). Inner markup is stripped at
+#: the extract site, so ``<h1><a>Headline</a></h1>`` still yields its text.
+_H1_RE = re.compile(r"<h1\b[^>]*>(.*?)</h1\s*>", re.IGNORECASE | re.DOTALL)
+
+#: First Markdown H1 line (``# Headline``): the only title source left in a
+#: provider-Markdown payload that carries no reader header block (the
+#: Firecrawl scrape leg emits plain Markdown). A single ``#`` plus whitespace
+#: keeps H2+ and ``#``-prefixed code comments out.
+_MD_H1_RE = re.compile(r"^[ \t]{0,3}#[ \t]+([^\r\n]+?)[ \t]*$", re.MULTILINE)
 
 
 def _tag_attr(tag: str, name: str) -> str | None:
@@ -931,7 +1035,16 @@ def extract_json_ld_body(html: str) -> str | None:
 
 
 def extract_title(html: str) -> str | None:
-    """Article title: og:title, else twitter:title, else JSON-LD headline, else <title>."""
+    """Article title: og:title, else twitter:title, else JSON-LD headline, else
+    <title>, else the first non-empty <h1> text, else meta name=headline /
+    itemprop=headline.
+
+    The last two fallbacks keep headless-CMS pages storable when every
+    declared source is absent: the visible <h1> headline and the schema
+    ``headline`` meta are still deterministic title sources, so a page that
+    renders fine never skips as ``missing title``. Each fallback is capped to
+    the first non-empty normalized string and never raises on malformed HTML.
+    """
     for attr, value in (
         ("property", "og:title"),
         ("name", "twitter:title"),
@@ -948,6 +1061,18 @@ def extract_title(html: str) -> str | None:
         title = normalize_text(_html.unescape(_TAG_RE.sub(" ", match.group(1))))
         if title:
             return title
+    try:
+        h1 = _H1_RE.search(html or "")
+    except Exception:  # defensive: garbled markup is simply title-less
+        h1 = None
+    if h1:
+        title = normalize_text(_html.unescape(_TAG_RE.sub(" ", h1.group(1))))
+        if title:
+            return title
+    for attr in ("name", "itemprop"):
+        found = _meta_content(html, attr=attr, value="headline")
+        if found:
+            return found
     return None
 
 
@@ -1017,6 +1142,23 @@ def _markdown_header(text: str, name: str) -> str | None:
     except Exception:  # defensive: garbled headers are simply absent
         return None
     return None
+
+
+def _markdown_h1_title(text: str) -> str | None:
+    """First Markdown H1 line (``# Headline``) as a title; None when absent.
+
+    For a provider-Markdown payload that carries no reader header block (the
+    Firecrawl scrape leg emits plain Markdown), the article's own H1 is the
+    only headline left. Capped to the first non-empty normalized string;
+    never raises.
+    """
+    try:
+        match = _MD_H1_RE.search(text or "")
+    except Exception:  # defensive: garbled payloads are simply title-less
+        return None
+    if not match:
+        return None
+    return normalize_text(_html.unescape(match.group(1))) or None
 
 
 def _markdown_body(text: str) -> str:
@@ -1096,7 +1238,10 @@ def extract_article(
     instead of being run back through the HTML cleaner, and its reader
     header block (``Title:`` / ``Published Time:`` / ``Author:`` before
     ``Markdown Content:``) supplies the title, timestamp, and author the
-    HTML meta tags would have carried.
+    HTML meta tags would have carried; a header-less provider payload
+    (scrape leg) falls back to its first Markdown H1. The title chain ends
+    with the first non-empty <h1> text and meta name/itemprop headline, so
+    a page whose only headline is visible markup still stores.
     Thin bodies are still returned — the thin threshold governs keep-vs-flag
     downstream (enrichment-keep + Extraction Flag path), never circumvention.
 
@@ -1111,19 +1256,30 @@ def extract_article(
     wrong article), tz-aware timestamps, language, content hash over stored
     text. Raises :class:`ArticleExtractError` when the page holds no usable
     document (missing title, empty body, ID-reused) — the caller records an
-    explicit per-document skip.
+    explicit per-document skip, marked ``challenge: article URL served a
+    block page`` when the payload head carries block evidence (see
+    :func:`_article_challenge_detail`).
     """
     if extractor not in EXTRACTOR_FAMILIES:
         extractor = "generic"
     title = extract_title(html)
     if not title and markdown:
         # Reader-leg Markdown carries no HTML head; its header block does.
-        title = _markdown_header(html, "Title")
+        # A header-less provider payload (scrape leg) keeps its own H1.
+        title = _markdown_header(html, "Title") or _markdown_h1_title(html)
     if not title:
-        raise ArticleExtractError(url, "unparseable article: missing title")
+        # A block page served by any chain leg skips as an explicit
+        # ``challenge`` (block evidence in the payload head), never a bare
+        # missing-title: the martech.org Cloudflare wall lands here.
+        raise ArticleExtractError(
+            url, _article_challenge_detail(html) or "unparseable article: missing title"
+        )
     body = _extract_body(html, final_url, url, extractor, markdown)
     if not body.strip():
-        raise ArticleExtractError(url, "unparseable article body: empty after cleaning")
+        raise ArticleExtractError(
+            url,
+            _article_challenge_detail(html) or "unparseable article body: empty after cleaning",
+        )
     published_at = fallback_published
     raw_published = extract_published_raw(html)
     if not raw_published and markdown:
@@ -1341,7 +1497,11 @@ def plan_harvest(
     bodies, whose shared chain keeps its reader/scrape fallback. A
     block/challenge payload on a sitemap URL is an explicit ``challenge``
     cause, never an XML-parse error; a hub whose fetch detail or served
-    payload carries block evidence reads the same way. Excluded sitemap
+    payload carries block evidence reads the same way. A hub page that merely
+    served no pattern-matching link is recorded too (see
+    :func:`discover_hub_urls`), but that informational cause is dropped after
+    the hub merge once discovery found URLs elsewhere — challenge causes are
+    never dropped, and a zero-URL lane keeps every cause. Excluded sitemap
     children are still traversed while their own loc's year-month is inside
     the freshness window (:func:`_excluded_child_is_fresh`), so the newest
     archive children do not drop the current month's live articles. `now`
@@ -1437,15 +1597,42 @@ def plan_harvest(
             fetch_body=_fetch_body,
             link_pattern=link_pattern,
         )
-        errors.extend(hub_errors)
         known = {canonicalize_url(entry.loc) for entry in discovered}
+        hub_kept = 0
         for entry in hub_found:
             if _path_excluded(_path_of(entry.loc), excludes):
                 continue
+            hub_kept += 1
             if canonicalize_url(entry.loc) not in known:
                 known.add(canonicalize_url(entry.loc))
                 discovered.append(entry)
+        if hub_found and not hub_kept:
+            # The exclude list is the one filter applied after extraction, so
+            # an over-broad stanza reads exactly like an empty listing: name it
+            # instead, keeping the zero-URL cause explicit.
+            errors.append(
+                f"{hub_url}: hub listing yielded no usable URLs: "
+                f"all {len(hub_found)} matched sitemap_exclude"
+            )
         discovered = discovered[:max_urls]
+        if discovered:
+            # A hub page that served no matching link is listing noise once
+            # the lane has URLs from elsewhere (the sitemap lane, another hub
+            # page): the harvest is not blocked, so its informational cause is
+            # dropped. Challenge causes always survive — block evidence is
+            # never listing noise — and a zero-URL lane keeps every cause, so
+            # the DiscoveryError detail stays explicit.
+            hub_errors = [cause for cause in hub_errors if not _is_hub_zero_link_cause(cause)]
+        errors.extend(hub_errors)
+    elif retrieval_type in ("sitemap+hub", "hub", "url-set+hub") and not discovered:
+        # A hub lane that declares no hub/anchor pattern can never discover:
+        # say which key is missing instead of blaming a sitemap list the lane
+        # does not have.
+        missing = "link_pattern" if hub_url else "hub"
+        errors.append(
+            f"hub discovery is unusable: no {missing} declared, "
+            "so no listing anchors can be selected"
+        )
     if not discovered:
         detail = "; ".join(errors) if errors else "no sitemap URLs declared"
         raise DiscoveryError(f"sitemap discovery for {source_label} yielded no URLs: {detail}")

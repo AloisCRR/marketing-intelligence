@@ -189,7 +189,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "hub", "policy": "impersonated-feed", "extractor": "generic", "hub": "https://martech.org/", "link_pattern": "-", "sitemap_exclude": ["/topic/", "/author/", "/page/", "/conference/", "/about-martech-org/", "/intelligence-reports/", "/white-papers/", "/martech-topics/", "/martechbot", "/privacy-policy/", "/terms-of-service/", "/working-with-martech-content-team/", "/the-latest-ai-powered-martech-news-and-releases/"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {"type": "hub", "policy": "impersonated-feed", "extractor": "generic", "hub": "https://martech.org/", "link_pattern": "-", "hub_pages": ["https://martech.org/page/2/"], "sitemap_exclude": ["/topic/", "/author/", "/page/", "/conference/", "/about-martech-org/", "/intelligence-reports/", "/white-papers/", "/martech-topics/", "/martechbot", "/privacy-policy/", "/terms-of-service/", "/working-with-martech-content-team/", "/the-latest-ai-powered-martech-news-and-releases/"], "pacing_ms": 1000, "max_urls": 50},
     "enrichment": {"threshold": 500, "mode": "auto"},
     "last_verified": "2026-09-04",
     "sample_article_url": "https://martech.org/marketing-without-signals-how-to-perform-when-the-data-disappears/",
@@ -222,7 +222,7 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://propmark.com.br/wp-sitemap.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://propmark.com.br/wp-sitemap.xml"], "sitemap_exclude": ["/tag/", "/category/"], "pacing_ms": 1000, "max_urls": 50},
     "last_verified": "2026-09-06",
     "sample_article_url": "https://propmark.com.br/anunciantes/mary-kay-leva-as-ruas-brasileiras-acao-global-sobre-beleza-compartilhada/",
     "sample_article_date": "2026-09-04"

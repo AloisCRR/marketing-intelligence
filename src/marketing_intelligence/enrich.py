@@ -34,7 +34,10 @@ imported lazily from :mod:`marketing_intelligence.firecrawl`; Bearer key from
 skipped cause). The with-payload variant is preferred so a scrape win carries
 its redacted billed envelope beside the Markdown for the flow to persist; a
 monkeypatched bytes-only ``fetch_via_firecrawl`` (the historical test seam)
-stands in as the whole leg. Enrichment enters the chain only on a primary-miss
+stands in as the whole leg. The chain `timeout` sizes the primary and reader
+legs only: the paid leg is floored at ``firecrawl.FIRECRAWL_TIMEOUT``, so the
+15s article budget can never shrink the scrape's own request body budget below
+the latency it is billed for. Enrichment enters the chain only on a primary-miss
 signal (discovery walks it ungated) and thin-checks each provider payload;
 provider Markdown is stored as-is — never run back through the HTML cleaner.
 Any fallback failure raises a typed error that chains every prior cause through
@@ -634,6 +637,10 @@ def article_content_chain(
     monkeypatched ``firecrawl.fetch_via_firecrawl`` (the historical bytes-only
     seam) or ``firecrawl.fetch_via_firecrawl_with_payload`` stands in for it,
     the latter preferred so a stubbed win can still carry an envelope.
+    `timeout` sizes the primary and reader legs only: the paid leg is floored
+    at the module's ``FIRECRAWL_TIMEOUT``, so a caller's article budget (15s,
+    sized for the cheap reading legs) can never shrink the scrape's own body
+    budget below the latency it is billed for.
 
     Provider payloads come back tagged :class:`ProviderMarkdown`, so the
     extract site stores them as-is instead of re-cleaning. A Firecrawl win
@@ -659,7 +666,18 @@ def article_content_chain(
         reader_detail = "delivered no substantive text"
 
     try:
-        payload, envelope = _firecrawl_leg(url, timeout)
+        # Lazy import (no cycle; the module reads its key per call). The chain
+        # timeout sizes the cheap reading legs; Firecrawl's client timeout and
+        # the request body budget derived from it (``_body_timeout_ms``: 5s
+        # below the client) are sized for one cloud scrape. Handing the raw
+        # chain timeout to the paid leg shrank that body budget under the
+        # scrape's real latency (15s -> 10s body), so the last leg is floored
+        # at the module default and never narrowed by a caller budget that
+        # belongs to the primary/reader legs.
+        from marketing_intelligence import firecrawl
+
+        firecrawl_timeout = max(timeout, firecrawl.FIRECRAWL_TIMEOUT)
+        payload, envelope = _firecrawl_leg(url, firecrawl_timeout)
     except Exception as exc:  # FirecrawlFailed: missing key, transport, HTTP, payload
         firecrawl_detail = _leg_cause(exc)
     else:

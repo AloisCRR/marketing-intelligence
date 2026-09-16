@@ -39,15 +39,18 @@ CURATED = (
 
 #: Ticket 27: MarTech's curated retrieval stanza. `link_pattern` is the
 #: hyphen carried by martech.org's root-level article slugs; the site root
-#: ("/") and bare archive indices ("/page/2/") carry no hyphen, so they never
-#: match, while the taxonomy/author/conference families and the corporate
-#: pages are dropped by `sitemap_exclude` (honored for hub anchors too).
+#: ("/") carries no hyphen, so it never matches, while the taxonomy/author/
+#: conference families and the corporate pages are dropped by
+#: `sitemap_exclude` (honored for hub anchors too). `hub_pages` carries the
+#: second listing page: a post that fails and then scrolls off the homepage
+#: stays discoverable from page 2 instead of never being retried.
 MARTECH_HUB_STANZA: dict[str, Any] = {
     "type": "hub",
     "policy": "impersonated-feed",
     "extractor": "generic",
     "hub": "https://martech.org/",
     "link_pattern": "-",
+    "hub_pages": ["https://martech.org/page/2/"],
     "sitemap_exclude": [
         "/topic/",
         "/author/",
@@ -710,12 +713,14 @@ def test_martech_retrieval_config_is_the_hub_lane() -> None:
     assert cfg == {
         **MARTECH_HUB_STANZA,
         "sitemaps": [],
-        "hub_pages": [],
         "sitemap_pattern": None,
         "id_guard": False,
     }
     assert cfg["type"] == "hub"
     assert cfg["sitemaps"] == []  # nothing rides the impersonated-only sitemap leg
+    # The widened discovery window: exactly one extra listing page, so a URL
+    # that scrolls off the homepage is still planned on a later run.
+    assert cfg["hub_pages"] == ["https://martech.org/page/2/"]
     assert cfg["policy"] == "impersonated-feed"
     assert get_retrieval_policy("MarTech")["policy"] == "impersonated-feed"
 
