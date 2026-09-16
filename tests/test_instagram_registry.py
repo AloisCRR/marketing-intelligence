@@ -6,6 +6,8 @@ Observable behavior (not privates):
   (never the RSS/impersonated-feed fallback)
 - the four account keys survive ``_validated_extras`` and reach
   ``get_retrieval_config`` with their declared v1 defaults
+- ``image_text: extract`` (ADR-0014) survives only on an ``instagram``
+  stanza; every other stanza type drops it like an invalid value
 - enrichment is bypassed (``force_off``): captions are final
 - the deterministic uuid5 id and the ``SEED_SOURCES`` row agree, and the name
   is in the V1 scope
@@ -54,6 +56,20 @@ _SECRET_RE = re.compile(r"token|secret|api[_-]?key|password|bearer|credential", 
 
 def _entries(path: Path) -> dict[str, dict[str, Any]]:
     return {e["source_name"]: e for e in json.loads(path.read_text(encoding="utf-8"))}
+
+
+def _staged_stanza(monkeypatch: pytest.MonkeyPatch, name: str, stanza: dict[str, Any]) -> None:
+    """Stage `stanza` as `name`'s retrieval stanza; both registry files untouched."""
+
+    def fake_get_source(source_name: str) -> dict[str, Any]:
+        return {
+            "name": source_name,
+            "cadence": "Daily",
+            "raw": {},
+            "retrieval": dict(stanza) if source_name == name else None,
+        }
+
+    monkeypatch.setattr(sources, "get_source", fake_get_source)
 
 
 # --- curated stanza + registry resolution -------------------------------------
@@ -148,6 +164,50 @@ def test_invalid_extras_drop_and_config_fills_lane_defaults(
     assert config["hashtag_filter"] is None
     assert config["content_mode"] == "caption_first"
     assert config["image_text"] == "ignore"
+
+
+def test_image_text_extract_reaches_the_instagram_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0014 opt-in: the lane switches `dataDetailLevel` on this exact value."""
+    _staged_stanza(
+        monkeypatch,
+        IG,
+        {"type": "instagram", "policy": "apify-premium", "image_text": "extract"},
+    )
+    assert sources.get_retrieval_policy(IG)["image_text"] == "extract"
+    config = sources.get_retrieval_config(IG)
+    assert config["image_text"] == "extract"
+    assert config["type"] == "instagram"
+
+
+def test_image_text_extract_drops_on_an_rss_stanza(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-Instagram stanzas drop it like any invalid value; shape is untouched."""
+    _staged_stanza(
+        monkeypatch,
+        "Staged Feed",
+        {"type": "rss", "policy": "impersonated-feed", "image_text": "extract"},
+    )
+    assert sources.get_retrieval_policy("Staged Feed") == {
+        "type": "rss",
+        "policy": "impersonated-feed",
+    }
+    dropped = sources.get_retrieval_config("Staged Feed")
+    assert "image_text" not in dropped
+    assert "content_mode" not in dropped
+    _staged_stanza(monkeypatch, "Staged Feed", {"type": "rss", "policy": "impersonated-feed"})
+    assert dropped == sources.get_retrieval_config("Staged Feed")
+
+
+def test_undeclared_image_text_still_defaults_to_ignore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _staged_stanza(monkeypatch, IG, {"type": "instagram", "policy": "apify-premium"})
+    config = sources.get_retrieval_config(IG)
+    assert config["image_text"] == "ignore"
+    assert config["content_mode"] == "caption_first"
 
 
 def test_enrichment_is_bypassed_for_the_instagram_lane() -> None:

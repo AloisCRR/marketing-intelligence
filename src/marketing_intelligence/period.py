@@ -32,6 +32,14 @@ PANAMA_NAME = "America/Panama"
 
 DEFAULT_LIMIT = 50
 
+# `has_image_text` is presence only: True when the Document has at least one
+# frame whose vision-read text is real text. Frames the vision lane found no
+# text in are stored with the `image_text.NO_TEXT` sentinel (ADR-0014), so a
+# text-free carousel reports False rather than "the lane ran". The sentinel is
+# inlined as a literal below — this lane must not import the vision module
+# (which pulls httpx) — and `tests/test_image_text_retrieval.py` pins it to
+# `image_text.NO_TEXT`, so a changed sentinel cannot leave this predicate
+# matching nothing.
 _PERIOD_SELECT = """\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author,
@@ -42,7 +50,13 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        imp.reporter AS importance_reporter,
        imp.created_at AS importance_updated_at,
        tps.topics AS topics,
-       d.content"""
+       d.content,
+       EXISTS (
+           SELECT 1
+             FROM document_image_texts it
+            WHERE it.document_id = d.id
+              AND it.image_text <> 'NO_TEXT'
+       ) AS has_image_text"""
 
 _PERIOD_FROM = f"""\
   FROM documents d
@@ -126,7 +140,7 @@ def _bundle_sql(*, where: str, importance_first: bool, per_source_limit: int | N
         "SELECT title, url, canonical_url, source, published_at, author,\n"
         "       flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by,\n"
         "       importance_score, importance_rationale, importance_reporter,\n"
-        "       importance_updated_at, topics, content\n"
+        "       importance_updated_at, topics, content, has_image_text\n"
         "  FROM (\n"
         f"{_PERIOD_SELECT},\n"
         "       ROW_NUMBER() OVER (\n"
@@ -253,9 +267,12 @@ def get_period_context(
     (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
     read_by`` — ``None`` when unread), the latest Importance annotation
     (``importance_score, importance_rationale, importance_reporter,
-    importance_updated_at`` — ``None`` when unannotated), and ``topics`` —
+    importance_updated_at`` — ``None`` when unannotated), ``topics`` —
     the Document's effective canonical Topic slugs (sorted, ``[]`` when
-    unannotated). No empty analytics placeholders are emitted.
+    unannotated), and ``has_image_text`` (True when the Document has stored
+    frame image text from the vision lane, ADR-0014; frames the model found
+    no text in store the ``NO_TEXT`` sentinel and do not count). No empty
+    analytics placeholders are emitted.
 
     Raises:
         ValueError: invalid ``limit``, invalid ``per_source_limit`` (non-bool
@@ -332,12 +349,13 @@ def get_period_context(
             importance_updated_at = row.get("importance_updated_at")
             topics = row.get("topics")
             content = row.get("content")
+            has_image_text = row.get("has_image_text")
         else:
             # Tuple rows predate the read annotation (10 cols); 12-col rows
             # carry read_at/read_by; the current SELECT appends the 4
-            # importance columns at [12..15], the topic array at [16] and the
-            # raw body at [17] (used only for the read-time cap). All shapes
-            # are accepted.
+            # importance columns at [12..15], the topic array at [16], the
+            # raw body at [17] (used only for the read-time cap) and the
+            # `has_image_text` presence flag at [18]. All shapes are accepted.
             items = tuple(row)
             (
                 title,
@@ -359,6 +377,7 @@ def get_period_context(
             importance_updated_at = items[15] if len(items) > 15 else None
             topics = items[16] if len(items) > 16 else None
             content = items[17] if len(items) > 17 else None
+            has_image_text = items[18] if len(items) > 18 else None
         articles.append(
             {
                 "title": title,
@@ -382,6 +401,7 @@ def get_period_context(
                 "importance_reporter": importance_reporter,
                 "importance_updated_at": _iso_tz_aware(importance_updated_at),
                 "topics": _topics_list(topics),
+                "has_image_text": bool(has_image_text),
             }
         )
     return {

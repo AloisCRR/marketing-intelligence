@@ -2,7 +2,9 @@
 
 Domain contract (stable): ``search_articles(keyword, limit)`` returns a list
 of dicts with keys ``title, url, canonical_url, source, published_at,
-author, snippet`` — no raw SQL exposure beyond this function.
+author, snippet`` plus the Extraction Flag / Read State / Importance / Topic
+annotations and ``has_image_text`` (ADR-0014 vision presence) — no raw SQL
+exposure beyond this function.
 """
 
 from __future__ import annotations
@@ -23,6 +25,14 @@ except Exception:  # pragma: no cover - defensive fallback when absent
 
 from marketing_intelligence import importance as _importance
 
+# `has_image_text` is presence only: True when the Document has at least one
+# frame whose vision-read text is real text. Frames the vision lane found no
+# text in are stored with the `image_text.NO_TEXT` sentinel (ADR-0014), so a
+# text-free carousel reports False rather than "the lane ran". The sentinel is
+# inlined as a literal below — this lane must not import the vision module
+# (which pulls httpx) — and `tests/test_image_text_retrieval.py` pins it to
+# `image_text.NO_TEXT`, so a changed sentinel cannot leave this predicate
+# matching nothing.
 _SEARCH_SELECT = f"""\
 SELECT d.title, d.url, d.canonical_url, s.name AS source,
        d.published_at, d.author, d.content,
@@ -32,7 +42,13 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
        imp.rationale AS importance_rationale,
        imp.reporter AS importance_reporter,
        imp.created_at AS importance_updated_at,
-       tps.topics AS topics
+       tps.topics AS topics,
+       EXISTS (
+           SELECT 1
+             FROM document_image_texts it
+            WHERE it.document_id = d.id
+              AND it.image_text <> 'NO_TEXT'
+       ) AS has_image_text
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
   LEFT JOIN LATERAL (
@@ -109,6 +125,7 @@ _RESULT_KEYS = (
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "has_image_text",
 )
 
 
@@ -176,11 +193,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         importance_reporter = row.get("importance_reporter")
         importance_updated_at = row.get("importance_updated_at")
         topics = row.get("topics")
+        has_image_text = row.get("has_image_text")
     else:
         # Tuple rows predate the read annotation (11 cols); newer rows carry
         # read_at/read_by (13 cols); current rows append the 4 importance
-        # columns (17 cols) and, after them, the topic array (18 cols). All
-        # shapes are accepted.
+        # columns (17 cols), then the topic array (18 cols) and, after it, the
+        # `has_image_text` presence flag (19 cols). All shapes are accepted.
         items = tuple(row)
         (
             title,
@@ -202,6 +220,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         importance_reporter = items[15] if len(items) > 15 else None
         importance_updated_at = items[16] if len(items) > 16 else None
         topics = items[17] if len(items) > 17 else None
+        has_image_text = items[18] if len(items) > 18 else None
     return {
         "title": title,
         "url": url,
@@ -222,6 +241,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "importance_reporter": importance_reporter,
         "importance_updated_at": importance_updated_at,
         "topics": _topics_list(topics),
+        "has_image_text": bool(has_image_text),
     }
 
 
@@ -298,7 +318,10 @@ def search_articles(
         Importance annotation (``importance_score, importance_rationale,
         importance_reporter, importance_updated_at`` — ``None`` when
         unannotated), and ``topics`` — the Document's effective canonical
-        Topic slugs (sorted, ``[]`` when unannotated). ``published_at``
+        Topic slugs (sorted, ``[]`` when unannotated), and ``has_image_text``
+        — True when the Document has stored frame image text from the vision
+        lane (ADR-0014; frames the model found no text in store the
+        ``NO_TEXT`` sentinel and do not count). ``published_at``
         is an isoformat tz-aware string; ``author`` may be ``None``;
         ``snippet`` is a content excerpt around the match. Empty/blank
         keyword returns ``[]``.

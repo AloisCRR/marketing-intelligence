@@ -158,8 +158,8 @@ def search_articles(
             needs at least one of them.
 
     Returns:
-        List of article dicts (19 keys: 7 base + 4 extraction-flag + 3 read
-        + 4 importance + 1 topics),
+        List of article dicts (20 keys: 7 base + 4 extraction-flag + 3 read
+        + 4 importance + 1 topics + 1 image-text presence),
         ordered newest first (importance-first when a floor is set); empty
         list when nothing matches.
 

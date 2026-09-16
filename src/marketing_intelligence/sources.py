@@ -107,10 +107,14 @@ DEFAULT_EXTRACTOR = "generic"
 CONTENT_MODES: tuple[str, ...] = ("caption_first",)
 
 #: Allowed Instagram ``image_text`` handling (ADR-0013 reserves the key):
-#: v1 ignores embedded image text — OCR/vision is deferred to v2, so
-#: ``extract`` is not a valid value until that lane exists. Carried by the
-#: `instagram` stanza.
-IMAGE_TEXT_MODES: tuple[str, ...] = ("ignore",)
+#: ``ignore`` reads the caption only, ``extract`` runs the ADR-0014 vision
+#: lane over the post's frames instead of OCR'ing them into the caption.
+#: Carried by the `instagram` stanza.
+IMAGE_TEXT_MODES: tuple[str, ...] = ("ignore", "extract")
+
+#: ``image_text`` modes only the Instagram lane implements: a stanza of any
+#: other type drops them silently, exactly like an invalid value.
+_INSTAGRAM_ONLY_IMAGE_TEXT_MODES: tuple[str, ...] = ("extract",)
 
 #: Default Instagram content mode / image-text handling when undeclared.
 DEFAULT_CONTENT_MODE = "caption_first"
@@ -273,13 +277,14 @@ def get_enrichment_policy(source_name: str) -> dict[str, Any]:
     return {"threshold": threshold, "mode": mode}
 
 
-def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
+def _validated_extras(raw: dict[str, Any], rtype: str) -> dict[str, Any]:
     """Validate optional retrieval-stanza keys; drop invalid ones silently.
 
     Never raises: unconfigured/invalid extras simply fall back to defaults
     (generic extractor, no sitemaps, registry hub, no link pattern, default
     pacing/backfill, no Instagram account keys). Callers must not rely on
-    invalid values surviving.
+    invalid values surviving. ``rtype`` is the already-normalized stanza type:
+    ``image_text`` is type-aware (see below).
 
     ``sitemap_exclude`` entries are a small path mini-language consumed by
     ``discovery._path_excluded``: an entry is a path *substring* by default
@@ -289,6 +294,10 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
     substring can express). A bare ``^`` or ``$`` with no matching pair stays
     a literal substring character, so only a ``^…$`` pair changes the
     semantics.
+
+    ``image_text`` carries its ADR-0014 ``extract`` mode only on an
+    ``instagram`` stanza — the lane that implements it. Every other stanza
+    type (RSS, sitemap, hub) drops it silently, exactly like an invalid value.
     """
     extras: dict[str, Any] = {}
     extractor = raw.get("extractor")
@@ -323,7 +332,9 @@ def _validated_extras(raw: dict[str, Any]) -> dict[str, Any]:
     if content_mode in CONTENT_MODES:
         extras["content_mode"] = content_mode
     image_text = raw.get("image_text")
-    if image_text in IMAGE_TEXT_MODES:
+    if image_text in IMAGE_TEXT_MODES and (
+        rtype == "instagram" or image_text not in _INSTAGRAM_ONLY_IMAGE_TEXT_MODES
+    ):
         extras["image_text"] = image_text
     sitemap_exclude = raw.get("sitemap_exclude")
     if isinstance(sitemap_exclude, str):
@@ -356,7 +367,10 @@ def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     Instagram stanza keys (``username``, ``hashtag_filter``, ``content_mode``,
     ``image_text``) only when the registry stanza declares them: RSS stanzas
     keep their exact ``{"type", "policy"}`` shape, so RSS ingest behavior is
-    unchanged. Every feed/discovery fetch runs the impersonated chain:
+    unchanged. ``image_text`` is the one type-aware key: ``extract``
+    (ADR-0014) survives only on an ``instagram`` stanza and is dropped
+    elsewhere like an invalid value. Every feed/discovery fetch runs the
+    impersonated chain:
     curl_cffi Chrome under ``BROWSER_HEADERS``, then the Jina reader, then
     Firecrawl; the ADR-0013 ``apify-premium`` lane is the Instagram exception
     and never issues such a fetch.
@@ -385,7 +399,7 @@ def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     policy = RETRIEVAL_POLICY_ALIASES.get(policy, policy)
     if policy not in RETRIEVAL_POLICIES:
         policy = "impersonated-feed"
-    return {"type": rtype, "policy": policy, **_validated_extras(raw)}
+    return {"type": rtype, "policy": policy, **_validated_extras(raw, rtype)}
 
 
 def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
@@ -405,6 +419,8 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
     ``image_text``) are carried only for stanzas that declare any of them,
     with ``caption_first``/``ignore`` defaults for an undeclared
     ``content_mode``/``image_text`` — feed stanzas keep their exact shape.
+    A declared ``image_text`` reaches the config unchanged (the ADR-0014
+    ``extract`` opt-in included); non-Instagram stanzas never carry the key.
     Unknown (or missing) sources yield safe RSS defaults — never raises.
     Discovery consumes this, not ad-hoc dict reads.
     """

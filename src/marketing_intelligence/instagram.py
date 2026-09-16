@@ -21,9 +21,17 @@ lane is deliberately narrow and deterministic:
   deferred comment/metric/image/hashtag work needs no re-scrape. Nothing is
   ever dropped ingest-side: every billed post is upserted, and the
   `hashtag_filter` stanza is a query-time hint only.
+- **Image text is a separate, opted-in stage (ADR-0014).** The lane ends with
+  fetch → map → upsert → payload write → image-text stage. The stage runs only
+  when the stanza says ``image_text: extract`` (which also switches the actor
+  run to ``detailedData`` — ``basicData`` returns ``childPosts: None``, hiding
+  every carousel frame); it downloads each frame, byte-dedupes, transcribes
+  and writes the per-frame side table, and its failures become per-frame
+  ``image_text_causes`` in the run result instead of failing the run.
 - **Secret discipline.** ``APIFY_API_TOKEN`` is read from the environment at
   call time, sent as a bearer header, and never logged; build/run inputs are
-  never logged either.
+  never logged either. ``DEEPINFRA_API_KEY`` follows the same rule inside
+  ``image_text``.
 """
 
 from __future__ import annotations
@@ -37,6 +45,11 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from marketing_intelligence.db import get_connection
+from marketing_intelligence.image_text import (
+    IMAGE_TEXT_EXTRACT,
+    enumerate_frame_urls,
+    image_texts_for_posts,
+)
 from marketing_intelligence.ingest import upsert_documents
 from marketing_intelligence.normalize import (
     NormalizedDocument,
@@ -65,6 +78,11 @@ OVERLAP_SECONDS = 60
 #: `basicData` keeps one billed `result` event per post; the actor's
 #: `detailedData` default bills an extra `post-details` event on top.
 DATA_DETAIL_LEVEL = "basicData"
+
+#: `detailedData` is mandatory for carousels (ADR-0014): `basicData` returns
+#: `childPosts: None`, so inner frames are invisible. Only accounts opted into
+#: the image-text lane pay the extra detail event.
+DETAILED_DATA_LEVEL = "detailedData"
 
 #: Per-run spend envelope. Apify enforces this on the run
 #: (`maxTotalChargeUsd`); the actor's platform minimum
@@ -195,18 +213,24 @@ def _username_from_label(source_label: str) -> str:
     return handle if sep and handle else source_label
 
 
-def build_actor_input(username: str, pointer: datetime | None) -> dict[str, Any]:
+def build_actor_input(
+    username: str,
+    pointer: datetime | None,
+    data_detail_level: str = DATA_DETAIL_LEVEL,
+) -> dict[str, Any]:
     """Build the actor input for a bootstrap (no pointer) or steady run.
 
     Every input carries `resultsLimit` (the actor has no documented default),
     the pinned `dataDetailLevel`, an explicit `skipPinnedPosts` and the
     per-run charge envelope. A steady run adds the ISO `onlyPostsNewerThan`
-    boundary at ``pointer - OVERLAP_SECONDS``.
+    boundary at ``pointer - OVERLAP_SECONDS``. ``data_detail_level`` defaults
+    to the cheap `basicData`; the image-text lane's opted-in accounts pass
+    `detailedData`, which is the only level that returns `childPosts`.
     """
     actor_input: dict[str, Any] = {
         "username": [username],
         "resultsLimit": BOOTSTRAP_LIMIT if pointer is None else STEADY_LIMIT,
-        "dataDetailLevel": DATA_DETAIL_LEVEL,
+        "dataDetailLevel": data_detail_level,
         "skipPinnedPosts": False,
         "maxTotalChargeUsd": MAX_CHARGE_USD,
     }
@@ -244,6 +268,17 @@ def run_actor(actor_input: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
+def _image_text_opted_in(config: dict[str, Any]) -> bool:
+    """ADR-0014 opt-in flag: the stanza's ``image_text`` mode.
+
+    One decision point for both halves of the opt-in — the actor's
+    `dataDetailLevel` (carousel frames need `detailedData`) and whether the
+    post-upsert vision stage runs. Never raises: a stanza without the key, or
+    with any other value, is `ignore` (the v1 default).
+    """
+    return config.get("image_text") == IMAGE_TEXT_EXTRACT
+
+
 def fetch_instagram_posts(
     source_label: str, conn: Any | None = None
 ) -> tuple[list[dict[str, Any]], int]:
@@ -254,12 +289,16 @@ def fetch_instagram_posts(
     only (caption holds `#tag` text, payload JSONB holds `hashtags[]`), so
     filtering costs zero extra billing. Returns ``(posts, raw_count)`` where
     `raw_count` is the actor's result count (the billing/observability
-    number) — always ``len(posts)`` since nothing is filtered.
+    number) — always ``len(posts)`` since nothing is filtered. Accounts opted
+    into the image-text lane (``image_text: extract``) run `detailedData`, the
+    only level that returns a carousel's `childPosts` frames; everyone else
+    keeps the cheaper `basicData` default.
     """
     config = get_retrieval_config(source_label)
     username = str(config.get("username") or "").strip() or _username_from_label(source_label)
+    detail_level = DETAILED_DATA_LEVEL if _image_text_opted_in(config) else DATA_DETAIL_LEVEL
     pointer = pointer_for_source(source_label, conn)
-    items = run_actor(build_actor_input(username, pointer))
+    items = run_actor(build_actor_input(username, pointer, detail_level))
     return items, len(items)
 
 
@@ -272,14 +311,44 @@ def _cause_text(exc: Exception) -> str:
     return " ".join(str(exc).split())[:_CAUSE_CAP]
 
 
+def _image_text_stage(
+    docs: list[NormalizedDocument], posts: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """ADR-0014 vision stage: per-frame transcription into the side table.
+
+    Runs after the upsert *and* after the payload write, so the documents it
+    resolves against already exist and the raw post JSON it reads the frame
+    URLs from is already stored. Returns only the nonzero additions —
+    ``image_text_frames`` (rows applied) and ``image_text_causes``
+    (``"<frame_index>: <detail>"``) — so a clean or non-opted-in run keeps its
+    exact ``{inserted, skipped}`` shape. Never raises: a stage failure degrades
+    to a single cause, never a failed Ingestion Run.
+    """
+    try:
+        pairs = [(doc, enumerate_frame_urls(post)) for doc, post in zip(docs, posts, strict=True)]
+        frames, causes = image_texts_for_posts(pairs)
+    except Exception as exc:
+        frames, causes = 0, [f"0: {_cause_text(exc)}"]
+    stage: dict[str, Any] = {}
+    if frames:
+        stage["image_text_frames"] = frames
+    if causes:
+        stage["image_text_causes"] = list(causes)
+    return stage
+
+
 def ingest_instagram_source(source_label: str) -> dict[str, Any]:
-    """Ingest one Instagram account: fetch → map → upsert → payload write.
+    """Ingest one Instagram account: fetch → map → upsert → payload → image text.
 
     Returns ``{"inserted": n, "skipped": n}`` (both from the documents upsert;
     payload writes are idempotent overwrites) and is rerunnable — the pointer
-    is derived from stored documents and duplicates dedupe. Any failure
-    returns the explicit ``{"inserted": 0, "skipped": 0, "error": ...}`` shape
-    so the flow can finish the run without raising a red task.
+    is derived from stored documents and duplicates dedupe. Accounts opted into
+    the image-text lane add the nonzero-only ``image_text_frames`` /
+    ``image_text_causes``; that stage runs outside the fetch/upsert guard, so a
+    vision failure can only add causes and never costs the run its
+    ``{inserted, skipped}`` accounting. Any fetch/map/upsert failure returns
+    the explicit ``{"inserted": 0, "skipped": 0, "error": ...}`` shape so the
+    flow can finish the run without raising a red task.
     """
     try:
         posts, _raw_count = fetch_instagram_posts(source_label)
@@ -288,4 +357,7 @@ def ingest_instagram_source(source_label: str) -> dict[str, Any]:
         write_document_payloads(list(zip(docs, posts, strict=True)))
     except Exception as exc:
         return {"inserted": 0, "skipped": 0, "error": _cause_text(exc)}
-    return {"inserted": inserted, "skipped": skipped}
+    result: dict[str, Any] = {"inserted": inserted, "skipped": skipped}
+    if _image_text_opted_in(get_retrieval_config(source_label)):
+        result.update(_image_text_stage(docs, posts))
+    return result

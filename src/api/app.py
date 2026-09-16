@@ -55,7 +55,8 @@ def search(
 ) -> dict[str, Any]:
     """Keyword search, newest first (importance-first when a floor is set).
 
-    19-key dicts: 7 base + 4 flag + 3 read + 4 importance + 1 topics.
+    20-key dicts: 7 base + 4 flag + 3 read + 4 importance + 1 topics
+    + 1 image-text presence.
     """
     return {
         "results": service.search_articles(

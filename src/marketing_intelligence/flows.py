@@ -376,7 +376,8 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     """Ingest one source end-to-end.
 
     Returns {inserted, skipped[, parse_skipped][, discovery_skipped][,
-    discovery_causes][, enrich_skipped][, enrich_causes][, error]}.
+    discovery_causes][, enrich_skipped][, enrich_causes][, image_text_frames][,
+    image_text_causes][, error]}.
 
     Propagate-inside: stage tasks are called with no catch around them, so a
     genuine stage failure (after `fetch_task` retries exhaust) marks its task
@@ -397,7 +398,10 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
 
     The `instagram` lane (ADR-0013) returns the same {inserted, skipped} shape
     plus an explicit `error` on failure; it bypasses enrichment and the
-    unrecoverable-flag loop entirely — a caption is final evidence.
+    unrecoverable-flag loop entirely — a caption is final evidence. Accounts
+    opted into the ADR-0014 image-text lane add the nonzero-only
+    `image_text_frames` / `image_text_causes` produced by the post-payload
+    vision stage, whose failures are per-frame causes and never an error.
 
     The RSS and sitemap lanes additionally persist the billed Firecrawl
     envelope of every document whose winning enrichment leg was Firecrawl
@@ -446,7 +450,8 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     # sitemap-family entries run discovery → fetch → extract instead. Both
     # lanes converge on enrich → upsert with identical downstream contracts.
     # The ADR-0013 `instagram` lane is the third branch: a self-contained
-    # fetch → map → upsert → payload-write helper that bypasses enrichment.
+    # fetch → map → upsert → payload-write helper (plus the ADR-0014
+    # image-text stage for opted-in accounts) that bypasses enrichment.
     # The lane is the *effective* stanza type: `apply_retrieval_override`
     # (ticket 28) may move a source off its curated RSS lane, and it must win
     # over the still-present (dead) `rss_url`. Every entry without a stanza
@@ -457,7 +462,8 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     )
     if retrieval_type == "instagram":
         # ADR-0013 premium lane: Apify posts → NormalizedDocument → upsert →
-        # raw-payload side table, all inside `ingest_instagram_source`. Called
+        # raw-payload side table, all inside `ingest_instagram_source`, which
+        # appends the ADR-0014 image-text stage for opted-in accounts. Called
         # as a plain helper (no oversized task params, same reason as the
         # upsert path below); this lane emits no unrecoverable flags, so the
         # run finishes here and never reaches `_enrich_docs` or the terminal

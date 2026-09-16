@@ -84,6 +84,7 @@ ARTICLE_KEYS = {
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "image_texts",
 }
 
 SEARCH_RESULT_KEYS = {
@@ -106,6 +107,7 @@ SEARCH_RESULT_KEYS = {
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "has_image_text",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -128,6 +130,7 @@ PERIOD_ARTICLE_KEYS = {
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "has_image_text",
 }
 
 

@@ -67,6 +67,7 @@ ARTICLE_EXPECTED_KEYS = {
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "image_texts",
 }
 
 SEARCH_EXPECTED_KEYS = {
@@ -89,6 +90,7 @@ SEARCH_EXPECTED_KEYS = {
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "has_image_text",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -111,6 +113,7 @@ PERIOD_EXPECTED_KEYS = {
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "has_image_text",
 }
 
 

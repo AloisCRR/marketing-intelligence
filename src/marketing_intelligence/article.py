@@ -7,8 +7,10 @@ flagged_at, flagged_by`` — ``None`` when unflagged), the Read State
 annotation (``read`` bool derived from ``read_at IS NOT NULL``, plus
 ``read_at, read_by`` — ``None`` when unread), and the latest Importance
 annotation (``importance_score, importance_rationale, importance_reporter,
-importance_updated_at`` — ``None`` when unannotated) and ``topics`` — the
+importance_updated_at`` — ``None`` when unannotated), ``topics`` — the
 Document's effective canonical Topic slugs (sorted, ``[]`` when unannotated) —
+and ``image_texts`` — the vision lane's frame texts for the Document (ADR-0014,
+ordered by ``frame_index``; ``[]`` when none) —
 the full stored body (clean Markdown/text, never a snippet).
 Matching tries the exact URL first, then the canonical URL via
 ``marketing_intelligence.normalize.canonicalize_url``. Unknown identifiers raise
@@ -102,6 +104,17 @@ SELECT dt.topic_slug
  ORDER BY dt.topic_slug\
 """
 
+# Vision image text for the matching Document (ADR-0014): one row per frame,
+# ordered by `frame_index` (`enumerate_frame_urls` order: cover frame 0 first).
+# Same URL-then-canonical keying as the read/topic fetches above.
+_ARTICLE_IMAGE_TEXTS_SQL = """\
+SELECT t.frame_index, t.image_text, t.model, t.extracted_at
+  FROM document_image_texts t
+  JOIN documents d ON d.id = t.document_id
+ WHERE d.url = %s OR d.canonical_url = %s
+ ORDER BY t.frame_index\
+"""
+
 _RESULT_KEYS = (
     "title",
     "url",
@@ -122,6 +135,7 @@ _RESULT_KEYS = (
     "importance_reporter",
     "importance_updated_at",
     "topics",
+    "image_texts",
 )
 
 
@@ -282,6 +296,45 @@ def _topics_from_rows(rows: list[Any]) -> list[str]:
     return slugs
 
 
+def _image_texts_from_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    """Extract frame image texts from side-table rows ([] when none).
+
+    Rows are the 4-col ``(frame_index, image_text, model, extracted_at)``
+    shape (a 3-col shape without ``extracted_at`` is tolerated). Anything else
+    — e.g. base article rows served by older fakes for every SELECT — is
+    skipped rather than guessed at, and ``extracted_at`` normalises like the
+    other timestamps. The result is ordered by ``frame_index``, the documented
+    exposure order, whatever order the connection returned rows in.
+    """
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            frame_index = row.get("frame_index")
+            image_text = row.get("image_text")
+            model = row.get("model")
+            extracted_at = row.get("extracted_at")
+        else:
+            values = tuple(row)
+            if len(values) not in (3, 4):
+                continue
+            frame_index, image_text, model = values[0], values[1], values[2]
+            extracted_at = values[3] if len(values) > 3 else None
+        if isinstance(frame_index, bool) or not isinstance(frame_index, int):
+            continue
+        if not isinstance(image_text, str):
+            continue
+        items.append(
+            {
+                "frame_index": frame_index,
+                "image_text": image_text,
+                "model": model,
+                "extracted_at": _to_iso_tz_aware(extracted_at),
+            }
+        )
+    items.sort(key=lambda item: item["frame_index"])
+    return items
+
+
 def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     """Fetch one article's full stored body plus provenance by URL.
 
@@ -302,7 +355,13 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         annotation (``importance_score, importance_rationale,
         importance_reporter, importance_updated_at`` — ``None`` when
         unannotated), plus ``topics`` — the Document's effective canonical
-        Topic slugs (sorted, ``[]`` when unannotated). ``published_at`` and set
+        Topic slugs (sorted, ``[]`` when unannotated) — and ``image_texts``:
+        the vision lane's frame texts for this Document (ADR-0014), ordered by
+        ``frame_index``, each item ``{frame_index, image_text, model,
+        extracted_at}`` with ``extracted_at`` an isoformat tz-aware string;
+        ``[]`` when the Document has no stored frame text. The Document's
+        ``content`` stays caption-only: image text is never merged into it, so
+        callers see both. ``published_at`` and set
         ``flagged_at``/``read_at`` values are isoformat tz-aware strings;
         ``content`` is the full stored body (never a snippet).
 
@@ -333,6 +392,7 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
             canonical = key
         read_row = _fetch_one(conn, _ARTICLE_READ_SQL, (key, canonical))
         topic_rows = _fetch_all(conn, _ARTICLE_TOPICS_SQL, (key, canonical))
+        image_text_rows = _fetch_all(conn, _ARTICLE_IMAGE_TEXTS_SQL, (key, canonical))
     finally:
         if owns_connection:
             close_conn = getattr(conn, "close", None)
@@ -345,6 +405,7 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     item["read_at"] = read_at
     item["read_by"] = read_by
     item["topics"] = _topics_from_rows(topic_rows)
+    item["image_texts"] = _image_texts_from_rows(image_text_rows)
     item["published_at"] = _to_iso_tz_aware(item["published_at"])
     item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
     item["read_at"] = _to_iso_tz_aware(item["read_at"])

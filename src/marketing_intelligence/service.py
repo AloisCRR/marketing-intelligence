@@ -65,6 +65,8 @@ SEARCH_RESULT_KEYS = (
     + READ_KEYS
     + IMPORTANCE_KEYS
     + TOPICS_KEYS
+    # Vision image-text presence (ADR-0014): list payloads stay presence-only.
+    + ("has_image_text",)
 )
 
 PERIOD_ARTICLE_KEYS = (
@@ -81,6 +83,7 @@ PERIOD_ARTICLE_KEYS = (
     + READ_KEYS
     + IMPORTANCE_KEYS
     + TOPICS_KEYS
+    + ("has_image_text",)
 )
 
 ARTICLE_KEYS = (
@@ -97,6 +100,8 @@ ARTICLE_KEYS = (
     + READ_KEYS
     + IMPORTANCE_KEYS
     + TOPICS_KEYS
+    # The vision lane's frame texts, only on the one-item read (ADR-0014).
+    + ("image_texts",)
 )
 
 
@@ -242,14 +247,15 @@ def search_articles(
     min_importance: float | None = None,
     topics: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Validated keyword search; returns the 19-key provenance dicts, newest first.
+    """Validated keyword search; returns the 20-key provenance dicts, newest first.
 
     `exclude_read=True` filters out marked (read) articles; the default
     False annotates every result (`read`/`read_at`/`read_by`) without
     filtering. Every result also carries the latest Importance annotation
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
-    unannotated) and `topics` — the Document's effective canonical Topic
-    slugs (sorted, ``[]`` when unannotated).
+    unannotated), `topics` — the Document's effective canonical Topic
+    slugs (sorted, ``[]`` when unannotated) — and `has_image_text` (True when
+    the Document has stored frame image text; ADR-0014).
 
     `min_importance` (None default) keeps only Documents whose latest score is
     `>=` the floor, ordered by importance (descending, ties by recency); with
@@ -306,8 +312,9 @@ def get_period_context(
     annotates every article (`read`/`read_at`/`read_by`) without filtering.
     Every article also carries the latest Importance annotation
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
-    unannotated) and `topics` — the Document's effective canonical Topic
-    slugs (sorted, ``[]`` when unannotated).
+    unannotated), `topics` — the Document's effective canonical Topic
+    slugs (sorted, ``[]`` when unannotated) — and `has_image_text` (True when
+    the Document has stored frame image text; ADR-0014).
     `per_source_limit` (None default) caps how many of the bundle's items any
     one source may contribute — `limit` still bounds the bundle overall, slots
     a capped source cannot fill go to other sources, and both compose with
@@ -360,7 +367,10 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     """Validated one-item lookup; full stored body plus provenance.
 
     The returned dict also carries `topics` — the Document's effective
-    canonical Topic slugs (sorted, ``[]`` when unannotated).
+    canonical Topic slugs (sorted, ``[]`` when unannotated) — and
+    `image_texts`: the vision lane's frame texts for this Document
+    (ADR-0014), ordered by `frame_index`, each item
+    `{frame_index, image_text, model, extracted_at}` (``[]`` when none).
     Blank/non-string identifiers raise `InvalidRequest` without a DB
     round-trip; unknown identifiers surface from the lane as `ValueError`
     (also `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
