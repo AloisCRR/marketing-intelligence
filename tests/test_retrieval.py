@@ -2,8 +2,8 @@
 
 Observable behavior (not privates):
 - get_retrieval_policy: allowlist validation, defaults, never raises
-- curated JSON carries retrieval stanzas for all 21 sources (RSS + no-RSS +
-  the ADR-0013 Instagram account)
+- curated JSON carries retrieval stanzas for all 22 sources (RSS + no-RSS +
+  the two ADR-0013 Instagram accounts)
 - fetch_rss runs one lane: curl_cffi Chrome impersonation under genuine
   browser headers; a failure raises and never touches a Markdown reader or
   scraper (feed URLs are raw XML, not extraction targets)
@@ -190,9 +190,9 @@ def test_curated_v1_stanzas() -> None:
 def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
     """Ticket 07: every no-RSS source declares a discovery route + extractor."""
     entries = {e["source_name"]: e for e in json.loads(CURATED.read_text(encoding="utf-8"))}
-    # 20 feed sources + the ADR-0013 Instagram account (its own stanza is
-    # covered by tests/test_instagram_registry.py).
-    assert len(entries) == 21
+    # 20 feed sources + the two ADR-0013 Instagram accounts (their own stanzas
+    # are covered by tests/test_instagram_registry.py).
+    assert len(entries) == 22
     expected_types = {
         "National Jeweler": "url-set+hub",
         "Exame": "sitemap",
@@ -553,12 +553,12 @@ def test_batch_keeps_shape_across_rss_sources(
 # --- ticket 07: retrieval config seam (registry + fallbacks, no RSS change) ---
 
 
-def test_registry_loads_all_21_sources() -> None:
+def test_registry_loads_all_22_sources() -> None:
     from marketing_intelligence.sources import list_sources
 
     names = [e["name"] for e in list_sources()]
-    assert len(names) == 21
-    assert len(set(names)) == 21
+    assert len(names) == 22
+    assert len(set(names)) == 22
 
 
 def test_no_rss_entries_keep_null_rss_url_and_iso_language() -> None:
@@ -591,8 +591,8 @@ def test_every_curated_source_reports_a_registered_policy() -> None:
     for entry in list_sources():
         policy = get_retrieval_policy(entry["name"])
         assert policy["policy"] in RETRIEVAL_POLICIES, entry["name"]
-        if entry["name"] == "ig:sabrikolod":
-            # ADR-0013 exception: the Instagram account runs the premium
+        if entry["name"] in ("ig:sabrikolod", "ig:jordisanildefonso"):
+            # ADR-0013 exception: the Instagram accounts run the premium
             # Apify lane, never the impersonated feed chain.
             assert policy["type"] == "instagram", entry["name"]
             assert policy["policy"] == "apify-premium", entry["name"]

@@ -324,7 +324,7 @@ def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-unt
 # --- V1 scope -----------------------------------------------------------------
 
 
-def test_v1_sources_constant_is_all_twenty_one() -> None:
+def test_v1_sources_constant_is_all_twenty_two() -> None:
     assert V1_SOURCES == (
         "JCK Online",
         "National Jeweler",
@@ -347,6 +347,7 @@ def test_v1_sources_constant_is_all_twenty_one() -> None:
         "InfoMoney",
         "Forbes México",
         "ig:sabrikolod",
+        "ig:jordisanildefonso",
     )
 
 
@@ -364,7 +365,7 @@ def test_period_defaults_to_v1_sources() -> None:
     ctx, conn = _context()
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
-    assert len(conn.cursor_obj.last_params[2]) == 21
+    assert len(conn.cursor_obj.last_params[2]) == 22
     assert {a["source"] for a in ctx["recent_articles"]} <= set(V1_SOURCES)
 
 
@@ -667,7 +668,7 @@ def test_get_source_health_reports_latest_run_per_source() -> None:
     ]
     report = get_source_health(conn=_RunsConnection(runs))
     assert [r["source"] for r in report] == list(V1_SOURCES)
-    assert len(report) == 21
+    assert len(report) == 22
     by_source = {r["source"]: r for r in report}
     assert by_source["Social Media Today"]["status"] == "ok"
     assert by_source["Social Media Today"]["inserted"] == 3
@@ -773,6 +774,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "012_document_payloads.sql",
         "013_document_image_texts.sql",
         "014_document_reads.sql",
+        "015_instagram_jordi_source.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

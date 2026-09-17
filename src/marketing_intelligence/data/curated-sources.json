@@ -602,7 +602,7 @@
       "username": "sabrikolod",
       "hashtag_filter": "ChismecitoMarketinero",
       "content_mode": "caption_first",
-      "image_text": "extract"
+      "image_text": "ignore"
     },
     "enrichment": {
       "threshold": 500,
@@ -610,5 +610,30 @@
     },
     "last_verified": "2026-09-13",
     "sample_article_url": "https://www.instagram.com/p/DdOz587EXSx/"
+  },
+  {
+    "source_name": "ig:jordisanildefonso",
+    "pillar": 3,
+    "scope": "latam",
+    "country": "LATAM",
+    "language": "Spanish",
+    "hub_url": "https://www.instagram.com/jordisanildefonso/",
+    "rss_url": null,
+    "cadence": "Daily",
+    "access": "premium",
+    "extractability": "Apify actor apify/instagram-post-scraper, caption + payload JSON",
+    "retrieval": {
+      "type": "instagram",
+      "policy": "apify-premium",
+      "username": "jordisanildefonso",
+      "content_mode": "caption_first",
+      "image_text": "extract"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "force_off"
+    },
+    "last_verified": "2026-09-17",
+    "sample_article_url": "https://www.instagram.com/p/Dc9PS-SkU6_/"
   }
 ]

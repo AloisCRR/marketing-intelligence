@@ -162,6 +162,7 @@ def test_live_real_migrations_pending_only_and_rerunnable(scratch_db: str) -> No
         "012_document_payloads",
         "013_document_image_texts",
         "014_document_reads",
+        "015_instagram_jordi_source",
     ]
     assert db.apply_migrations() == []
     assert db.pending_migrations() == []
@@ -174,6 +175,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
 
     db.apply_migrations()
     assert db.rollback_migrations(99) == [
+        "015_instagram_jordi_source",
         "014_document_reads",
         "013_document_image_texts",
         "012_document_payloads",
@@ -206,6 +208,7 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "012_document_payloads",
         "013_document_image_texts",
         "014_document_reads",
+        "015_instagram_jordi_source",
     ]
     assert db.apply_migrations() == [
         "001_init",
@@ -221,5 +224,6 @@ def test_live_rollback_unmarks_and_reapply_restores(scratch_db: str) -> None:
         "012_document_payloads",
         "013_document_image_texts",
         "014_document_reads",
+        "015_instagram_jordi_source",
     ]
     assert db.pending_migrations() == []

@@ -51,6 +51,16 @@ IG_STANZA: dict[str, Any] = {
     "image_text": "ignore",
 }
 
+JORDI = "ig:jordisanildefonso"
+JORDI_HUB = "https://www.instagram.com/jordisanildefonso/"
+JORDI_STANZA: dict[str, Any] = {
+    "type": "instagram",
+    "policy": "apify-premium",
+    "username": "jordisanildefonso",
+    "content_mode": "caption_first",
+    "image_text": "extract",
+}
+
 _SECRET_RE = re.compile(r"token|secret|api[_-]?key|password|bearer|credential", re.IGNORECASE)
 
 
@@ -235,6 +245,29 @@ def test_seed_sources_carries_the_ig_row_once() -> None:
 def test_ig_is_in_v1_scope() -> None:
     assert IG in V1_SOURCES
     assert [e["name"] for e in sources.list_v1_sources()].count(IG) == 1
+
+
+def test_jordi_stanza_is_declared_identically_in_both_registry_copies() -> None:
+    dev = _entries(DEV_REGISTRY)[JORDI]
+    shipped = _entries(SHIPPED_REGISTRY)[JORDI]
+    assert dev == shipped
+    assert dev["retrieval"] == JORDI_STANZA
+    assert dev["rss_url"] is None
+    assert dev["hub_url"] == JORDI_HUB
+    assert dev["language"] == "Spanish"
+    assert dev["cadence"] == "Daily"
+    assert dev["enrichment"] == {"threshold": 500, "mode": "force_off"}
+
+
+def test_seed_sources_carries_the_jordi_row_once() -> None:
+    row = (JORDI, None, JORDI_HUB, "es")
+    assert row in db.SEED_SOURCES
+    assert [name for name, _, _, _ in db.SEED_SOURCES].count(JORDI) == 1
+
+
+def test_jordi_is_in_v1_scope() -> None:
+    assert JORDI in V1_SOURCES
+    assert [e["name"] for e in sources.list_v1_sources()].count(JORDI) == 1
 
 
 # --- secret hygiene -----------------------------------------------------------

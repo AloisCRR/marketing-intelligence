@@ -51,20 +51,21 @@ def source_seed_key(name: str) -> str:
 
 
 def source_uuid(name: str) -> uuid.UUID:
-    """Deterministic id for `name` (stdlib uuid5; same scheme as migrations 007/012)."""
+    """Deterministic id for `name` (stdlib uuid5; same scheme as migrations 007/012/015)."""
     return uuid.uuid5(SOURCE_SEED_NAMESPACE, source_seed_key(name))
 
 
 #: Full curated set: the 20 feed sources seeded by migration 007 plus the
-#: ADR-0013 Instagram account re-asserted by migration 012. Kept in sync with
-#: curated-sources.json (ISO codes en/pt/es).
+#: ADR-0013 Instagram accounts re-asserted by migrations 012/015. Kept in
+#: sync with curated-sources.json (ISO codes en/pt/es).
 SEED_SOURCES: tuple[tuple[str, str | None, str, str], ...] = (
     ("Consumidor Moderno", None, "https://consumidormoderno.com.br/", "pt"),
     ("Exame", None, "https://exame.com/", "pt"),
     ("Forbes México", None, "https://forbes.com.mx/", "es"),
-    # ADR-0013 premium lane: the Instagram account row, seeded like any other
+    # ADR-0013 premium lane: the Instagram account rows, seeded like any other
     # curated source but fetched through the Apify actor (no rss_url).
     ("ig:sabrikolod", None, "https://www.instagram.com/sabrikolod/", "es"),
+    ("ig:jordisanildefonso", None, "https://www.instagram.com/jordisanildefonso/", "es"),
     ("InfoMoney", "https://www.infomoney.com.br/feed", "https://www.infomoney.com.br/", "pt"),
     ("Insider Latam", None, "https://insiderlatam.com/", "es"),
     (

@@ -620,7 +620,7 @@ def ingest_sources_flow(
     """Ingest multiple sources; one failure never blocks the others.
 
     Returns a per-source mapping of {inserted, skipped[, error]}.
-    Defaults to the V1 scope (all 21 curated sources) when `source_names`
+    Defaults to the V1 scope (all 22 curated sources) when `source_names`
     is None; pass explicit names to narrow to a subset.
 
     Each per-source subflow is invoked with `return_state=True`: a Completed

@@ -357,7 +357,7 @@ def list_sources_inventory() -> list[dict[str, Any]]:
     ingestion.
 
     Returns:
-        All 21 V1 Sources in registry order; each dict has ``name``,
+        All 22 V1 Sources in registry order; each dict has ``name``,
         ``article_count`` (stored Documents), ``last_ingest_at`` (ISO-8601
         finish time of the most recent successful Ingestion Run, or None),
         and ``cadence`` (curated, or None).
@@ -567,7 +567,7 @@ def read_about() -> str:
             "what": "Persistent marketing/GenZ/culture/tech intelligence platform "
             "(not a newsletter generator): deterministic ingestion into a "
             "Postgres system of record, served to AI digest consumers.",
-            "v1_sources": "21 curated V1 sources (RSS + sitemap/hub/url-set + instagram lanes).",
+            "v1_sources": "22 curated V1 sources (RSS + sitemap/hub/url-set + instagram lanes).",
             "workflow": "search_articles for discovery -> get_article for full text -> "
             "get_period_context(from_date, to_date) for any period bundle "
             "(a digest is built from a caller-chosen range; filters: min_importance, "

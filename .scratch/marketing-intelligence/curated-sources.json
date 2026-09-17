@@ -10,8 +10,14 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
-    "enrichment": {"threshold": 500, "mode": "auto"},
+    "retrieval": {
+      "type": "rss",
+      "policy": "impersonated-feed"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "auto"
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.jckonline.com/editorial-article/britts-pick-state-property-bloom/",
     "sample_article_date": "2026-09-04"
@@ -27,7 +33,20 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "url-set+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://nationaljeweler.com/sitemap.xml"], "hub": "https://nationaljeweler.com/industry", "link_pattern": "/articles/", "sitemap_pattern": "/articles/", "id_guard": true, "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "url-set+hub",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://nationaljeweler.com/sitemap.xml"
+      ],
+      "hub": "https://nationaljeweler.com/industry",
+      "link_pattern": "/articles/",
+      "sitemap_pattern": "/articles/",
+      "id_guard": true,
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://nationaljeweler.com/articles/13197-here-are-the-first-recipients-of-nina-pugliese-memorial-scholarship",
     "sample_article_date": "2026-09-03"
@@ -43,8 +62,14 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
-    "enrichment": {"threshold": 500, "mode": "auto"},
+    "retrieval": {
+      "type": "rss",
+      "policy": "impersonated-feed"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "auto"
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.professionaljeweller.com/vicenzaoro-september-kicks-off-today/",
     "sample_article_date": "2026-09-04"
@@ -60,7 +85,19 @@
     "cadence": "Daily",
     "access": "partial",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://exame.com/sitemap.xml"], "sitemap_exclude": ["/webstories/"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://exame.com/sitemap.xml"
+      ],
+      "sitemap_exclude": [
+        "/webstories/"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://exame.com/casual/a-brilhante-disputa-entre-diamantes-naturais-e-sinteticos/",
     "sample_article_date": "2026-08-18"
@@ -76,7 +113,16 @@
     "cadence": "Daily",
     "access": "partial",
     "extractability": "clean HTML / cookie-consent wall, body open",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.modaes.com/sitemap_current.xml"], "pacing_ms": 3000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://www.modaes.com/sitemap_current.xml"
+      ],
+      "pacing_ms": 3000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://www.modaes.com/empresa/richemont-de-tabaco-a-diamantes-el-grupo-que-hizo-de-cartier-y-van-cleef-su-mejor-negocio",
     "sample_article_date": "2026-08-27"
@@ -92,7 +138,22 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.retaildive.com/sitemap.xml", "https://www.retaildive.com/google_news_sitemap.xml"], "sitemap_exclude": ["/archive/"], "hub": "https://www.retaildive.com/topic/consumer-trends/", "link_pattern": "/news/", "pacing_ms": 5000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap+hub",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://www.retaildive.com/sitemap.xml",
+        "https://www.retaildive.com/google_news_sitemap.xml"
+      ],
+      "sitemap_exclude": [
+        "/archive/"
+      ],
+      "hub": "https://www.retaildive.com/topic/consumer-trends/",
+      "link_pattern": "/news/",
+      "pacing_ms": 5000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.retaildive.com/news/ultas-use-of-flock-technology-causes-upset-online/829567/",
     "sample_article_date": "2026-09-04"
@@ -108,7 +169,21 @@
     "cadence": "Daily",
     "access": "partial",
     "extractability": "clean HTML / Freemium",
-    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "json-ld-first", "sitemaps": ["https://jingdaily.com/sitemap.xml"], "hub": "https://jingdaily.com/", "link_pattern": "/posts/", "hub_pages": ["https://jingdaily.com/page/2/"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap+hub",
+      "policy": "impersonated-feed",
+      "extractor": "json-ld-first",
+      "sitemaps": [
+        "https://jingdaily.com/sitemap.xml"
+      ],
+      "hub": "https://jingdaily.com/",
+      "link_pattern": "/posts/",
+      "hub_pages": [
+        "https://jingdaily.com/page/2/"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://jingdaily.com/posts/how-yvmin-became-chinese-gen-z-s-favorite-jewelry-brand",
     "sample_article_date": "2026-01-14"
@@ -124,8 +199,14 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
-    "enrichment": {"threshold": 500, "mode": "auto"},
+    "retrieval": {
+      "type": "rss",
+      "policy": "impersonated-feed"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "auto"
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.socialmediatoday.com/news/tiktok-adds-voice-notes-and-image-carousels-in-comments/829640/",
     "sample_article_date": "2026-09-03"
@@ -141,7 +222,16 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://consumidormoderno.com.br/sitemap_index.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://consumidormoderno.com.br/sitemap_index.xml"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://consumidormoderno.com.br/experiencia-sensorial-tendencia-marcas/",
     "sample_article_date": "2026-09-04"
@@ -157,7 +247,20 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.meioemensagem.com.br/sitemap_index.xml"], "sitemap_exclude": ["/podcasts/", "/patrocinado/"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://www.meioemensagem.com.br/sitemap_index.xml"
+      ],
+      "sitemap_exclude": [
+        "/podcasts/",
+        "/patrocinado/"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://www.meioemensagem.com.br/marketing/mercado-livre-que-fortalecer-moda-com-pandora",
     "sample_article_date": "2025-07-10"
@@ -173,7 +276,22 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap+hub", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.marketingdive.com/sitemap.xml", "https://www.marketingdive.com/google_news_sitemap.xml"], "sitemap_exclude": ["/archive/"], "hub": "https://www.marketingdive.com/", "link_pattern": "/news/", "pacing_ms": 5000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap+hub",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://www.marketingdive.com/sitemap.xml",
+        "https://www.marketingdive.com/google_news_sitemap.xml"
+      ],
+      "sitemap_exclude": [
+        "/archive/"
+      ],
+      "hub": "https://www.marketingdive.com/",
+      "link_pattern": "/news/",
+      "pacing_ms": 5000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.marketingdive.com/news/pepsico-hands-global-media-to-publicis-amid-transformation-at-cpg-giant/829556/",
     "sample_article_date": "2026-09-03"
@@ -189,8 +307,37 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "hub", "policy": "impersonated-feed", "extractor": "generic", "hub": "https://martech.org/", "link_pattern": "-", "sitemap_exclude": ["/topic/", "/author/", "/page/", "/conference/", "/about-martech-org/", "/intelligence-reports/", "/white-papers/", "/martech-topics/", "/martechbot", "/privacy-policy/", "/terms-of-service/", "/working-with-martech-content-team/", "/the-latest-ai-powered-martech-news-and-releases/"], "pacing_ms": 1000, "max_urls": 50},
-    "enrichment": {"threshold": 500, "mode": "auto"},
+    "retrieval": {
+      "type": "hub",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "hub": "https://martech.org/",
+      "link_pattern": "-",
+      "hub_pages": [
+        "https://martech.org/page/2/"
+      ],
+      "sitemap_exclude": [
+        "/topic/",
+        "/author/",
+        "/page/",
+        "/conference/",
+        "/about-martech-org/",
+        "/intelligence-reports/",
+        "/white-papers/",
+        "/martech-topics/",
+        "/martechbot",
+        "/privacy-policy/",
+        "/terms-of-service/",
+        "/working-with-martech-content-team/",
+        "/the-latest-ai-powered-martech-news-and-releases/"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "auto"
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://martech.org/marketing-without-signals-how-to-perform-when-the-data-disappears/",
     "sample_article_date": "2026-09-04"
@@ -206,7 +353,56 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "hub", "policy": "impersonated-feed", "extractor": "generic", "hub": "https://www.marketingdirecto.com/", "link_pattern": "-", "sitemap_exclude": ["/wp-content/", "/temas/", "^/media-kit$", "^/diccionario-marketing-publicidad-comunicacion-nuevas-tecnologias$", "^/quienes-somos$", "^/aviso-legal$", "^/politica-de-privacidad$", "^/politica-cookies$", "^/punto-de-vista$", "^/arena-media$", "^/next-level$", "^/digital-busines-innovation-sidn-digital-thinking$", "^/guias-especiales$", "^/marketing-general$", "^/marketing-general/agencias$", "^/marketing-general/entrevistas$", "^/marketing-general/gente$", "^/marketing-general/eventos-y-formacion$", "^/marketing-general/digital-innovation-trends-by-t2o$", "^/anunciantes-general$", "^/anunciantes-general/publicaciones$", "^/anunciantes-general/medios$", "^/creacion/campanas-de-marketing$", "^/digital-general$", "^/digital-general/digital$", "^/digital-general/e-commerce$", "^/digital-general/e-mail-marketing$", "^/digital-general/social-media-marketing$", "^/digital-general/medicion-sin-filtros-gfk$", "^/digital-general/mobile-marketing$", "^/digital-general/all-about-audio-by-audioemotion$", "^/especiales/reportajes-a-fondo$", "^/especiales/cannes-lions$", "^/especiales/ipg-mediabrands$", "^/especiales/the-future-of-advertising-especiales$", "^/especiales/enamorando-al-consumidor$", "^/imprescindibles/social-media$", "^/imprescindibles/historia-marcas$", "^/imprescindibles/inteligencia-artificial$"], "pacing_ms": 10000, "max_urls": 50},
+    "retrieval": {
+      "type": "hub",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "hub": "https://www.marketingdirecto.com/",
+      "link_pattern": "-",
+      "sitemap_exclude": [
+        "/wp-content/",
+        "/temas/",
+        "^/media-kit$",
+        "^/diccionario-marketing-publicidad-comunicacion-nuevas-tecnologias$",
+        "^/quienes-somos$",
+        "^/aviso-legal$",
+        "^/politica-de-privacidad$",
+        "^/politica-cookies$",
+        "^/punto-de-vista$",
+        "^/arena-media$",
+        "^/next-level$",
+        "^/digital-busines-innovation-sidn-digital-thinking$",
+        "^/guias-especiales$",
+        "^/marketing-general$",
+        "^/marketing-general/agencias$",
+        "^/marketing-general/entrevistas$",
+        "^/marketing-general/gente$",
+        "^/marketing-general/eventos-y-formacion$",
+        "^/marketing-general/digital-innovation-trends-by-t2o$",
+        "^/anunciantes-general$",
+        "^/anunciantes-general/publicaciones$",
+        "^/anunciantes-general/medios$",
+        "^/creacion/campanas-de-marketing$",
+        "^/digital-general$",
+        "^/digital-general/digital$",
+        "^/digital-general/e-commerce$",
+        "^/digital-general/e-mail-marketing$",
+        "^/digital-general/social-media-marketing$",
+        "^/digital-general/medicion-sin-filtros-gfk$",
+        "^/digital-general/mobile-marketing$",
+        "^/digital-general/all-about-audio-by-audioemotion$",
+        "^/especiales/reportajes-a-fondo$",
+        "^/especiales/cannes-lions$",
+        "^/especiales/ipg-mediabrands$",
+        "^/especiales/the-future-of-advertising-especiales$",
+        "^/especiales/enamorando-al-consumidor$",
+        "^/imprescindibles/social-media$",
+        "^/imprescindibles/historia-marcas$",
+        "^/imprescindibles/inteligencia-artificial$"
+      ],
+      "pacing_ms": 10000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.marketingdirecto.com/anunciantes-general/marcas/canva-suma-suite-visual-mas-100-novedades-plataforma-crece-enfocada-profesionales",
     "sample_article_date": "2026-09-04"
@@ -222,7 +418,20 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://propmark.com.br/wp-sitemap.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://propmark.com.br/wp-sitemap.xml"
+      ],
+      "sitemap_exclude": [
+        "/tag/",
+        "/category/"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://propmark.com.br/anunciantes/mary-kay-leva-as-ruas-brasileiras-acao-global-sobre-beleza-compartilhada/",
     "sample_article_date": "2026-09-04"
@@ -238,7 +447,16 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://insiderlatam.com/sitemap_index.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://insiderlatam.com/sitemap_index.xml"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://insiderlatam.com/viviana-martinez-explica-como-campari-convierte-la-cocteleria-en-una-plataforma-de-marca/",
     "sample_article_date": "2026-09-03"
@@ -254,7 +472,17 @@
     "cadence": "Weekly",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.lvmh.com/sitemap.xml"], "sitemap_pattern": "/news-lvmh/", "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://www.lvmh.com/sitemap.xml"
+      ],
+      "sitemap_pattern": "/news-lvmh/",
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://www.lvmh.com/news-documents/news/maison-fred-celebrates-90th-anniversary/",
     "sample_article_date": "2026-09-03"
@@ -270,7 +498,18 @@
     "cadence": "Weekly",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "url-set", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://www.richemont.com/sitemap.xml"], "hub": "https://www.richemont.com/news-media/press-releases-news/", "sitemap_pattern": "/press-releases-news/", "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "url-set",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://www.richemont.com/sitemap.xml"
+      ],
+      "hub": "https://www.richemont.com/news-media/press-releases-news/",
+      "sitemap_pattern": "/press-releases-news/",
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://www.richemont.com/news-media/press-releases-news/van-cleef-arpels-opens-its-first-boutique-in-madrid/",
     "sample_article_date": "2026-08-07"
@@ -286,8 +525,14 @@
     "cadence": "Weekly",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
-    "enrichment": {"threshold": 500, "mode": "auto"},
+    "retrieval": {
+      "type": "rss",
+      "policy": "impersonated-feed"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "auto"
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.prnewswire.com/news-releases/swarovski-crystal-business-hy1-2026-trading-update-302851128.html",
     "sample_article_date": "2026-08-13"
@@ -303,8 +548,14 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML / RSS available",
-    "retrieval": {"type": "rss", "policy": "impersonated-feed"},
-    "enrichment": {"threshold": 500, "mode": "auto"},
+    "retrieval": {
+      "type": "rss",
+      "policy": "impersonated-feed"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "auto"
+    },
     "last_verified": "2026-09-04",
     "sample_article_url": "https://www.infomoney.com.br/business/casas-bahia-em-crise-quem-mais-no-varejo-enfrenta-pressao-de-divida/",
     "sample_article_date": "2026-08-26"
@@ -320,7 +571,16 @@
     "cadence": "Daily",
     "access": "open",
     "extractability": "clean HTML",
-    "retrieval": {"type": "sitemap", "policy": "impersonated-feed", "extractor": "generic", "sitemaps": ["https://forbes.com.mx/sitemap_index.xml"], "pacing_ms": 1000, "max_urls": 50},
+    "retrieval": {
+      "type": "sitemap",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "sitemaps": [
+        "https://forbes.com.mx/sitemap_index.xml"
+      ],
+      "pacing_ms": 1000,
+      "max_urls": 50
+    },
     "last_verified": "2026-09-06",
     "sample_article_url": "https://forbes.com.mx/mientras-la-moda-atraviesa-dificultades-la-joyeria-contribuira-a-definir-a-los-ganadores-del-sector-del-lujo/",
     "sample_article_date": "2026-07-27"
@@ -336,9 +596,44 @@
     "cadence": "Daily",
     "access": "premium",
     "extractability": "Apify actor apify/instagram-post-scraper, caption + payload JSON",
-    "retrieval": {"type": "instagram", "policy": "apify-premium", "username": "sabrikolod", "hashtag_filter": "ChismecitoMarketinero", "content_mode": "caption_first", "image_text": "ignore"},
-    "enrichment": {"threshold": 500, "mode": "force_off"},
+    "retrieval": {
+      "type": "instagram",
+      "policy": "apify-premium",
+      "username": "sabrikolod",
+      "hashtag_filter": "ChismecitoMarketinero",
+      "content_mode": "caption_first",
+      "image_text": "ignore"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "force_off"
+    },
     "last_verified": "2026-09-13",
     "sample_article_url": "https://www.instagram.com/p/DdOz587EXSx/"
+  },
+  {
+    "source_name": "ig:jordisanildefonso",
+    "pillar": 3,
+    "scope": "latam",
+    "country": "LATAM",
+    "language": "Spanish",
+    "hub_url": "https://www.instagram.com/jordisanildefonso/",
+    "rss_url": null,
+    "cadence": "Daily",
+    "access": "premium",
+    "extractability": "Apify actor apify/instagram-post-scraper, caption + payload JSON",
+    "retrieval": {
+      "type": "instagram",
+      "policy": "apify-premium",
+      "username": "jordisanildefonso",
+      "content_mode": "caption_first",
+      "image_text": "extract"
+    },
+    "enrichment": {
+      "threshold": 500,
+      "mode": "force_off"
+    },
+    "last_verified": "2026-09-17",
+    "sample_article_url": "https://www.instagram.com/p/Dc9PS-SkU6_/"
   }
 ]

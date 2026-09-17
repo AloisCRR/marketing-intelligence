@@ -154,6 +154,7 @@ V1_SOURCES: tuple[str, ...] = (
     "InfoMoney",
     "Forbes México",
     "ig:sabrikolod",
+    "ig:jordisanildefonso",
 )
 
 _FALLBACK_SMT: dict[str, Any] = {
@@ -465,8 +466,8 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
 def list_v1_sources() -> list[dict[str, Any]]:
     """Return registry entries for the V1 scope, in V1 order.
 
-    V1 covers all 21 curated sources in registry order (RSS plus
-    sitemap/hub/url-set lanes, plus the ADR-0013 Instagram account);
+    V1 covers all 22 curated sources in registry order (RSS plus
+    sitemap/hub/url-set lanes, plus the ADR-0013 Instagram accounts);
     explicit ``sources=[...]`` still narrows period/flows queries to a subset.
     """
     return [get_source(name) for name in V1_SOURCES]
