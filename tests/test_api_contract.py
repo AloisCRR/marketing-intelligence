@@ -31,6 +31,7 @@ SEARCH_PAYLOAD = [
         "published_at": "2026-09-08T14:30:00+00:00",
         "author": "Andrew Hutchinson",
         "snippet": "…TikTok rolls out voice notes…",
+        "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
     }
 ]
 
@@ -49,6 +50,7 @@ PERIOD_PAYLOAD = {
             "published_at": "2026-09-08T14:30:00+00:00",
             "rank": 1,
             "author": "Andrew Hutchinson",
+            "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
         }
     ],
 }
@@ -82,6 +84,7 @@ READ_PAYLOAD = {
     "read": True,
     "read_at": "2026-09-14T12:00:00+00:00",
     "read_by": "tester",
+    "readers": [{"reader": "tester", "read_at": "2026-09-14T12:00:00+00:00"}],
 }
 
 
@@ -122,6 +125,8 @@ def test_search_returns_service_payload(client: TestClient) -> None:
     resp = client.get("/search", params={"q": "TikTok"})
     assert resp.status_code == 200
     assert resp.json() == {"results": SEARCH_PAYLOAD}
+    # Ticket 02: the `readers` list rides through the HTTP surface unchanged.
+    assert resp.json()["results"][0]["readers"] == SEARCH_PAYLOAD[0]["readers"]
 
 
 def test_search_forwards_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,6 +217,11 @@ def test_period_returns_service_payload(client: TestClient) -> None:
     )
     assert resp.status_code == 200
     assert resp.json() == PERIOD_PAYLOAD
+    # Ticket 02: period items carry the `readers` list through HTTP unchanged.
+    assert (
+        resp.json()["recent_articles"][0]["readers"]
+        == (PERIOD_PAYLOAD["recent_articles"][0]["readers"])
+    )
 
 
 def test_period_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,10 +532,15 @@ def test_flag_validation_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_mark_read_returns_service_payload(client: TestClient) -> None:
     resp = client.post(
         "/mark-read",
-        json={"identifier": "https://www.socialmediatoday.com/news/tiktok/1/"},
+        json={
+            "identifier": "https://www.socialmediatoday.com/news/tiktok/1/",
+            "read_by": "tester",
+        },
     )
     assert resp.status_code == 200
     assert resp.json() == READ_PAYLOAD
+    # Ticket 02: a named mark shows up in the returned reader log.
+    assert resp.json()["readers"] == [{"reader": "tester", "read_at": "2026-09-14T12:00:00+00:00"}]
 
 
 def test_mark_read_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -560,11 +575,30 @@ def test_mark_read_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_mark_read_validation_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Real service (no service stubs): blank id / overlong read_by -> 422, never 500.
+    # Real service (no service stubs): blank id / missing-or-blank read_by on a
+    # mark / overlong read_by -> 422, never 500.
     live = TestClient(app)
     assert live.post("/mark-read", json={"identifier": "   "}).status_code == 422
     assert live.post("/mark-read", json={}).status_code == 422  # missing identifier
     url = "https://www.socialmediatoday.com/news/tiktok/1/"
+    # Marking is per-reader: a reader-less (or blank-reader) mark is a 422 that
+    # never reaches the lane, while a reader-less clear stays valid (clear-all).
+    real_lane = read_lane.mark_article_read
+    lane_calls: list[dict] = []
+
+    def spy(
+        identifier: object, read_by: object = None, clear: object = False, **kw: object
+    ) -> dict:
+        lane_calls.append({"identifier": identifier, "read_by": read_by, "clear": clear})
+        return {"read_at": None, "read_by": None}
+
+    monkeypatch.setattr(read_lane, "mark_article_read", spy)
+    assert live.post("/mark-read", json={"identifier": url}).status_code == 422
+    assert live.post("/mark-read", json={"identifier": url, "read_by": "   "}).status_code == 422
+    assert lane_calls == []
+    assert live.post("/mark-read", json={"identifier": url, "clear": True}).status_code == 200
+    assert lane_calls == [{"identifier": url, "read_by": None, "clear": True}]
+    monkeypatch.setattr(read_lane, "mark_article_read", real_lane)
     # read_by over 100 chars -> 422 (100 itself is accepted, so no DB hit here).
     assert (
         live.post("/mark-read", json={"identifier": url, "read_by": "y" * 101}).status_code == 422
@@ -572,6 +606,15 @@ def test_mark_read_validation_maps_to_422(monkeypatch: pytest.MonkeyPatch) -> No
     # Unknown URL reaches the lane (empty store) and still maps to 422.
     monkeypatch.setattr(read_lane, "get_connection", lambda: _EmptyConn())
     assert (
-        live.post("/mark-read", json={"identifier": "https://unknown.example/nope/"}).status_code
+        live.post(
+            "/mark-read", json={"identifier": "https://unknown.example/nope/", "read_by": "t"}
+        ).status_code
+        == 422
+    )
+    assert (
+        live.post(
+            "/mark-read",
+            json={"identifier": "https://unknown.example/nope/", "read_by": "t", "clear": True},
+        ).status_code
         == 422
     )

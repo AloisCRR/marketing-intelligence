@@ -3,8 +3,10 @@
 Domain contract (stable): ``search_articles(keyword, limit)`` returns a list
 of dicts with keys ``title, url, canonical_url, source, published_at,
 author, snippet`` plus the Extraction Flag / Read State / Importance / Topic
-annotations and ``has_image_text`` (ADR-0014 vision presence) — no raw SQL
-exposure beyond this function.
+annotations, ``has_image_text`` (ADR-0014 vision presence) and ``readers`` —
+the per-reader `readers` list (ADR-0015: ``document_reads``, ``[{"reader": ...,
+"read_at": <iso tz-aware>}]`` sorted by reader, ``[]`` when unread) — no raw
+SQL exposure beyond this function.
 """
 
 from __future__ import annotations
@@ -48,7 +50,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
              FROM document_image_texts it
             WHERE it.document_id = d.id
               AND it.image_text <> 'NO_TEXT'
-       ) AS has_image_text
+       ) AS has_image_text,
+       rdrs.readers AS readers, rdrs.read_ats AS read_ats
   FROM documents d
   LEFT JOIN sources s ON s.id = d.source_id
   LEFT JOIN LATERAL (
@@ -68,7 +71,13 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
                ORDER BY dt.topic_slug, dt.created_at DESC, dt.id DESC
              ) t
        WHERE t.assigned
-  ) tps ON true"""
+  ) tps ON true
+  LEFT JOIN LATERAL (
+      SELECT array_agg(r.reader ORDER BY r.reader) AS readers,
+             array_agg(r.read_at ORDER BY r.reader) AS read_ats
+        FROM document_reads r
+       WHERE r.document_id = d.id
+  ) rdrs ON true"""
 
 #: Recency-first ordering — the default: annotations never re-order results.
 _ORDER_RECENCY = "d.published_at DESC"
@@ -126,6 +135,7 @@ _RESULT_KEYS = (
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 )
 
 
@@ -156,6 +166,31 @@ def _to_iso_tz_aware(value: Any) -> Any:
             return parsed.isoformat()
         return value
     return value
+
+
+def _readers_list(names: Any, timestamps: Any) -> list[dict[str, Any]]:
+    """Zip the ``document_reads`` reader names with their mark times.
+
+    Returns ``[]`` when the Document has no read-state rows — unread, or a
+    legacy reader-less mark that only set the ``documents.read_at`` cache (those
+    have no reader identity to attribute). The two arrays come from one
+    ``array_agg`` pair over the same rows, so they are index-aligned; the
+    result is sorted by reader (the SQL ordering, re-applied defensively) with
+    each ``read_at`` an isoformat tz-aware string.
+    """
+    if names is None or timestamps is None:
+        return []
+    if isinstance(names, (str, bytes)) or isinstance(timestamps, (str, bytes)):
+        return []
+    try:
+        pairs = list(zip(names, timestamps, strict=False))
+    except TypeError:
+        return []
+    readers = [
+        {"reader": str(reader), "read_at": _to_iso_tz_aware(read_at)} for reader, read_at in pairs
+    ]
+    readers.sort(key=lambda item: item["reader"])
+    return readers
 
 
 def _snippet(content: Any, title: Any, keyword: str) -> str:
@@ -194,11 +229,15 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         importance_updated_at = row.get("importance_updated_at")
         topics = row.get("topics")
         has_image_text = row.get("has_image_text")
+        readers = row.get("readers")
+        read_ats = row.get("read_ats")
     else:
         # Tuple rows predate the read annotation (11 cols); newer rows carry
         # read_at/read_by (13 cols); current rows append the 4 importance
-        # columns (17 cols), then the topic array (18 cols) and, after it, the
-        # `has_image_text` presence flag (19 cols). All shapes are accepted.
+        # columns (17 cols), then the topic array (18 cols), the
+        # `has_image_text` presence flag (19 cols) and, after it, the
+        # `document_reads` reader names + mark times (21 cols). All shapes are
+        # accepted; short rows have no reader rows to report.
         items = tuple(row)
         (
             title,
@@ -221,6 +260,8 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         importance_updated_at = items[16] if len(items) > 16 else None
         topics = items[17] if len(items) > 17 else None
         has_image_text = items[18] if len(items) > 18 else None
+        readers = items[19] if len(items) > 19 else None
+        read_ats = items[20] if len(items) > 20 else None
     return {
         "title": title,
         "url": url,
@@ -242,6 +283,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "importance_updated_at": importance_updated_at,
         "topics": _topics_list(topics),
         "has_image_text": bool(has_image_text),
+        "readers": _readers_list(readers, read_ats),
     }
 
 
@@ -318,10 +360,15 @@ def search_articles(
         Importance annotation (``importance_score, importance_rationale,
         importance_reporter, importance_updated_at`` — ``None`` when
         unannotated), and ``topics`` — the Document's effective canonical
-        Topic slugs (sorted, ``[]`` when unannotated), and ``has_image_text``
+        Topic slugs (sorted, ``[]`` when unannotated), ``has_image_text``
         — True when the Document has stored frame image text from the vision
         lane (ADR-0014; frames the model found no text in store the
-        ``NO_TEXT`` sentinel and do not count). ``published_at``
+        ``NO_TEXT`` sentinel and do not count), and ``readers`` — every named
+        reader with their mark time (``[{"reader": str, "read_at": <iso
+        tz-aware str>}]``, sorted by reader, ``[]`` when unread). ``read``
+        stays the anyone-read summary derived from the ``documents.read_at``
+        cache, so a legacy reader-less mark reads as ``read`` true with
+        ``readers`` ``[]``. ``published_at``
         is an isoformat tz-aware string; ``author`` may be ``None``;
         ``snippet`` is a content excerpt around the match. Empty/blank
         keyword returns ``[]``.

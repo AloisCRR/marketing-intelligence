@@ -2,9 +2,10 @@
 
 Covers the shared validated interface in `marketing_intelligence.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
-- 20-key search schema + provenance + tz-aware published_at
+- 21-key search schema + provenance + tz-aware published_at
 - period bundle shape, provenance, rank + annotations, Panama tz handling
 - string coercion for period bounds, bounded limit (101 rejected)
+- per-reader `readers` log on every Document payload (Ticket 02)
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from marketing_intelligence import period as _period  # noqa: E402
+from marketing_intelligence import read as _read  # noqa: E402
 from marketing_intelligence.service import (  # noqa: E402
     DEFAULT_PERIOD_LIMIT,
     DEFAULT_SEARCH_LIMIT,
@@ -53,6 +55,7 @@ SEARCH_EXPECTED_KEYS = {
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 }
 
 PERIOD_EXPECTED_KEYS = {
@@ -76,6 +79,7 @@ PERIOD_EXPECTED_KEYS = {
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 }
 
 
@@ -257,11 +261,12 @@ class _PeriodConnection:
 # --- search ------------------------------------------------------------------
 
 
-def test_search_returns_twenty_key_schema_with_provenance() -> None:
+def test_search_returns_twenty_one_key_schema_with_provenance() -> None:
     results = search_articles("TikTok", conn=_SearchConnection())
     assert len(results) >= 1
     for row in results:
         assert set(row.keys()) == SEARCH_EXPECTED_KEYS
+        assert row["readers"] == []  # Ticket 02: short fake rows are unread
         assert row["source"] in ("Social Media Today", "MarTech")
         parsed = _dt.datetime.fromisoformat(str(row["published_at"]))
         assert parsed.tzinfo is not None
@@ -560,6 +565,9 @@ def test_search_annotates_read_state_by_default() -> None:
     assert unread["read"] is False
     assert unread["read_at"] is None
     assert unread["read_by"] is None
+    # Ticket 02 rows carry the `readers` list; these short fake rows are unread.
+    assert marked["readers"] == []
+    assert unread["readers"] == []
 
 
 def test_search_exclude_read_filters_marked() -> None:
@@ -592,6 +600,9 @@ def test_period_annotates_read_state_by_default() -> None:
     assert unread["read"] is False
     assert unread["read_at"] is None
     assert unread["read_by"] is None
+    # Ticket 02 rows carry the `readers` list; these short fake rows are unread.
+    assert marked["readers"] == []
+    assert unread["readers"] == []
 
 
 def test_period_exclude_read_filters_marked() -> None:
@@ -635,11 +646,14 @@ _READ_STORE_ARTICLE_COLS = (
 
 READ_MARK_URL = "https://www.socialmediatoday.com/news/tiktok/1/?utm_source=rss#top"
 READ_MARK_CANON = "https://www.socialmediatoday.com/news/tiktok/1/"
+#: Stable fake Document id (the lane resolves url/canonical -> id first).
+READ_MARK_ID = "0f5e7c62-2f0e-4d0a-9b7f-1a2b3c4d5e6f"
 
 
 def _make_read_store() -> list[dict]:
     return [
         {
+            "id": READ_MARK_ID,
             "title": "TikTok Adds Voice Notes",
             "url": READ_MARK_URL,
             "canonical_url": READ_MARK_CANON,
@@ -653,53 +667,102 @@ def _make_read_store() -> list[dict]:
             "flagged_by": None,
             "read_at": None,
             "read_by": None,
+            # Per-reader Read State set (Ticket 01 side table).
+            "reads": {},
         },
     ]
 
 
 class _ReadCursor:
-    """Store-backed fake: read UPDATEs, read-state fetch, then article SELECTs."""
+    """Store-backed fake for the per-reader Read State lane (Ticket 01).
+
+    Routes the lane's statement families — id resolution, the
+    ``document_reads`` INSERT/DELETE/latest-SELECT set writes, the
+    ``documents`` cache refresh, read-state fetch, then article SELECTs —
+    against an in-memory store, so round-trips stay observable.
+    """
 
     def __init__(self, store: list[dict]) -> None:
         self._store = store
         self._result: list[tuple] = []
         self.rowcount = -1
 
+    def _match(self, url_key: str, canon_key: str) -> list[dict]:
+        return [d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key]
+
+    def _by_id(self, doc_id: object) -> dict | None:
+        return next((d for d in self._store if d["id"] == doc_id), None)
+
+    def _latest(self, doc: dict) -> tuple | None:
+        if not doc["reads"]:
+            return None
+        reader = max(doc["reads"], key=lambda r: (doc["reads"][r], r))
+        return (doc["reads"][reader], reader)
+
     def execute(self, sql: str, params: tuple | None = None) -> None:
         params = params or ()
         head = sql.strip().upper()
+        if head.startswith("SELECT R.READER"):
+            # Per-reader `readers` fetch (Ticket 02): (reader, read_at) rows, reader asc.
+            url_key, canon_key = params[0], params[1]
+            matched = self._match(url_key, canon_key)
+            self._result = (
+                sorted(matched[0]["reads"].items(), key=lambda pair: pair[0]) if matched else []
+            )
+            return
+        if "DOCUMENT_READS" in head:
+            if head.startswith("INSERT"):
+                doc_id, reader = params
+                doc = self._by_id(doc_id)
+                if doc is None:
+                    self.rowcount = 0
+                    self._result = []
+                    return
+                now = _dt.datetime.now(_dt.UTC)
+                doc["reads"][reader] = now
+                self.rowcount = 1
+                self._result = [(now,)]
+                return
+            if head.startswith("DELETE"):
+                doc = self._by_id(params[0])
+                if doc is None:
+                    self.rowcount = 0
+                    return
+                if len(params) > 1:  # per-reader clear
+                    removed = doc["reads"].pop(params[1], None)
+                    self.rowcount = 0 if removed is None else 1
+                else:  # clear every reader
+                    self.rowcount = len(doc["reads"])
+                    doc["reads"].clear()
+                self._result = []
+                return
+            # Latest-mark fetch: (read_at, reader) or no rows.
+            doc = self._by_id(params[0])
+            latest = self._latest(doc) if doc is not None else None
+            self._result = [] if latest is None else [latest]
+            return
         if head.startswith("UPDATE"):
-            if "READ_AT = NULL" in head:
-                url_key, canon_key = params[0], params[1]
-                matched = [
-                    d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key
-                ]
-                for doc in matched:
-                    doc["read_at"] = None
-                    doc["read_by"] = None
-                self.rowcount = len(matched)
-                self._result = []
-            else:
-                read_by, url_key, canon_key = params
-                matched = [
-                    d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key
-                ]
-                for doc in matched:
-                    doc["read_at"] = _dt.datetime.now(_dt.UTC)
-                    doc["read_by"] = read_by
-                self.rowcount = len(matched)
-                self._result = []
+            read_at, read_by, doc_id = params
+            doc = self._by_id(doc_id)
+            if doc is not None:
+                doc["read_at"] = read_at
+                doc["read_by"] = read_by
+            self.rowcount = 0 if doc is None else 1
+            self._result = []
+            return
+        if head.startswith("SELECT ID"):
+            url_key, canon_key = params[0], params[1]
+            matched = self._match(url_key, canon_key)
+            self._result = [(matched[0]["id"],)] if matched else []
+            return
+        if head.startswith("SELECT READ_AT, READ_BY"):
+            url_key, canon_key = params[0], params[1]
+            matched = self._match(url_key, canon_key)
+            self._result = [(matched[0]["read_at"], matched[0]["read_by"])] if matched else []
             return
         if head.startswith("SELECT DT.TOPIC_SLUG"):
             # Effective-topic fetch (Ticket 20): these stores carry no topics.
             self._result = []
-            return
-        if head.startswith("SELECT READ_AT"):
-            url_key, canon_key = params[0], params[1]
-            matched = [
-                d for d in self._store if d["url"] == url_key or d["canonical_url"] == canon_key
-            ]
-            self._result = [(matched[0]["read_at"], matched[0]["read_by"])] if matched else []
             return
         if "CANONICAL_URL" in head and "WHERE" in head:
             key = params[0]
@@ -717,6 +780,9 @@ class _ReadCursor:
 
     def fetchall(self) -> list[tuple]:
         return list(self._result)
+
+    def fetchone(self) -> tuple | None:
+        return self._result[0] if self._result else None
 
     def close(self) -> None:
         pass
@@ -747,7 +813,24 @@ def test_mark_article_read_round_trip() -> None:
     assert _dt.datetime.fromisoformat(str(article["read_at"])).tzinfo is not None
     assert article["title"] == "TikTok Adds Voice Notes"
     assert article["url"] == READ_MARK_URL
+    assert set(conn.store[0]["reads"]) == {"reader-1"}
+    # Ticket 02: the payload pairs the anyone-read cache with the `readers` list.
+    assert [r["reader"] for r in article["readers"]] == ["reader-1"]
+    assert _dt.datetime.fromisoformat(article["readers"][0]["read_at"]).tzinfo is not None
     assert conn.closed == 0
+
+
+def test_mark_article_read_keeps_one_row_per_reader() -> None:
+    """A second reader's mark must not erase the first (Ticket 01)."""
+    conn = _ReadConnection()
+    mark_article_read(READ_MARK_URL, read_by="reader-1", conn=conn)
+    second = mark_article_read(READ_MARK_CANON, read_by="reader-2", conn=conn)
+    assert set(conn.store[0]["reads"]) == {"reader-1", "reader-2"}
+    # The legacy cache still carries the latest mark (anyone-read unchanged).
+    assert second["read"] is True
+    assert second["read_by"] == "reader-2"
+    # ...while `readers` reports both, sorted by reader (Ticket 02).
+    assert [r["reader"] for r in second["readers"]] == ["reader-1", "reader-2"]
 
 
 def test_mark_article_read_clear_round_trip() -> None:
@@ -758,6 +841,47 @@ def test_mark_article_read_clear_round_trip() -> None:
     assert cleared["read_at"] is None
     assert cleared["read_by"] is None
     assert cleared["title"] == "TikTok Adds Voice Notes"
+    assert conn.store[0]["reads"] == {}
+    assert cleared["readers"] == []  # every reader row dropped (Ticket 02)
+
+
+def test_clear_with_read_by_drops_only_that_reader() -> None:
+    conn = _ReadConnection()
+    mark_article_read(READ_MARK_URL, read_by="reader-1", conn=conn)
+    mark_article_read(READ_MARK_URL, read_by="reader-2", conn=conn)
+    cleared = mark_article_read(READ_MARK_URL, read_by="reader-2", clear=True, conn=conn)
+    assert set(conn.store[0]["reads"]) == {"reader-1"}
+    # Cache falls back to the survivor, so the article still reads as read.
+    assert cleared["read"] is True
+    assert cleared["read_by"] == "reader-1"
+    # The surviving reader is the only one left in the log.
+    assert [r["reader"] for r in cleared["readers"]] == ["reader-1"]
+
+
+def test_clear_forwards_optional_read_by_to_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict] = []
+
+    def fake(
+        identifier: str, read_by: object = None, clear: object = False, conn: object = None
+    ) -> dict:
+        seen.append({"identifier": identifier, "read_by": read_by, "clear": clear})
+        return {"read_at": None, "read_by": None}
+
+    monkeypatch.setattr(_read, "mark_article_read", fake)
+    mark_article_read(READ_MARK_URL, read_by=" reader-1 ", clear=True)
+    mark_article_read(READ_MARK_URL, clear=True)
+    mark_article_read(READ_MARK_URL, read_by="   ", clear=True)
+    assert [s["read_by"] for s in seen] == ["reader-1", None, None]
+    assert all(s["clear"] is True for s in seen)
+
+
+def test_mark_without_read_by_rejected_without_query() -> None:
+    """Read State is per-reader: an unattributed mark is refused up front."""
+    conn = _ReadConnection()
+    for missing in (None, "", "   "):
+        with pytest.raises(InvalidRequest):
+            mark_article_read(READ_MARK_URL, read_by=missing, conn=conn)
+    assert conn.calls == 0
 
 
 def test_mark_article_read_blank_rejected_without_query() -> None:
@@ -782,3 +906,5 @@ def test_mark_article_read_unknown_raises_invalid_request() -> None:
         mark_article_read(
             "https://unknown.example/nope/", read_by="reader-1", conn=_ReadConnection()
         )
+    with pytest.raises(InvalidRequest):
+        mark_article_read("https://unknown.example/nope/", clear=True, conn=_ReadConnection())

@@ -11,6 +11,9 @@ Locked contract:
   never silently top-ranked.
 - Both caller surfaces expose all filters identically through the Service
   Adapter with 422 on invalid input.
+- Per-reader read marks (ADR-0015) ride along on both lanes: a Document read by
+  several readers reports them all, sorted, while `read`/`read_at`/`read_by`
+  stay the anyone-read latest-mark cache and unmarked Documents report `[]`.
 
 The fake store mirrors the SQL semantics (range/source/read filters, array
 overlap, importance floor, importance-first ordering with NULLS LAST, the
@@ -69,8 +72,18 @@ def _doc(
     *,
     score: float | None = None,
     topics: list[str] | None = None,
+    readers: list[tuple[str, _dt.datetime]] | None = None,
 ) -> dict[str, Any]:
+    """One fake Document row; ``readers`` seeds ADR-0015 read marks.
+
+    The ``document_reads`` arrays (``readers``/``read_ats``) are served in the
+    order given — deliberately unsorted where a test seeds them that way — so
+    the lane's own sort is what the assertions exercise. ``read_at``/``read_by``
+    mirror the `documents` latest-mark cache the write lane refreshes.
+    """
     url = f"https://example.test/{doc_id}/"
+    marks = list(readers or [])
+    latest = max(marks, key=lambda mark: mark[1]) if marks else None
     return {
         "id": doc_id,
         "title": title,
@@ -84,8 +97,10 @@ def _doc(
         "flag_detail": None,
         "flagged_at": None,
         "flagged_by": None,
-        "read_at": None,
-        "read_by": None,
+        "read_at": latest[1] if latest else None,
+        "read_by": latest[0] if latest else None,
+        "readers": [name for name, _at in marks],
+        "read_ats": [at for _name, at in marks],
         "importance_score": score,
         "importance_rationale": None,
         "importance_reporter": None,
@@ -493,6 +508,58 @@ def test_search_unfiltered_stays_recency_ordered_and_includes_unannotated() -> N
     assert results[-1]["importance_score"] is None
 
 
+# --- per-reader read marks (ADR-0015) -----------------------------------------
+
+
+def test_search_reports_every_reader_sorted_alongside_the_cache_summary() -> None:
+    docs = [
+        _doc(
+            90,
+            "Readers note",
+            "MarTech",
+            _utc(2026, 9, 11, 9),
+            readers=[("zoe", _utc(2026, 9, 11, 10)), ("amara", _utc(2026, 9, 12, 8))],
+        ),
+        _doc(91, "Unread note", "MarTech", _utc(2026, 9, 10, 9)),
+    ]
+    results = search_lane.search_articles("note", conn=_FakeConnection(docs))
+    by_title = {r["title"]: r for r in results}
+
+    assert by_title["Readers note"]["readers"] == [
+        {"reader": "amara", "read_at": "2026-09-12T08:00:00+00:00"},
+        {"reader": "zoe", "read_at": "2026-09-11T10:00:00+00:00"},
+    ]
+    # The anyone-read summary is unchanged: the latest mark is the cache.
+    assert by_title["Readers note"]["read"] is True
+    assert by_title["Readers note"]["read_by"] == "amara"
+    assert by_title["Unread note"]["readers"] == []
+    assert by_title["Unread note"]["read"] is False
+
+
+def test_period_reports_readers_on_both_the_capped_and_uncapped_paths() -> None:
+    docs = [
+        _doc(
+            90,
+            "Marked note",
+            "MarTech",
+            _utc(2026, 9, 11, 9),
+            readers=[("amara", _utc(2026, 9, 12, 8))],
+        ),
+        _doc(91, "Untouched note", "JCK Online", _utc(2026, 9, 10, 9)),
+    ]
+    uncapped = period_lane.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs))
+    capped = period_lane.get_period_context(
+        WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs), per_source_limit=1, limit=10
+    )
+    for bundle in (uncapped, capped):
+        by_title = {a["title"]: a for a in bundle["recent_articles"]}
+        assert by_title["Marked note"]["readers"] == [
+            {"reader": "amara", "read_at": "2026-09-12T08:00:00+00:00"}
+        ]
+        assert by_title["Marked note"]["read"] is True
+        assert by_title["Untouched note"]["readers"] == []
+
+
 # --- parity + 422 -------------------------------------------------------------
 
 
@@ -749,3 +816,40 @@ def test_live_annotation_filters_real_sql(scratch_db: str) -> None:
         }
         results = service.search_articles("Live", limit=10, **search_kwargs)
         assert all(r["title"].startswith("Live") for r in results)
+
+    # ADR-0015: the `readers` list rides both lanes' real SQL, sorted, next to
+    # the unchanged anyone-read cache. Two readers, marks an hour apart.
+    marked_url = "https://example.test/live/on-pillar-high/"
+    with psycopg.connect(scratch_db) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO document_reads (document_id, reader, read_at)"
+            " SELECT d.id, r.reader, now() - r.age"
+            "   FROM documents d,"
+            "        (VALUES ('zoe', interval '2 hours'), ('amara', interval '1 hour'))"
+            "        AS r(reader, age)"
+            "  WHERE d.url = %s",
+            (marked_url,),
+        )
+        cur.execute(
+            "UPDATE documents SET read_at = now() - interval '1 hour', read_by = 'amara'"
+            " WHERE url = %s",
+            (marked_url,),
+        )
+
+    marked = next(
+        r for r in service.search_articles("Live pillar high", limit=5) if r["url"] == marked_url
+    )
+    assert [entry["reader"] for entry in marked["readers"]] == ["amara", "zoe"]
+    for entry in marked["readers"]:
+        assert _dt.datetime.fromisoformat(entry["read_at"]).tzinfo is not None
+    assert marked["read"] is True
+    assert marked["read_by"] == "amara"
+    # An unmarked Document reports an empty log, not a missing key.
+    assert service.search_articles("Live untagged", limit=5)[0]["readers"] == []
+
+    # The capped bundle forwards the arrays through its explicit outer SELECT.
+    capped_bundle = service.get_period_context(
+        "2026-09-06", "2026-09-13", limit=10, per_source_limit=1
+    )
+    capped_item = next(a for a in capped_bundle["recent_articles"] if a["url"] == marked_url)
+    assert [entry["reader"] for entry in capped_item["readers"]] == ["amara", "zoe"]

@@ -529,6 +529,7 @@ def test_api_importance_roundtrip_and_422(monkeypatch: pytest.MonkeyPatch) -> No
     payload = ok.json()
     assert set(payload) == set(service.ARTICLE_KEYS)
     assert payload["importance_score"] == 0.7
+    assert payload["readers"] == []  # Ticket 02 key rides on the HTTP surface
 
     assert client.get("/importance", params={"url": CLEAN_URL}).json()["importance_score"] == 0.7
     assert (
@@ -543,6 +544,8 @@ def test_mcp_importance_tool_matches_service(monkeypatch: pytest.MonkeyPatch) ->
     assert mcp_result["importance_score"] == 0.6
     assert mcp_result["importance_rationale"] == "mcp"
     assert mcp_result["importance_reporter"] == "agent"
+    # Ticket 02: the same reader log key is present on the MCP surface.
+    assert mcp_result["readers"] == []
     assert MCP_SERVER.get_importance(CLEAN_URL) == service.get_importance(CLEAN_URL)
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.set_importance(CLEAN_URL, 2.0)

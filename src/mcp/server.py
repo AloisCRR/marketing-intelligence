@@ -322,25 +322,27 @@ def flag_extraction(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
 def mark_article_read(
     identifier: Annotated[str, "Article URL or canonical URL to mark."],
-    read_by: Annotated[str | None, "Reader label (<=100 chars)."] = None,
-    clear: Annotated[bool, "When true, clear the read mark instead of setting it."] = False,
+    read_by: Annotated[str | None, "Reader label (<=100 chars; required to mark)."] = None,
+    clear: Annotated[bool, "When true, clear one reader (read_by) or all (omitted)."] = False,
 ) -> dict[str, Any]:
     """Mark (or clear) an article as read.
 
-    Use to record consuming a document; idempotent — re-marking updates
-    read_at/read_by, clearing NULLs the read columns.
+    Use to record consuming a document; idempotent — marking upserts the
+    reader's row, clearing drops one reader's row (or every row).
 
     Args:
         identifier: Article URL or canonical URL.
-        read_by: Reader label, max 100 chars.
-        clear: When True, clear the read mark instead of setting it.
+        read_by: Reader label, max 100 chars; required when marking, omit to
+            clear every reader's mark.
+        clear: When True, drop one reader's mark (read_by set) or every mark.
 
     Returns:
-        The updated article dict with read columns applied or cleared.
+        The updated article dict with the reader row applied or removed.
 
     Raises:
-        InvalidRequest: If the identifier is unknown/blank or read_by is
-            invalid (non-string, overlong).
+        InvalidRequest: If the identifier is unknown/blank, read_by is
+            invalid (non-string, overlong), or read_by is missing/blank
+            when marking.
     """
     return service.mark_article_read(identifier, read_by=read_by, clear=clear)
 

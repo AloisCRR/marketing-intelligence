@@ -8,7 +8,8 @@ TDD: written FIRST (red) against the new seam:
 
 Covers: known URL returns full content + provenance, canonical-URL match,
 unknown/blank -> InvalidRequest + HTTP 422 shape + MCP tool error parity,
-search/period list shapes unchanged.
+the per-reader `readers` list (`readers`: populated/sorted, cleared-of-one, unread,
+legacy reader-less cache mark), search/period list shapes unchanged.
 """
 
 from __future__ import annotations
@@ -64,6 +65,23 @@ ARTICLE_ROWS = [
     ),
 ]
 
+# (document url, reader, read_at) — `document_reads` rows (Ticket 02) served
+# for the readers[] fetch. Deliberately bob-before-alice so the fetch proves
+# reader-ascending ordering rather than echoing insert order.
+READER_ROWS = [
+    (ARTICLE_ROWS[0][1], "bob", _utc(2026, 9, 10, 9, 30)),
+    (ARTICLE_ROWS[0][1], "alice", _utc(2026, 9, 9, 8, 0)),
+]
+
+
+def _read_marked_row(read_at: _dt.datetime, read_by: str) -> tuple:
+    """ARTICLE_ROWS[0] plus the latest-mark cache (documents.read_at/read_by)."""
+    row = list(ARTICLE_ROWS[0])
+    row[11] = read_at
+    row[12] = read_by
+    return tuple(row)
+
+
 ARTICLE_KEYS = {
     "title",
     "url",
@@ -85,6 +103,7 @@ ARTICLE_KEYS = {
     "importance_updated_at",
     "topics",
     "image_texts",
+    "readers",
 }
 
 SEARCH_RESULT_KEYS = {
@@ -108,6 +127,7 @@ SEARCH_RESULT_KEYS = {
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -131,6 +151,7 @@ PERIOD_ARTICLE_KEYS = {
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 }
 
 
@@ -140,8 +161,9 @@ PERIOD_ARTICLE_KEYS = {
 class _ArticleCursor:
     """Cursor-style fake honouring exact-then-canonical query semantics."""
 
-    def __init__(self, rows: list[tuple]) -> None:
+    def __init__(self, rows: list[tuple], reader_rows: list[tuple] | None = None) -> None:
         self._rows = rows
+        self._reader_rows = reader_rows if reader_rows is not None else []
         self.last_sql: str | None = None
         self.last_params: tuple | None = None
         self._result: list[tuple] = []
@@ -149,13 +171,20 @@ class _ArticleCursor:
     def execute(self, sql: str, params: tuple | None = None) -> None:
         self.last_sql = sql
         self.last_params = params
+        upper = sql.strip().upper()
         ident = params[0] if params else None
-        if sql.strip().upper().startswith("SELECT DT.TOPIC_SLUG"):
+        canon = params[1] if params and len(params) > 1 else None
+        if upper.startswith("SELECT DT.TOPIC_SLUG"):
             # Effective-topic fetch (Ticket 20): ARTICLE_ROWS carry no topics.
             self._result = []
-        elif sql.strip().upper().startswith("SELECT READ_AT"):
+        elif upper.startswith("SELECT R.READER"):
+            # Readers[] fetch (Ticket 02): the document_reads rows of the
+            # matched Document, or [] when it has no named reader / no match.
+            matched = [r for r in self._rows if r[1] == ident or r[2] == canon]
+            urls = {key for r in matched for key in (r[1], r[2])}
+            self._result = [(rd[1], rd[2]) for rd in self._reader_rows if rd[0] in urls]
+        elif upper.startswith("SELECT READ_AT"):
             # Read-state fetch: params (url_key, canonical_key).
-            canon = params[1] if params and len(params) > 1 else None
             matched = [r for r in self._rows if r[1] == ident or r[2] == canon]
             self._result = [(r[11], r[12]) for r in matched] if matched else []
         elif "canonical_url" in sql:
@@ -171,14 +200,17 @@ class _ArticleCursor:
 
 
 class _ArticleConnection:
-    def __init__(self, rows: list[tuple] = ARTICLE_ROWS) -> None:
+    def __init__(
+        self, rows: list[tuple] = ARTICLE_ROWS, readers: list[tuple] | None = None
+    ) -> None:
         self._rows = rows
+        self._readers = readers if readers is not None else []
         self.calls = 0
         self.closed = 0
 
     def cursor(self) -> _ArticleCursor:
         self.calls += 1
-        return _ArticleCursor(self._rows)
+        return _ArticleCursor(self._rows, self._readers)
 
     def close(self) -> None:
         self.closed += 1
@@ -238,6 +270,7 @@ def test_known_url_returns_full_content_with_provenance() -> None:
     assert article["read"] is False
     assert article["read_at"] is None
     assert article["read_by"] is None
+    assert article["readers"] == []
 
 
 def test_canonical_url_match() -> None:
@@ -276,6 +309,40 @@ def test_injected_conn_is_not_closed() -> None:
     service.get_article("https://www.socialmediatoday.com/news/tiktok/1/", conn=conn)
     assert conn.calls >= 1
     assert conn.closed == 0
+
+
+def test_readers_lists_every_reader_sorted_with_iso_timestamps() -> None:
+    conn = _ArticleConnection([_read_marked_row(_utc(2026, 9, 10, 9, 30), "bob")], READER_ROWS)
+    article = service.get_article(ARTICLE_ROWS[0][2], conn=conn)
+    assert set(article.keys()) == ARTICLE_KEYS
+    # Anyone-read view stays the latest-mark cache over documents.
+    assert article["read"] is True
+    assert article["read_at"] == "2026-09-10T09:30:00+00:00"
+    assert article["read_by"] == "bob"
+    # Full `readers` list, reader-ascending (READER_ROWS supplies bob first).
+    assert article["readers"] == [
+        {"reader": "alice", "read_at": "2026-09-09T08:00:00+00:00"},
+        {"reader": "bob", "read_at": "2026-09-10T09:30:00+00:00"},
+    ]
+
+
+def test_cleared_reader_drops_from_readers() -> None:
+    # One of two readers cleared: only the survivor's row survives the fetch.
+    conn = _ArticleConnection([_read_marked_row(_utc(2026, 9, 9, 8, 0), "alice")], READER_ROWS[1:])
+    article = service.get_article(ARTICLE_ROWS[0][2], conn=conn)
+    assert article["readers"] == [{"reader": "alice", "read_at": "2026-09-09T08:00:00+00:00"}]
+    assert article["read"] is True
+    assert article["read_by"] == "alice"
+
+
+def test_legacy_readerless_mark_reads_true_with_empty_readers() -> None:
+    # Prior mark: cache set, no document_reads row to report.
+    conn = _ArticleConnection([_read_marked_row(_utc(2026, 9, 11, 7, 0), "anonymous")], [])
+    article = service.get_article(ARTICLE_ROWS[0][2], conn=conn)
+    assert article["read"] is True
+    assert article["read_at"] == "2026-09-11T07:00:00+00:00"
+    assert article["read_by"] == "anonymous"
+    assert article["readers"] == []
 
 
 # --- HTTP surface ------------------------------------------------------------

@@ -395,7 +395,13 @@ def test_vocabulary_and_write_validation_on_both_surfaces() -> None:
 def test_topics_write_payload_identical_over_http_and_mcp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = {"title": "Gen Z", "url": URL, "canonical_url": CANONICAL, "topics": ["gen-z"]}
+    payload = {
+        "title": "Gen Z",
+        "url": URL,
+        "canonical_url": CANONICAL,
+        "topics": ["gen-z"],
+        "readers": [],
+    }
     monkeypatch.setattr(
         service,
         "set_document_topics",
@@ -408,6 +414,8 @@ def test_topics_write_payload_identical_over_http_and_mcp(
     )
     assert api_payload == payload
     assert MCP_SERVER.set_document_topics(identifier=URL, topics=["Gen Z"]) == payload
+    # Ticket 02: the reader log key passes through both surfaces unchanged.
+    assert api_payload["readers"] == []
 
 
 # --- migration ---------------------------------------------------------------

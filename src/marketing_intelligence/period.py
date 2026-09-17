@@ -15,6 +15,11 @@ claims: those signals need accumulated history and enrichment that do not
 exist yet. The bundle therefore carries only what is real — a recency-ordered
 ``recent_articles`` list, each item stamped with its 1-based ``rank`` in that
 order plus its provenance — and no placeholder analytics fields.
+
+Each item also carries the per-reader `readers` list (ADR-0015 ``document_reads``):
+``readers`` is a list of ``{reader, read_at}`` sorted by reader, ``[]`` when
+nobody has marked the Document, alongside the unchanged anyone-read summary
+(``read``/``read_at``/``read_by`` from the ``documents`` latest-mark cache).
 """
 
 from __future__ import annotations
@@ -56,7 +61,8 @@ SELECT d.title, d.url, d.canonical_url, s.name AS source,
              FROM document_image_texts it
             WHERE it.document_id = d.id
               AND it.image_text <> 'NO_TEXT'
-       ) AS has_image_text"""
+       ) AS has_image_text,
+       rdrs.readers AS readers, rdrs.read_ats AS read_ats"""
 
 _PERIOD_FROM = f"""\
   FROM documents d
@@ -79,6 +85,12 @@ _PERIOD_FROM = f"""\
              ) t
        WHERE t.assigned
   ) tps ON true
+  LEFT JOIN LATERAL (
+      SELECT array_agg(r.reader ORDER BY r.reader) AS readers,
+             array_agg(r.read_at ORDER BY r.reader) AS read_ats
+        FROM document_reads r
+       WHERE r.document_id = d.id
+  ) rdrs ON true
  WHERE d.published_at >= %s
    AND d.published_at < %s
    AND s.name = ANY(%s)"""
@@ -140,7 +152,8 @@ def _bundle_sql(*, where: str, importance_first: bool, per_source_limit: int | N
         "SELECT title, url, canonical_url, source, published_at, author,\n"
         "       flag_reason, flag_detail, flagged_at, flagged_by, read_at, read_by,\n"
         "       importance_score, importance_rationale, importance_reporter,\n"
-        "       importance_updated_at, topics, content, has_image_text\n"
+        "       importance_updated_at, topics, content, has_image_text,\n"
+        "       readers, read_ats\n"
         "  FROM (\n"
         f"{_PERIOD_SELECT},\n"
         "       ROW_NUMBER() OVER (\n"
@@ -173,6 +186,31 @@ def _iso_tz_aware(value: Any) -> Any:
             value = value.replace(tzinfo=UTC)
         return value.isoformat()
     return value
+
+
+def _readers_list(names: Any, timestamps: Any) -> list[dict[str, Any]]:
+    """Zip the ``document_reads`` reader names with their mark times.
+
+    Returns ``[]`` when the Document has no read-state rows — unread, or a
+    legacy reader-less mark that only set the ``documents.read_at`` cache (those
+    have no reader identity to attribute). The two arrays come from one
+    ``array_agg`` pair over the same rows, so they are index-aligned; the
+    result is sorted by reader (the SQL ordering, re-applied defensively) with
+    each ``read_at`` an isoformat tz-aware string.
+    """
+    if names is None or timestamps is None:
+        return []
+    if isinstance(names, (str, bytes)) or isinstance(timestamps, (str, bytes)):
+        return []
+    try:
+        pairs = list(zip(names, timestamps, strict=False))
+    except TypeError:
+        return []
+    readers = [
+        {"reader": str(reader), "read_at": _iso_tz_aware(read_at)} for reader, read_at in pairs
+    ]
+    readers.sort(key=lambda item: item["reader"])
+    return readers
 
 
 def _topics_list(value: Any) -> list[str]:
@@ -271,7 +309,12 @@ def get_period_context(
     the Document's effective canonical Topic slugs (sorted, ``[]`` when
     unannotated), and ``has_image_text`` (True when the Document has stored
     frame image text from the vision lane, ADR-0014; frames the model found
-    no text in store the ``NO_TEXT`` sentinel and do not count). No empty
+    no text in store the ``NO_TEXT`` sentinel and do not count), and
+    ``readers`` — every named reader with their mark time (``[{"reader":
+    str, "read_at": <iso tz-aware str>}]``, sorted by reader, ``[]`` when
+    unread; ADR-0015 ``document_reads``). ``read`` stays the anyone-read
+    summary derived from the ``documents.read_at`` cache, so a legacy
+    reader-less mark reads as ``read`` true with ``readers`` ``[]``. No empty
     analytics placeholders are emitted.
 
     Raises:
@@ -350,12 +393,16 @@ def get_period_context(
             topics = row.get("topics")
             content = row.get("content")
             has_image_text = row.get("has_image_text")
+            readers = row.get("readers")
+            read_ats = row.get("read_ats")
         else:
             # Tuple rows predate the read annotation (10 cols); 12-col rows
             # carry read_at/read_by; the current SELECT appends the 4
             # importance columns at [12..15], the topic array at [16], the
-            # raw body at [17] (used only for the read-time cap) and the
-            # `has_image_text` presence flag at [18]. All shapes are accepted.
+            # raw body at [17] (used only for the read-time cap), the
+            # `has_image_text` presence flag at [18] and, after it, the
+            # `document_reads` reader names + mark times at [19]/[20]. All
+            # shapes are accepted; short rows have no reader rows to report.
             items = tuple(row)
             (
                 title,
@@ -378,6 +425,8 @@ def get_period_context(
             topics = items[16] if len(items) > 16 else None
             content = items[17] if len(items) > 17 else None
             has_image_text = items[18] if len(items) > 18 else None
+            readers = items[19] if len(items) > 19 else None
+            read_ats = items[20] if len(items) > 20 else None
         articles.append(
             {
                 "title": title,
@@ -402,6 +451,7 @@ def get_period_context(
                 "importance_updated_at": _iso_tz_aware(importance_updated_at),
                 "topics": _topics_list(topics),
                 "has_image_text": bool(has_image_text),
+                "readers": _readers_list(readers, read_ats),
             }
         )
     return {

@@ -4,9 +4,9 @@ End-to-end verification over lanes 01/02/03, hermetic (fake conns, monkeypatched
 fetch — no live Postgres, no network, no model calls):
 
 - Period Context and search list payloads match the shared contract
-  key-for-key at the same limits (20-key search dicts; period bundle items
-  with `rank` plus the flag/read/importance annotations and the image-text
-  presence flag).
+  key-for-key at the same limits (21-key search dicts; period bundle items
+  with `rank` plus the flag/read/importance annotations, the image-text
+  presence flag and the per-reader `readers` log).
 - One-item lookup returns identical payloads over HTTP (TestClient) and MCP
   (direct tool call + registered-tool path), including identical validation
   failures (unknown/blank -> 422 detail shape == MCP InvalidRequest message).
@@ -77,6 +77,7 @@ SEARCH_KEYS = {
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 }
 
 PERIOD_ARTICLE_KEYS = {
@@ -100,6 +101,7 @@ PERIOD_ARTICLE_KEYS = {
     "importance_updated_at",
     "topics",
     "has_image_text",
+    "readers",
 }
 
 PERIOD_TOP_KEYS = {
@@ -128,6 +130,7 @@ ARTICLE_KEYS = {
     "importance_updated_at",
     "topics",
     "image_texts",
+    "readers",
 }
 
 
@@ -306,11 +309,13 @@ def _unwrap_call_tool(out: Any) -> Any:
 # --- list-payload shape stability ---------------------------------------------
 
 
-def test_search_list_payload_is_twenty_keys_at_same_limits() -> None:
+def test_search_list_payload_is_twenty_one_keys_at_same_limits() -> None:
     results = service.search_articles("TikTok", limit=20, conn=_ConnFake(SEARCH_ROWS))
     assert len(results) == 2
     for item in results:
         assert set(item) == SEARCH_KEYS
+        # Ticket 02: the per-reader log is appended last; unread -> [].
+        assert item["readers"] == []
     # Same limits as the pre-feature contract: limit bounds, MAX_LIMIT enforced.
     bounded = service.search_articles("TikTok", limit=1, conn=_ConnFake(SEARCH_ROWS))
     assert len(bounded) == 1 and set(bounded[0]) == SEARCH_KEYS
@@ -327,6 +332,7 @@ def test_period_list_payload_is_recency_bundle() -> None:
     assert len(ctx["recent_articles"]) == 2
     for item in ctx["recent_articles"]:
         assert set(item) == PERIOD_ARTICLE_KEYS
+        assert item["readers"] == []
     assert [item["rank"] for item in ctx["recent_articles"]] == [1, 2]
     # Same limits: limit=1 bounds the article list.
     bounded = period_lane.get_period_context(
@@ -349,6 +355,9 @@ def test_http_search_and_period_match_service_shapes(
     ).json()
     assert set(period_payload) == PERIOD_TOP_KEYS
     assert all(set(item) == PERIOD_ARTICLE_KEYS for item in period_payload["recent_articles"])
+    # HTTP carries the same readers list as the service payloads (Ticket 02).
+    assert all(item["readers"] == [] for item in search_payload["results"])
+    assert all(item["readers"] == [] for item in period_payload["recent_articles"])
 
 
 # --- one-item lookup parity: HTTP == MCP ---------------------------------------
@@ -364,9 +373,11 @@ def test_get_article_identical_over_http_and_mcp(article_conn: None) -> None:
     expected = service.get_article(ARTICLE_URL)
     assert set(expected) == ARTICLE_KEYS
     assert expected["content"] == FULL_CONTENT  # full body, never a snippet
+    assert expected["readers"] == []  # Ticket 02: unread Document -> empty log
 
     http_payload = TestClient(app).get("/article", params={"url": ARTICLE_URL}).json()
     assert http_payload == expected
+    assert http_payload["readers"] == expected["readers"]
 
     # Canonical-URL form resolves to the same stored document on both surfaces.
     assert TestClient(app).get("/article", params={"url": ARTICLE_CANONICAL}).json() == (expected)

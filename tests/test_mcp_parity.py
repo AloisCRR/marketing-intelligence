@@ -49,6 +49,7 @@ SEARCH_PAYLOAD = [
         "published_at": "2026-09-08T14:30:00+00:00",
         "author": "Andrew Hutchinson",
         "snippet": "…TikTok rolls out voice notes…",
+        "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
     }
 ]
 
@@ -58,7 +59,18 @@ PERIOD_PAYLOAD = {
         "to": "2026-09-14T00:00:00-05:00",
         "timezone": "America/Panama",
     },
-    "recent_articles": [],
+    "recent_articles": [
+        {
+            "title": "TikTok Adds Voice Notes",
+            "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+            "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+            "source": "Social Media Today",
+            "published_at": "2026-09-08T14:30:00+00:00",
+            "rank": 1,
+            "author": "Andrew Hutchinson",
+            "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
+        }
+    ],
 }
 
 FLAG_PAYLOAD = {
@@ -90,6 +102,7 @@ READ_PAYLOAD = {
     "read": True,
     "read_at": "2026-09-14T12:00:00+00:00",
     "read_by": "tester",
+    "readers": [{"reader": "tester", "read_at": "2026-09-14T12:00:00+00:00"}],
 }
 
 
@@ -175,6 +188,8 @@ def test_search_api_equals_mcp_tool(stubbed_service: None) -> None:
     )
     assert _unwrap_call_tool(out) == SEARCH_PAYLOAD
     assert api_payload["results"] == _unwrap_call_tool(out)
+    # Ticket 02: HTTP and MCP carry the identical `readers` list.
+    assert api_payload["results"][0]["readers"] == SEARCH_PAYLOAD[0]["readers"]
 
 
 def test_period_api_equals_mcp_tool(stubbed_service: None) -> None:
@@ -188,6 +203,11 @@ def test_period_api_equals_mcp_tool(stubbed_service: None) -> None:
     out = asyncio.run(MCP_SERVER.mcp.call_tool("get_period_context", dict(body, limit=50)))
     assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
     assert api_payload == _unwrap_call_tool(out)
+    # Ticket 02: period items carry the same reader log on both surfaces.
+    assert (
+        api_payload["recent_articles"][0]["readers"]
+        == (PERIOD_PAYLOAD["recent_articles"][0]["readers"])
+    )
 
 
 class _EmptyCursor:
@@ -383,18 +403,23 @@ def test_period_per_source_limit_passthrough(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_mark_read_api_equals_mcp_tool(stubbed_service: None) -> None:
-    body = {"identifier": "https://www.socialmediatoday.com/news/tiktok/1/"}
+    body = {"identifier": "https://www.socialmediatoday.com/news/tiktok/1/", "read_by": "tester"}
     api_payload = TestClient(app).post("/mark-read", json=body).json()
     assert api_payload == READ_PAYLOAD
     # Direct tool call (same service fn) ...
     assert (
-        MCP_SERVER.mark_article_read(identifier="https://www.socialmediatoday.com/news/tiktok/1/")
+        MCP_SERVER.mark_article_read(
+            identifier="https://www.socialmediatoday.com/news/tiktok/1/", read_by="tester"
+        )
         == READ_PAYLOAD
     )
     # ... and the registered-tool path agree.
     out = asyncio.run(MCP_SERVER.mcp.call_tool("mark_article_read", dict(body)))
     assert _unwrap_call_tool(out) == READ_PAYLOAD
     assert api_payload == _unwrap_call_tool(out)
+    # Ticket 02: the named mark appears in the reader log over both surfaces.
+    assert api_payload["readers"] == [{"reader": "tester", "read_at": "2026-09-14T12:00:00+00:00"}]
+    assert _unwrap_call_tool(out)["readers"] == api_payload["readers"]
 
 
 def test_mark_read_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -429,9 +454,24 @@ def test_mcp_mark_read_surfaces_service_validation(monkeypatch: pytest.MonkeyPat
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.mark_article_read(identifier="   ")
     url = "https://www.socialmediatoday.com/news/tiktok/1/"
+    # Read State is per-reader: a mark without a real reader is refused ...
+    for missing in (None, "", "   "):
+        with pytest.raises(service.InvalidRequest):
+            MCP_SERVER.mark_article_read(identifier=url, read_by=missing)
     with pytest.raises(service.InvalidRequest):
         MCP_SERVER.mark_article_read(identifier=url, read_by="y" * 101)
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.mark_article_read(identifier=url, read_by=123)
+    # ... while a clear stays valid with no reader (drops every reader's mark).
+    real_lane = read_lane.mark_article_read
+    monkeypatch.setattr(read_lane, "mark_article_read", lambda *a, **kw: {"read_at": None})
+    assert MCP_SERVER.mark_article_read(identifier=url, clear=True)["read"] is False
+    monkeypatch.setattr(read_lane, "mark_article_read", real_lane)
     # Unknown URL reaches the lane (empty store) and still surfaces InvalidRequest.
     monkeypatch.setattr(read_lane, "get_connection", lambda: _EmptyConn())
     with pytest.raises(service.InvalidRequest):
-        MCP_SERVER.mark_article_read(identifier="https://unknown.example/nope/")
+        MCP_SERVER.mark_article_read(identifier="https://unknown.example/nope/", read_by="t")
+    with pytest.raises(service.InvalidRequest):
+        MCP_SERVER.mark_article_read(
+            identifier="https://unknown.example/nope/", read_by="t", clear=True
+        )

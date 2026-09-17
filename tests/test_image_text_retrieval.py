@@ -72,8 +72,9 @@ CAPTION = "MONIdero x @mcdonalds: el accesorio coleccionable del Monopoly."
 PUBLISHED = _utc(2026, 9, 8, 14, 30)
 EXTRACTED = _utc(2026, 9, 16, 12, 0)
 
-#: Frozen pre-existing key sets (the contract before ADR-0014). Each grows by
-#: exactly one key; nothing is renamed, nothing is dropped.
+#: Frozen pre-existing key sets (the contract before ADR-0014 and ADR-0015).
+#: They grow by exactly the appended keys (`image_texts`/`has_image_text` for
+#: vision, `readers` for the per-reader read log); nothing is renamed or dropped.
 PRE_ARTICLE_KEYS = {
     "title",
     "url",
@@ -162,6 +163,9 @@ class _Cursor:
         elif head.startswith("SELECT D.READ_AT"):
             # Read-state fetch: params (url_key, canonical_key).
             self._rows = [{"read_at": None, "read_by": None}]
+        elif head.startswith("SELECT R.READER"):
+            # Per-reader read log fetch (Ticket 02): this Document is unread.
+            self._rows = []
         elif head.startswith("SELECT DT.TOPIC_SLUG"):
             # Effective-topic fetch: this Document carries no topics.
             self._rows = []
@@ -304,7 +308,8 @@ def test_written_frames_read_back_ordered_and_captioned() -> None:
 
     article = article_lane.get_article(URL, conn=conn)
 
-    assert set(article) == PRE_ARTICLE_KEYS | {"image_texts"}
+    assert set(article) == PRE_ARTICLE_KEYS | {"image_texts", "readers"}
+    assert article["readers"] == []  # Ticket 02: no named reader marked it
     assert article["image_texts"] == [
         {
             "frame_index": 0,
@@ -367,8 +372,9 @@ def test_no_text_sentinel_frames_are_stored_but_not_image_text() -> None:
 def test_search_item_carries_presence_only(stored_conn: _Conn) -> None:
     results = search_lane.search_articles("MONIdero", conn=stored_conn)
 
-    assert set(results[0]) == PRE_LIST_KEYS | {"has_image_text"}
+    assert set(results[0]) == PRE_LIST_KEYS | {"has_image_text", "readers"}
     assert results[0]["has_image_text"] is True
+    assert results[0]["readers"] == []
     assert "image_texts" not in results[0]  # no per-frame text in list payloads
     assert "content" not in results[0]
 
@@ -377,19 +383,23 @@ def test_period_item_carries_presence_only(stored_conn: _Conn) -> None:
     bundle = period_lane.get_period_context(date(2026, 9, 1), date(2026, 9, 30), conn=stored_conn)
     item = bundle["recent_articles"][0]
 
-    assert set(item) == PRE_PERIOD_KEYS | {"has_image_text"}
+    assert set(item) == PRE_PERIOD_KEYS | {"has_image_text", "readers"}
     assert item["has_image_text"] is True
+    assert item["readers"] == []
     assert "image_texts" not in item
 
 
-def test_service_key_sets_grow_by_exactly_one_key() -> None:
-    assert set(service.ARTICLE_KEYS) == PRE_ARTICLE_KEYS | {"image_texts"}
-    assert set(service.SEARCH_RESULT_KEYS) == PRE_LIST_KEYS | {"has_image_text"}
-    assert set(service.PERIOD_ARTICLE_KEYS) == PRE_PERIOD_KEYS | {"has_image_text"}
+def test_service_key_sets_grow_by_the_appended_vision_and_readers_keys() -> None:
+    assert set(service.ARTICLE_KEYS) == PRE_ARTICLE_KEYS | {"image_texts", "readers"}
+    assert set(service.SEARCH_RESULT_KEYS) == PRE_LIST_KEYS | {"has_image_text", "readers"}
+    assert set(service.PERIOD_ARTICLE_KEYS) == PRE_PERIOD_KEYS | {"has_image_text", "readers"}
     # Order is the payload order: the new keys are appended, never interleaved.
-    assert service.ARTICLE_KEYS[-1] == "image_texts"
-    assert service.SEARCH_RESULT_KEYS[-1] == "has_image_text"
-    assert service.PERIOD_ARTICLE_KEYS[-1] == "has_image_text"
+    assert service.ARTICLE_KEYS[-2:] == ("image_texts", "readers")
+    assert service.SEARCH_RESULT_KEYS[-2:] == ("has_image_text", "readers")
+    assert service.PERIOD_ARTICLE_KEYS[-2:] == ("has_image_text", "readers")
+    # `readers` is its own composed group (Ticket 02), never inside READ_KEYS.
+    assert service.READERS_KEYS == ("readers",)
+    assert "readers" not in service.READ_KEYS
 
 
 # --- HTTP == MCP ---------------------------------------------------------------
@@ -417,6 +427,8 @@ def test_article_payload_identical_over_http_and_mcp(retrieval_conns: _Conn) -> 
 
     http_payload = TestClient(app).get("/article", params={"url": URL}).json()
     assert http_payload == expected
+    # Ticket 02: the per-reader log rides along identically on both surfaces.
+    assert http_payload["readers"] == expected["readers"] == []
 
     assert MCP_SERVER.get_article(identifier=URL) == expected
     out = asyncio.run(MCP_SERVER.mcp.call_tool("get_article", {"identifier": URL}))
@@ -608,7 +620,8 @@ def test_live_frames_and_presence_over_real_sql(image_scratch_db: str) -> None:
         assert _dt.datetime.fromisoformat(item["extracted_at"]).tzinfo is not None
     # Caption untouched: image text lives beside it, never inside it.
     assert article["content"] == LIVE_CAPTION
-    assert set(article) == PRE_ARTICLE_KEYS | {"image_texts"}
+    assert set(article) == PRE_ARTICLE_KEYS | {"image_texts", "readers"}
+    assert article["readers"] == []  # Ticket 02: the live Document is unread
 
     photo = service.get_article(LIVE_PHOTO_URL)
     assert [item["image_text"] for item in photo["image_texts"]] == [image_text_lane.NO_TEXT]

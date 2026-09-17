@@ -5,13 +5,18 @@ with keys ``title, url, canonical_url, source, published_at, author,
 content`` plus the Extraction Flag annotation (``flag_reason, flag_detail,
 flagged_at, flagged_by`` — ``None`` when unflagged), the Read State
 annotation (``read`` bool derived from ``read_at IS NOT NULL``, plus
-``read_at, read_by`` — ``None`` when unread), and the latest Importance
-annotation (``importance_score, importance_rationale, importance_reporter,
-importance_updated_at`` — ``None`` when unannotated), ``topics`` — the
-Document's effective canonical Topic slugs (sorted, ``[]`` when unannotated) —
-and ``image_texts`` — the vision lane's frame texts for the Document (ADR-0014,
-ordered by ``frame_index``; ``[]`` when none) —
+``read_at, read_by`` — ``None`` when unread, and ``readers`` — the
+``document_reads`` log, one ``{reader, read_at}`` entry per named reader
+sorted by reader, ``[]`` when no named reader marked it), and the latest
+Importance annotation (``importance_score, importance_rationale,
+importance_reporter, importance_updated_at`` — ``None`` when unannotated),
+``topics`` — the Document's effective canonical Topic slugs (sorted, ``[]``
+when unannotated) — and ``image_texts`` — the vision lane's frame texts for
+the Document (ADR-0014, ordered by ``frame_index``; ``[]`` when none) —
 the full stored body (clean Markdown/text, never a snippet).
+``read``/``read_at``/``read_by`` stay the anyone-read view backed by the
+``documents`` latest-mark cache, so a legacy reader-less mark (cache set, no
+``document_reads`` row) reads as ``read=true`` with ``readers=[]``.
 Matching tries the exact URL first, then the canonical URL via
 ``marketing_intelligence.normalize.canonicalize_url``. Unknown identifiers raise
 ``ValueError`` (the service adapter maps it to ``InvalidRequest``).
@@ -115,6 +120,19 @@ SELECT t.frame_index, t.image_text, t.model, t.extracted_at
  ORDER BY t.frame_index\
 """
 
+# Per-reader `readers` list for the matching Document (Ticket 02): the full
+# `document_reads` set, one row per named reader, reader-ascending. Same
+# URL-then-canonical keying as the read/topic/image fetches above; the
+# `documents.read_at, read_by` pair stays the latest-mark cache (fetched
+# separately), so an empty set here means "no named reader marked it yet".
+_ARTICLE_READERS_SQL = """\
+SELECT r.reader, r.read_at
+  FROM document_reads r
+  JOIN documents d ON d.id = r.document_id
+ WHERE d.url = %s OR d.canonical_url = %s
+ ORDER BY r.reader ASC\
+"""
+
 _RESULT_KEYS = (
     "title",
     "url",
@@ -136,6 +154,7 @@ _RESULT_KEYS = (
     "importance_updated_at",
     "topics",
     "image_texts",
+    "readers",
 )
 
 
@@ -182,7 +201,8 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         # Tuple rows: base shape is 11 provenance/flag cols; 13-col rows also
         # carry read_at/read_by inline (older fakes); the current base SELECT
         # is 15 cols (11 + 4 importance). Read state is normally fetched
-        # separately and overrides any inline values.
+        # separately and overrides any inline values; the `readers` list
+        # (``readers``) is never inline — it comes from its own fetch.
         items = tuple(row)
         (
             title,
@@ -245,7 +265,9 @@ def _read_state(row: Any) -> tuple[Any, Any]:
 
     The read-fetch SELECT returns 2-col rows; older fakes may serve the base
     11/13-col article shape (or dicts) for the same query — those carry no
-    read info (or carry it inline) and degrade to unread defaults.
+    read info (or carry it inline) and degrade to unread defaults. This fetch
+    stays 2-col: the `readers` list (``readers``) comes from the separate
+    `_ARTICLE_READERS_SQL` fetch, never inline here.
     """
     if row is None:
         return None, None
@@ -335,6 +357,33 @@ def _image_texts_from_rows(rows: list[Any]) -> list[dict[str, Any]]:
     return items
 
 
+def _readers_from_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    """Extract the per-reader `readers` list for the Document ([] when unread).
+
+    Rows are the 2-col ``(reader, read_at)`` shape emitted by
+    `_ARTICLE_READERS_SQL` (dict rows carry the same names). Anything else —
+    e.g. base article rows served by older fakes for every SELECT — is skipped
+    rather than guessed at, and ``read_at`` normalises like the other
+    timestamps. The result is sorted by ``reader`` ascending, the documented
+    exposure order, whatever order the connection returned rows in.
+    """
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            reader = row.get("reader")
+            read_at = row.get("read_at")
+        else:
+            values = tuple(row)
+            if len(values) != 2:
+                continue
+            reader, read_at = values[0], values[1]
+        if not isinstance(reader, str):
+            continue
+        items.append({"reader": reader, "read_at": _to_iso_tz_aware(read_at)})
+    items.sort(key=lambda item: item["reader"])
+    return items
+
+
 def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     """Fetch one article's full stored body plus provenance by URL.
 
@@ -351,7 +400,10 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         author, content`` plus ``flag_reason, flag_detail, flagged_at,
         flagged_by`` (``None`` when unflagged) and the Read State annotation
         (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
-        read_by`` — ``None`` when unread), and the latest Importance
+        read_by`` — ``None`` when unread — and ``readers``: the
+        ``document_reads`` log for this Document as ``[{reader, read_at}]``
+        sorted by ``reader``, ``read_at`` an isoformat tz-aware string, ``[]``
+        when no named reader marked it), and the latest Importance
         annotation (``importance_score, importance_rationale,
         importance_reporter, importance_updated_at`` — ``None`` when
         unannotated), plus ``topics`` — the Document's effective canonical
@@ -361,7 +413,10 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         extracted_at}`` with ``extracted_at`` an isoformat tz-aware string;
         ``[]`` when the Document has no stored frame text. The Document's
         ``content`` stays caption-only: image text is never merged into it, so
-        callers see both. ``published_at`` and set
+        callers see both. ``read``/``read_at``/``read_by`` remain the
+        anyone-read view over the ``documents`` latest-mark cache, so a legacy
+        reader-less mark (cache set, no ``document_reads`` row) reads as
+        ``read=true`` with ``readers=[]``. ``published_at`` and set
         ``flagged_at``/``read_at`` values are isoformat tz-aware strings;
         ``content`` is the full stored body (never a snippet).
 
@@ -391,6 +446,7 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
         except Exception:
             canonical = key
         read_row = _fetch_one(conn, _ARTICLE_READ_SQL, (key, canonical))
+        reader_rows = _fetch_all(conn, _ARTICLE_READERS_SQL, (key, canonical))
         topic_rows = _fetch_all(conn, _ARTICLE_TOPICS_SQL, (key, canonical))
         image_text_rows = _fetch_all(conn, _ARTICLE_IMAGE_TEXTS_SQL, (key, canonical))
     finally:
@@ -406,6 +462,7 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     item["read_by"] = read_by
     item["topics"] = _topics_from_rows(topic_rows)
     item["image_texts"] = _image_texts_from_rows(image_text_rows)
+    item["readers"] = _readers_from_rows(reader_rows)
     item["published_at"] = _to_iso_tz_aware(item["published_at"])
     item["flagged_at"] = _to_iso_tz_aware(item["flagged_at"])
     item["read_at"] = _to_iso_tz_aware(item["read_at"])

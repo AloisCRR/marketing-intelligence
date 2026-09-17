@@ -6,6 +6,8 @@ Semantic-interface tests with fake-DB connections (no live Postgres):
   independent of server-local time
 - date-range filtering, newest-first ordering, provenance keys, empty ranges,
   invalid-input validation
+- per-reader read marks (ADR-0015): the `readers` log rides alongside the
+  unchanged anyone-read summary, sorted, on both the capped and uncapped paths
 - per-source health readout from seeded run rows, independent of articles
 - run recording wired into flows without changing result shapes
 - seeded regression corpus: the fixture files ARE the corpus — re-parsing
@@ -40,7 +42,12 @@ def _utc(*args: int) -> datetime:
 
 
 class _PeriodCursor:
-    """Serves preset document rows with real range/source/limit semantics."""
+    """Serves preset document rows with real range/source/limit semantics.
+
+    Rows are the full current SELECT shape (21 cols: ``readers``/``read_ats``
+    at [19]/[20] when a test seeds read marks) or any shorter legacy prefix,
+    which the lane maps to an empty `readers` list.
+    """
 
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
@@ -290,6 +297,25 @@ WEEK_FROM = date(2026, 9, 7)
 WEEK_TO = date(2026, 9, 13)
 
 
+def _row_with_readers(
+    base: tuple, readers: tuple[str, ...], read_ats: tuple[datetime, ...]
+) -> tuple:
+    """Pad a 12-col fixture row to the current 21-col shape with reader arrays.
+
+    The `documents.read_at`/`read_by` cache (indexes 10/11) is set from the
+    latest surviving mark, mirroring the write lane's cache refresh; the reader
+    names and mark times land at indexes 19/20 (`_PERIOD_SELECT` order, after
+    the importance/topic/body/`has_image_text` columns).
+    """
+    row = list(base)
+    if readers:
+        latest = max(range(len(readers)), key=lambda i: read_ats[i])
+        row[10], row[11] = read_ats[latest], readers[latest]
+    row.extend([None] * (19 - len(row)))
+    row.extend([tuple(readers), tuple(read_ats)])
+    return tuple(row)
+
+
 def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-untyped-def]
     conn = _PeriodConnection(rows)
     return get_period_context(WEEK_FROM, WEEK_TO, conn=conn, **kwargs), conn
@@ -394,6 +420,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
             "importance_updated_at",
             "topics",
             "has_image_text",
+            "readers",
         }
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
@@ -549,6 +576,8 @@ def test_unread_rows_annotate_read_false() -> None:
         assert article["read"] is False
         assert article["read_at"] is None
         assert article["read_by"] is None
+        # Unmarked Document: empty `readers` list, not a missing key.
+        assert article["readers"] == []
 
 
 def test_exclude_read_filters_marked_rows() -> None:
@@ -565,6 +594,54 @@ def test_exclude_read_filters_marked_rows() -> None:
     titles = {a["title"] for a in filtered["recent_articles"]}
     assert "TikTok Adds Voice Notes" not in titles
     assert "Signal Loss Rebuild" in titles
+
+
+def test_period_items_carry_sorted_readers_per_mark() -> None:
+    """Two readers on one item; a cleared mark leaves only the survivor."""
+    rows = [
+        _row_with_readers(
+            ARTICLE_ROWS[0],
+            ("zoe", "amara"),
+            (_utc(2026, 9, 12, 9, 0), _utc(2026, 9, 12, 10, 30)),
+        ),
+        # The second reader unmarked this one: one `document_reads` row left.
+        _row_with_readers(ARTICLE_ROWS[1], ("amara",), (_utc(2026, 9, 12, 11, 0),)),
+    ] + list(ARTICLE_ROWS[2:])
+    ctx, _ = _context(rows)
+    by_title = {a["title"]: a for a in ctx["recent_articles"]}
+
+    both = by_title["TikTok Adds Voice Notes"]
+    assert both["readers"] == [
+        {"reader": "amara", "read_at": "2026-09-12T10:30:00+00:00"},
+        {"reader": "zoe", "read_at": "2026-09-12T09:00:00+00:00"},
+    ]
+    # The anyone-read summary is unchanged: the latest mark is the cache.
+    assert both["read"] is True
+    assert both["read_by"] == "amara"
+
+    survivor = by_title["Signal Loss Rebuild"]
+    assert [entry["reader"] for entry in survivor["readers"]] == ["amara"]
+    assert survivor["readers"][0]["read_at"] == "2026-09-12T11:00:00+00:00"
+
+    # Untouched items still report an empty log.
+    assert by_title["Vicenzaoro Opens"]["readers"] == []
+
+
+def test_readers_survive_the_per_source_cap() -> None:
+    """The capped lane's outer projection must forward the reader arrays."""
+    rows = [
+        _row_with_readers(ARTICLE_ROWS[0], ("zoe",), (_utc(2026, 9, 12, 9, 0),)),
+        _row_with_readers(ARTICLE_ROWS[1], ("amara",), (_utc(2026, 9, 12, 10, 0),)),
+    ]
+    ctx, conn = _context(rows, limit=10, per_source_limit=1)
+    articles = ctx["recent_articles"]
+    assert [a["title"] for a in articles] == ["Signal Loss Rebuild", "TikTok Adds Voice Notes"]
+    assert [entry["reader"] for a in articles for entry in a["readers"]] == ["amara", "zoe"]
+    # Regression: the capped SELECT lists its columns explicitly, so dropping
+    # `readers, read_ats` from the outer projection would silently empty the
+    # log on the capped path only.
+    outer = (conn.cursor_obj.last_sql or "").split("FROM (")[0]
+    assert "readers, read_ats" in outer
 
 
 # --- health --------------------------------------------------------------------
@@ -695,6 +772,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
         "011_digest_picks.sql",
         "012_document_payloads.sql",
         "013_document_image_texts.sql",
+        "014_document_reads.sql",
     ]
     sql = (MIGRATIONS_DIR / "003_ingestion_runs.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS ingestion_runs" in sql

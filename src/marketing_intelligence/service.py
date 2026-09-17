@@ -51,6 +51,9 @@ IMPORTANCE_KEYS = (
 #: Visibility key for the controlled Topic vocabulary (Ticket 20).
 TOPICS_KEYS = ("topics",)
 
+#: Per-reader `readers` list (Ticket 02): every named reader with their mark time.
+READERS_KEYS = ("readers",)
+
 SEARCH_RESULT_KEYS = (
     (
         "title",
@@ -67,6 +70,8 @@ SEARCH_RESULT_KEYS = (
     + TOPICS_KEYS
     # Vision image-text presence (ADR-0014): list payloads stay presence-only.
     + ("has_image_text",)
+    # Ticket 02: the `readers` list, appended last.
+    + READERS_KEYS
 )
 
 PERIOD_ARTICLE_KEYS = (
@@ -84,6 +89,7 @@ PERIOD_ARTICLE_KEYS = (
     + IMPORTANCE_KEYS
     + TOPICS_KEYS
     + ("has_image_text",)
+    + READERS_KEYS
 )
 
 ARTICLE_KEYS = (
@@ -102,6 +108,7 @@ ARTICLE_KEYS = (
     + TOPICS_KEYS
     # The vision lane's frame texts, only on the one-item read (ADR-0014).
     + ("image_texts",)
+    + READERS_KEYS
 )
 
 
@@ -247,15 +254,17 @@ def search_articles(
     min_importance: float | None = None,
     topics: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Validated keyword search; returns the 20-key provenance dicts, newest first.
+    """Validated keyword search; returns the 21-key provenance dicts, newest first.
 
     `exclude_read=True` filters out marked (read) articles; the default
     False annotates every result (`read`/`read_at`/`read_by`) without
     filtering. Every result also carries the latest Importance annotation
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
     unannotated), `topics` — the Document's effective canonical Topic
-    slugs (sorted, ``[]`` when unannotated) — and `has_image_text` (True when
-    the Document has stored frame image text; ADR-0014).
+    slugs (sorted, ``[]`` when unannotated) — `has_image_text` (True when
+    the Document has stored frame image text; ADR-0014) and `readers` — the
+    per-reader `readers` list (`{reader, read_at}`, sorted by reader, ``[]`` when
+    unread; Ticket 02). `read`/`exclude_read` stay anyone-read semantics.
 
     `min_importance` (None default) keeps only Documents whose latest score is
     `>=` the floor, ordered by importance (descending, ties by recency); with
@@ -313,8 +322,10 @@ def get_period_context(
     Every article also carries the latest Importance annotation
     (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
     unannotated), `topics` — the Document's effective canonical Topic
-    slugs (sorted, ``[]`` when unannotated) — and `has_image_text` (True when
-    the Document has stored frame image text; ADR-0014).
+    slugs (sorted, ``[]`` when unannotated) — `has_image_text` (True when
+    the Document has stored frame image text; ADR-0014) and `readers` — the
+    per-reader `readers` list (`{reader, read_at}`, sorted by reader, ``[]`` when
+    unread; Ticket 02).
     `per_source_limit` (None default) caps how many of the bundle's items any
     one source may contribute — `limit` still bounds the bundle overall, slots
     a capped source cannot fill go to other sources, and both compose with
@@ -371,6 +382,9 @@ def get_article(identifier: str, conn: Any | None = None) -> dict[str, Any]:
     `image_texts`: the vision lane's frame texts for this Document
     (ADR-0014), ordered by `frame_index`, each item
     `{frame_index, image_text, model, extracted_at}` (``[]`` when none).
+    `readers` is the per-reader `readers` list (`{reader, read_at}` sorted by
+    reader, ``[]`` when unread; Ticket 02) alongside the anyone-read
+    `read`/`read_at`/`read_by` cache.
     Blank/non-string identifiers raise `InvalidRequest` without a DB
     round-trip; unknown identifiers surface from the lane as `ValueError`
     (also `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
@@ -423,17 +437,25 @@ def _validate_flagged_by(flagged_by: Any) -> Any:
     return cleaned
 
 
-def _validate_read_by(read_by: Any) -> Any:
-    """Validate the optional reader tag: string-or-null, max 100 chars.
+def _validate_read_by(read_by: Any, *, required: bool = False) -> Any:
+    """Validate the reader tag: string-or-null, max 100 chars.
 
     Mirrors the read lane (`READ_BY_MAX`); blank strings normalise to None.
+    ``required=True`` (the mark path, per-reader Read State) rejects a missing
+    or blank reader: an unattributed mark has no reader row to write.
     """
     if read_by is None:
+        if required:
+            raise InvalidRequest("read_by is required when marking an article read")
         return None
     if not isinstance(read_by, str):
         raise InvalidRequest(f"read_by must be a string or null, got {type(read_by).__name__}")
     cleaned = read_by.strip() or None
-    if cleaned is not None and len(cleaned) > _read.READ_BY_MAX:
+    if cleaned is None:
+        if required:
+            raise InvalidRequest("read_by is required when marking an article read")
+        return None
+    if len(cleaned) > _read.READ_BY_MAX:
         raise InvalidRequest(
             f"read_by must be at most {_read.READ_BY_MAX} chars, got {len(cleaned)}"
         )
@@ -450,17 +472,23 @@ def mark_article_read(
 
     Blank/non-string identifiers raise `InvalidRequest` without a DB
     round-trip, as do non-string or overlong `read_by` (>100 chars).
-    `clear=True` ignores `read_by` (no validation) and NULLs the two read
-    columns. Unknown identifiers surface from the lane as `ValueError`
-    (also `TypeError`/`LookupError`) and are normalised to `InvalidRequest`.
+    Read State is per-reader, so marking (`clear=False`) requires a
+    non-blank `read_by` — a reader-less mark is rejected here, before any
+    DB round-trip. Clearing (`clear=True`) keeps `read_by` optional: with a
+    reader only that reader's mark is dropped, without one every reader's
+    mark is dropped. Unknown identifiers surface from the lane as
+    `ValueError` (also `TypeError`/`LookupError`) and are normalised to
+    `InvalidRequest`.
+
+    The returned article dict carries the lane's anyone-read cache
+    (`read`/`read_at`/`read_by`) plus `readers` — the per-reader `readers` list
+    (`{reader, read_at}`, sorted by reader; Ticket 02) — so a named mark is
+    visible in both views.
     """
     if not isinstance(identifier, str) or not identifier.strip():
         raise InvalidRequest("identifier must be a non-empty string")
     key = identifier.strip()
-    if clear:
-        clean_by = None
-    else:
-        clean_by = _validate_read_by(read_by)
+    clean_by = _validate_read_by(read_by, required=not clear)
     try:
         result = _read.mark_article_read(key, read_by=clean_by, clear=clear, conn=conn)
     except InvalidRequest:
