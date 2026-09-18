@@ -155,7 +155,7 @@ def _known_source_names() -> set[str]:
 
 
 def _validate_sources(sources: list[str] | None) -> list[str] | None:
-    """Validate an explicit source filter; None keeps the V1 default."""
+    """Validate an explicit source filter; None keeps the curated default (all sources)."""
     if sources is None:
         return None
     if not isinstance(sources, (list, tuple)) or isinstance(sources, (str, bytes)):
@@ -550,8 +550,8 @@ def flag_extraction(
 #
 # Read-only per-Source listing for operators/agents: stored Document counts
 # and the last successful Ingestion Run come from the durable tables; cadence
-# comes from the curated registry. Both queries take the V1 name list as one
-# parameter and never write.
+# comes from the curated registry. Both queries take the curated name list as
+# one parameter and never write.
 
 _SOURCE_DOCUMENT_COUNTS_SQL = """\
 SELECT s.name, COUNT(d.id)

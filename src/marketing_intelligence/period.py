@@ -10,11 +10,12 @@ an explicit caller-supplied period interpreted in ``America/Panama``:
   upper bound at the next midnight);
 - ``datetime`` bounds are exact instants (``from`` inclusive, ``to`` exclusive).
 
-V1 deliberately makes NO velocity, emerging-topic, entity, or convergence
+The bundle currently makes no velocity, emerging-topic, entity, or convergence
 claims: those signals need accumulated history and enrichment that do not
-exist yet. The bundle therefore carries only what is real — a recency-ordered
-``recent_articles`` list, each item stamped with its 1-based ``rank`` in that
-order plus its provenance — and no placeholder analytics fields.
+exist yet and would be added via an ADR. The bundle therefore carries only what
+is real — a recency-ordered ``recent_articles`` list, each item stamped with
+its 1-based ``rank`` in that order plus its provenance — and no placeholder
+analytics fields.
 
 Each item also carries the per-reader `readers` list (ADR-0015 ``document_reads``):
 ``readers`` is a list of ``{reader, read_at}`` sorted by reader, ``[]`` when
@@ -269,8 +270,9 @@ def get_period_context(
     (``from`` is a Python keyword, hence ``from_date``/``to_date``; positional
     ``get_period_context(a, b)`` reads as (from, to). Plain dates are
     day-inclusive; datetimes are half-open ``[from, to)``. Explicit
-    ``sources`` must have seed rows in the ``sources`` table (the V1 registry
-    sources are seeded by migrations 001 + 006) or they match no articles.
+    ``sources`` must have seed rows in the ``sources`` table (the curated
+    registry sources are seeded by migrations 001 + 006) or they match no
+    articles.
     ``exclude_read`` filters out marked (read) articles via
     ``AND d.read_at IS NULL``; default False annotates without filtering.
     ``per_source_limit`` (default None) additionally caps how many items any

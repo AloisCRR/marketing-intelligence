@@ -3,8 +3,9 @@
 This module owns the Source catalog: which Sources exist, the identity inputs
 they are seeded from (name, feed/hub URLs, language), and the membership/seeding
 views other lanes consume. The curated JSON is the source of truth; the views
-here — `catalog_names()`, `catalog_seed_rows()`, and the `V1_SOURCES` snapshot —
-are all derived from it, so onboarding a Source never means editing code.
+here — `catalog_names()`, `catalog_seed_rows()`, and the `CURATED_SOURCES`
+snapshot — are all derived from it, so onboarding a Source never means editing
+code.
 
 Registry lookup is DB-free so adapters and unit tests never need Postgres.
 (The foundation lane separately seeds the `sources` table for persistence.)
@@ -67,11 +68,11 @@ DEFAULT_ENRICHMENT_POLICY: dict[str, Any] = {
 }
 
 #: Allowed retrieval (discovery) types (ticket 07 config seam; spec 06 §18).
-#: ``rss`` is the V1 feed lane; ``sitemap`` traverses declared sitemap
+#: ``rss`` is the feed lane; ``sitemap`` traverses declared sitemap
 #: index/URL-set/news feeds; ``hub`` scrapes hub-page anchors; ``sitemap+hub``
 #: runs sitemaps first with hub-anchor fallback; ``url-set`` ingests a declared
 #: URL set; ``url-set+hub`` pairs the set with hub-anchor fallback; and
-#: ``instagram`` is the ADR-0013 premium exception — a per-account Instagram
+#: ``instagram`` is the ADR-0013 per-account Instagram
 #: lane (Apify actor over declared posts), not a feed surface. Retrieval
 #: stanzas are config, not code forks — downstream ingest/flows behavior for
 #: RSS sources is unchanged.
@@ -89,8 +90,9 @@ RETRIEVAL_TYPES: tuple[str, ...] = (
 #: feed/discovery fetch: the stdlib lanes are gone, so such a fetch runs the
 #: impersonated chain (curl_cffi Chrome + browser headers → Jina reader →
 #: Firecrawl), each leg explicit about its own failure. ``apify-premium`` is
-#: the ADR-0013 exception: the fixed-purpose ``apify/instagram-post-scraper``
-#: Instagram lane, which never issues an impersonated fetch.
+#: the ADR-0013 Instagram lane: the fixed-purpose
+#: ``apify/instagram-post-scraper`` lane, which never issues an impersonated
+#: fetch.
 RETRIEVAL_POLICIES: tuple[str, ...] = ("impersonated-feed", "apify-premium")
 
 #: Deprecated back-compat alias: stanzas (or callers) still saying
@@ -106,10 +108,10 @@ EXTRACTOR_FAMILIES: tuple[str, ...] = ("generic", "json-ld-first")
 #: Default extractor when a retrieval stanza declares none.
 DEFAULT_EXTRACTOR = "generic"
 
-#: Allowed Instagram content modes (ADR-0013): v1 reads the caption only.
-#: Other postures (image-heavy account, reels transcript) are deferred to v2,
-#: so they are not valid values until a lane implements them. Carried by the
-#: `instagram` retrieval stanza; anything else drops silently.
+#: Allowed Instagram content modes (ADR-0013): the lane currently reads the
+#: caption only. Other postures (image-heavy account, reels transcript) are
+#: unimplemented, so they are not valid values until a lane adds them. Carried
+#: by the `instagram` retrieval stanza; anything else drops silently.
 CONTENT_MODES: tuple[str, ...] = ("caption_first",)
 
 #: Allowed Instagram ``image_text`` handling (ADR-0013 reserves the key):
@@ -243,7 +245,11 @@ def catalog_seed_rows() -> tuple[tuple[str, str | None, str, str], ...]:
 #: Derived snapshot of the catalog at import; do not hand-edit. New code should
 #: prefer `catalog_names()` (membership) or `catalog_seed_rows()` (identity
 #: inputs) so views cannot drift from the curated JSON.
-V1_SOURCES: tuple[str, ...] = catalog_names()
+CURATED_SOURCES: tuple[str, ...] = catalog_names()
+
+#: Deprecated alias for `CURATED_SOURCES` (same object, kept for existing
+#: callers); new code should use `CURATED_SOURCES` or `catalog_names()`.
+V1_SOURCES: tuple[str, ...] = CURATED_SOURCES
 
 
 def get_source(name: str) -> dict[str, Any]:
@@ -469,7 +475,7 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
     ):
         # Instagram stanza (ADR-0013): declared-only, like sitemap_exclude, so
         # every feed stanza keeps its exact shape. The account/hashtag keys
-        # default to None; the two mode keys carry their v1 defaults.
+        # default to None; the two mode keys fall back to their defaults.
         config["username"] = policy.get("username")
         config["hashtag_filter"] = policy.get("hashtag_filter")
         config["content_mode"] = str(policy.get("content_mode", DEFAULT_CONTENT_MODE))
@@ -484,11 +490,16 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
     return config
 
 
-def list_v1_sources() -> list[dict[str, Any]]:
-    """Return registry entries for the V1 scope, in V1 order.
+def list_curated_sources() -> list[dict[str, Any]]:
+    """Return registry entries for the curated scope, in registry order.
 
-    V1 covers all curated sources in registry order (RSS plus
+    Every curated source is covered in registry order (RSS plus
     sitemap/hub/url-set lanes, plus the ADR-0013 Instagram accounts);
     explicit ``sources=[...]`` still narrows period/flows queries to a subset.
     """
-    return [get_source(name) for name in V1_SOURCES]
+    return [get_source(name) for name in CURATED_SOURCES]
+
+
+def list_v1_sources() -> list[dict[str, Any]]:
+    """Deprecated alias for `list_curated_sources()`; new code should call that."""
+    return list_curated_sources()
