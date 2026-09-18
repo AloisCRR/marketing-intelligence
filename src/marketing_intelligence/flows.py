@@ -42,7 +42,7 @@ from marketing_intelligence.instagram import ingest_instagram_source
 from marketing_intelligence.normalize import NormalizedDocument
 from marketing_intelligence.payloads import write_document_payloads
 from marketing_intelligence.sources import (
-    V1_SOURCES,
+    catalog_names,
     get_enrichment_policy,
     get_retrieval_config,
     get_retrieval_policy,
@@ -619,8 +619,8 @@ def ingest_sources_flow(
     """Ingest multiple sources; one failure never blocks the others.
 
     Returns a per-source mapping of {inserted, skipped[, error]}.
-    Defaults to the V1 scope (all 22 curated sources) when `source_names`
-    is None; pass explicit names to narrow to a subset.
+    Defaults to the full catalog (all 22 curated sources, catalog order) when
+    `source_names` is None; pass explicit names to narrow to a subset.
 
     Each per-source subflow is invoked with `return_state=True`: a Completed
     state yields its result dict directly (including the unknown-source error
@@ -638,7 +638,7 @@ def ingest_sources_flow(
     and an unreadable future degrades to the same explicit error shape.
     """
     logger = get_run_logger()
-    names = list(source_names) if source_names is not None else list(V1_SOURCES)
+    names = list(source_names) if source_names is not None else list(catalog_names())
     batch_ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     results: dict[str, dict[str, Any]] = {}
     for offset in range(0, len(names), _BATCH_CHUNK):

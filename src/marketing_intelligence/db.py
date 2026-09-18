@@ -34,6 +34,7 @@ from psycopg import Connection
 from yoyo import get_backend, read_migrations
 
 from marketing_intelligence.config import get_database_url
+from marketing_intelligence.sources import catalog_seed_rows
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
@@ -55,65 +56,11 @@ def source_uuid(name: str) -> uuid.UUID:
     return uuid.uuid5(SOURCE_SEED_NAMESPACE, source_seed_key(name))
 
 
-#: Full curated set: the 20 feed sources seeded by migration 007 plus the
-#: ADR-0013 Instagram accounts re-asserted by migrations 012/015. Kept in
-#: sync with curated-sources.json (ISO codes en/pt/es).
-SEED_SOURCES: tuple[tuple[str, str | None, str, str], ...] = (
-    ("Consumidor Moderno", None, "https://consumidormoderno.com.br/", "pt"),
-    ("Exame", None, "https://exame.com/", "pt"),
-    ("Forbes México", None, "https://forbes.com.mx/", "es"),
-    # ADR-0013 premium lane: the Instagram account rows, seeded like any other
-    # curated source but fetched through the Apify actor (no rss_url).
-    ("ig:sabrikolod", None, "https://www.instagram.com/sabrikolod/", "es"),
-    ("ig:jordisanildefonso", None, "https://www.instagram.com/jordisanildefonso/", "es"),
-    ("InfoMoney", "https://www.infomoney.com.br/feed", "https://www.infomoney.com.br/", "pt"),
-    ("Insider Latam", None, "https://insiderlatam.com/", "es"),
-    (
-        "JCK Online",
-        "https://www.jckonline.com/feed/",
-        "https://www.jckonline.com/category/news-trends/retail/",
-        "en",
-    ),
-    ("Jing Daily", None, "https://jingdaily.com/", "en"),
-    (
-        "LVMH Press Releases",
-        None,
-        "https://www.lvmh.com/news-documents/press-releases/",
-        "en",
-    ),
-    ("MarTech", "https://martech.org/feed/", "https://martech.org/", "en"),
-    ("Marketing Dive", None, "https://www.marketingdive.com/", "en"),
-    ("MarketingDirecto", None, "https://www.marketingdirecto.com/", "es"),
-    ("Meio & Mensagem", None, "https://www.meioemensagem.com.br/", "pt"),
-    ("Modaes", None, "https://www.modaes.com/", "es"),
-    ("National Jeweler", None, "https://nationaljeweler.com/industry", "en"),
-    (
-        "Professional Jeweller",
-        "https://www.professionaljeweller.com/feed/",
-        "https://www.professionaljeweller.com/",
-        "en",
-    ),
-    ("Propmark", None, "https://propmark.com.br/", "pt"),
-    ("Retail Dive", None, "https://www.retaildive.com/topic/consumer-trends/", "en"),
-    (
-        "Richemont Media",
-        None,
-        "https://www.richemont.com/news-media/press-releases-news/",
-        "en",
-    ),
-    (
-        "Social Media Today",
-        "https://www.socialmediatoday.com/feeds/news/",
-        "https://www.socialmediatoday.com/",
-        "en",
-    ),
-    (
-        "Swarovski PR Newswire",
-        "https://www.prnewswire.com/rss/swarovski",
-        "https://www.prnewswire.com/news/swarovski/",
-        "en",
-    ),
-)
+#: Derived snapshot of the Source catalog at import: rows are
+#: (name, rss_url|None, hub_url, ISO language) in registry order. Onboarding a
+#: source means adding a stanza to curated-sources.json — never editing this
+#: file. :func:`seed_sources` pairs each row with :func:`source_uuid`(name).
+SEED_SOURCES: tuple[tuple[str, str | None, str, str], ...] = catalog_seed_rows()
 
 SEED_SOURCES_SQL = """\
 INSERT INTO sources (id, name, rss_url, hub_url, language, enabled)

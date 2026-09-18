@@ -22,7 +22,7 @@ from marketing_intelligence import read as _read
 from marketing_intelligence import search as _search
 from marketing_intelligence import topics as _topics
 from marketing_intelligence.db import get_connection
-from marketing_intelligence.sources import V1_SOURCES, get_cadence
+from marketing_intelligence.sources import catalog_names, get_cadence
 
 MAX_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
@@ -139,8 +139,9 @@ def _validate_per_source_limit(value: Any) -> int | None:
 
 
 def _known_source_names() -> set[str]:
-    """V1 names plus every registry name (V1 covers all 22; kept union for safety)."""
-    names = set(V1_SOURCES)
+    """Catalog names plus every registry name (the catalog covers all 22;
+    the union is kept for safety)."""
+    names = set(catalog_names())
     try:
         from marketing_intelligence.sources import list_sources
 
@@ -593,7 +594,7 @@ def _pair_rows(conn: Any, sql: str, params: tuple) -> dict[str, Any]:
 
 
 def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
-    """Read-only inventory of every V1 Source, in V1 order (all 22).
+    """Read-only inventory of every curated Source, in catalog order (all 22).
 
     Each item is ``{"name", "article_count", "last_ingest_at", "cadence"}``:
     the stored Document count, the most recent *successful* Ingestion Run's
@@ -608,9 +609,9 @@ def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
             an injected connection is never closed or committed here.
 
     Returns:
-        List of 22 dicts in ``V1_SOURCES`` order. Read-only.
+        List of 22 dicts in ``catalog_names()`` order. Read-only.
     """
-    names = list(V1_SOURCES)
+    names = list(catalog_names())
     owns_connection = conn is None
     if conn is None:
         conn = get_connection()

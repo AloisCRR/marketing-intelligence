@@ -31,6 +31,7 @@ import pytest  # noqa: E402
 from conftest import FakeConn, maintenance_url  # noqa: E402
 
 import marketing_intelligence.db as db  # noqa: E402
+from marketing_intelligence.sources import catalog_names  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_007 = ROOT / "migrations" / "007_deterministic_sources_and_not_null.sql"
@@ -103,7 +104,8 @@ def test_seed_ids_are_deterministic_uuid5() -> None:
     """Embedded ids must equal marketing_intelligence.db.source_uuid(name) (stdlib uuid5, no new dep)."""
     sql = _seed_sql()
     found = _UUID_RE.findall(sql)
-    assert len(found) >= 22, f"expected >=22 UUID literals in 007+012+015, found {len(found)}"
+    expected = len(catalog_names())
+    assert len(found) >= expected, f"expected >={expected} UUID literals, found {len(found)}"
     for name in _curated_names():
         assert str(db.source_uuid(name)) in sql, f"seed SQL missing deterministic id for: {name}"
 
@@ -147,15 +149,16 @@ def test_seed_sources_helper_covers_all_22_curated() -> None:
 
 def test_seed_sources_helper_is_idempotent_shape() -> None:
     """First run inserts; a rerun (rowcount 0, i.e. ON CONFLICT) only skips."""
+    n = len(catalog_names())
     fake = FakeConn(rowcount=1)
-    assert db.seed_sources(conn=fake) == (22, 0)  # type: ignore[arg-type]
+    assert db.seed_sources(conn=fake) == (n, 0)  # type: ignore[arg-type]
     assert fake.committed
     for sql, params in fake.statements:
         assert "ON CONFLICT (name) DO NOTHING" in sql
         assert params is not None and str(params[0]) == str(db.source_uuid(params[1]))
 
     rerun = FakeConn(rowcount=0)
-    assert db.seed_sources(conn=rerun) == (0, 22)  # type: ignore[arg-type]
+    assert db.seed_sources(conn=rerun) == (0, n)  # type: ignore[arg-type]
 
 
 def test_quarantine_helper_moves_null_rows() -> None:
@@ -245,8 +248,9 @@ def test_live_007_backfills_quarantine_and_enforces_not_null(scratch_db: str) ->
 
     with psycopg.connect(scratch_db) as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM sources")
-        # 20 feed rows (007) + the two Instagram rows (012 + 015).
-        assert cur.fetchone()[0] == 22
+        # One row per curated Source: the feed rows (007) + the two ADR-0013
+        # Instagram rows (012 + 015).
+        assert cur.fetchone()[0] == len(catalog_names())
         cur.execute("SELECT COUNT(*) FROM documents WHERE source_id IS NULL")
         assert cur.fetchone()[0] == 0
         cur.execute(

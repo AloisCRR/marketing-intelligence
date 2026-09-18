@@ -280,7 +280,12 @@ def test_ingest_sources_flow_covers_v1_scope_default(
 ) -> None:
     import marketing_intelligence.flows as flows
     from marketing_intelligence.discovery import HarvestPlan
-    from marketing_intelligence.sources import V1_SOURCES, get_retrieval_config, get_source
+    from marketing_intelligence.sources import (
+        V1_SOURCES,
+        catalog_names,
+        get_retrieval_config,
+        get_source,
+    )
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
 
@@ -326,7 +331,8 @@ def test_ingest_sources_flow_covers_v1_scope_default(
     _stub_enrich_identity(monkeypatch)
     results = flows.ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
-    assert len(results) == 22
+    assert set(results) == set(catalog_names())
+    assert len(results) == len(catalog_names())
     for name in V1_SOURCES:
         # Expectation follows the *effective* lane (the curated registry
         # stanza), not the raw rss_url: Swarovski's stanza routes it to hub
@@ -341,10 +347,11 @@ def test_ingest_sources_flow_covers_v1_scope_default(
 
 def test_no_extra_registry_sources_outside_v1() -> None:
     """V1 covers the full curated set: every registry name is in V1 scope."""
-    from marketing_intelligence.sources import V1_SOURCES, list_sources
+    from marketing_intelligence.sources import V1_SOURCES, catalog_names, list_sources
 
     assert {e["name"] for e in list_sources()} == set(V1_SOURCES)
-    assert len(V1_SOURCES) == 22
+    assert {e["name"] for e in list_sources()} == set(catalog_names())
+    assert len(V1_SOURCES) == len(catalog_names())
 
 
 def test_explicit_subset_still_ingests_by_name(

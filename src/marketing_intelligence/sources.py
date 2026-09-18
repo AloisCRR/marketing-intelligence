@@ -1,5 +1,11 @@
 """Source registry — curated origins seeded from curated-sources.json.
 
+This module owns the Source catalog: which Sources exist, the identity inputs
+they are seeded from (name, feed/hub URLs, language), and the membership/seeding
+views other lanes consume. The curated JSON is the source of truth; the views
+here — `catalog_names()`, `catalog_seed_rows()`, and the `V1_SOURCES` snapshot —
+are all derived from it, so onboarding a Source never means editing code.
+
 Registry lookup is DB-free so adapters and unit tests never need Postgres.
 (The foundation lane separately seeds the `sources` table for persistence.)
 """
@@ -132,31 +138,6 @@ DEFAULT_RETRIEVAL_POLICY: dict[str, Any] = {
     "policy": "impersonated-feed",
 }
 
-V1_SOURCES: tuple[str, ...] = (
-    "JCK Online",
-    "National Jeweler",
-    "Professional Jeweller",
-    "Exame",
-    "Modaes",
-    "Retail Dive",
-    "Jing Daily",
-    SOURCE_NAME_SMT,
-    "Consumidor Moderno",
-    "Meio & Mensagem",
-    "Marketing Dive",
-    "MarTech",
-    "MarketingDirecto",
-    "Propmark",
-    "Insider Latam",
-    "LVMH Press Releases",
-    "Richemont Media",
-    "Swarovski PR Newswire",
-    "InfoMoney",
-    "Forbes México",
-    "ig:sabrikolod",
-    "ig:jordisanildefonso",
-)
-
 _FALLBACK_SMT: dict[str, Any] = {
     "name": SOURCE_NAME_SMT,
     "rss_url": "https://www.socialmediatoday.com/feeds/news/",
@@ -223,6 +204,46 @@ def _registry() -> dict[str, dict[str, Any]]:
 def list_sources() -> list[dict[str, Any]]:
     """Return all curated sources in registry order (RSS + no-RSS)."""
     return [dict(entry) for entry in _registry().values()]
+
+
+def catalog_names() -> tuple[str, ...]:
+    """Return every curated Source name, in registry order.
+
+    Membership truth: a Source exists exactly when curated-sources.json
+    declares a stanza for it. Onboarding adds a stanza to that JSON — never an
+    edit here.
+    """
+    return tuple(_registry().keys())
+
+
+def catalog_seed_rows() -> tuple[tuple[str, str | None, str, str], ...]:
+    """Return one seed row per curated Source, in registry order.
+
+    Row shape is ``(name, rss_url, hub_url, language)``: ``rss_url`` is the
+    feed URL or None for no-RSS Sources (blank/non-string values included),
+    ``hub_url`` is "" when undeclared, and ``language`` is the ISO 639-1 code
+    (``en``/``pt``/``es``) `_registry` already normalized. Identity derivation
+    from these inputs belongs to the DB seeding lane, not here.
+    """
+    rows: list[tuple[str, str | None, str, str]] = []
+    for name, entry in _registry().items():
+        raw_rss = entry.get("rss_url")
+        rss_url = raw_rss if isinstance(raw_rss, str) and raw_rss.strip() else None
+        rows.append(
+            (
+                name,
+                rss_url,
+                str(entry.get("hub_url") or ""),
+                str(entry.get("language") or "en"),
+            )
+        )
+    return tuple(rows)
+
+
+#: Derived snapshot of the catalog at import; do not hand-edit. New code should
+#: prefer `catalog_names()` (membership) or `catalog_seed_rows()` (identity
+#: inputs) so views cannot drift from the curated JSON.
+V1_SOURCES: tuple[str, ...] = catalog_names()
 
 
 def get_source(name: str) -> dict[str, Any]:

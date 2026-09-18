@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 
 from marketing_intelligence import importance as _importance
 from marketing_intelligence.db import get_connection
-from marketing_intelligence.sources import V1_SOURCES
+from marketing_intelligence.sources import catalog_names
 
 PANAMA_TZ = ZoneInfo("America/Panama")
 PANAMA_NAME = "America/Panama"
@@ -344,7 +344,7 @@ def get_period_context(
         )
     floor = _validate_min_importance(min_importance)
     topic_filter = _validate_topics(topics)
-    names = list(sources) if sources is not None else list(V1_SOURCES)
+    names = list(sources) if sources is not None else list(catalog_names())
     where, filter_params = _annotation_filters(
         exclude_read=exclude_read, min_importance=floor, topics=topic_filter
     )

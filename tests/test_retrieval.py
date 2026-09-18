@@ -205,10 +205,12 @@ def test_curated_v1_stanzas() -> None:
 
 def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
     """Ticket 07: every no-RSS source declares a discovery route + extractor."""
+    from marketing_intelligence.sources import catalog_names
+
     entries = {e["source_name"]: e for e in json.loads(CURATED.read_text(encoding="utf-8"))}
     # 20 feed sources + the two ADR-0013 Instagram accounts (their own stanzas
     # are covered by tests/test_instagram_registry.py).
-    assert len(entries) == 22
+    assert len(entries) == len(catalog_names())
     expected_types = {
         "National Jeweler": "url-set+hub",
         "Exame": "sitemap",
@@ -570,11 +572,11 @@ def test_batch_keeps_shape_across_rss_sources(
 
 
 def test_registry_loads_all_22_sources() -> None:
-    from marketing_intelligence.sources import list_sources
+    from marketing_intelligence.sources import catalog_names, list_sources
 
     names = [e["name"] for e in list_sources()]
-    assert len(names) == 22
-    assert len(set(names)) == 22
+    assert len(names) == len(catalog_names())
+    assert len(set(names)) == len(catalog_names())
 
 
 def test_no_rss_entries_keep_null_rss_url_and_iso_language() -> None:

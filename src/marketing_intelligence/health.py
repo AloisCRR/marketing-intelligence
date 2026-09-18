@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from marketing_intelligence.db import get_connection
-from marketing_intelligence.sources import V1_SOURCES
+from marketing_intelligence.sources import catalog_names
 
 INSERT_RUN_SQL = """\
 INSERT INTO ingestion_runs
@@ -84,7 +84,7 @@ def get_source_health(
     Status is 'ok' when the latest run has no error, 'error' otherwise.
     Read-only: never commits, closes only owned connections.
     """
-    names = list(sources) if sources is not None else list(V1_SOURCES)
+    names = list(sources) if sources is not None else list(catalog_names())
     owns_connection = False
     if conn is None:
         conn = get_connection()

@@ -29,7 +29,12 @@ from marketing_intelligence.health import get_source_health, record_ingestion_ru
 from marketing_intelligence.ingest import parse_feed, upsert_documents
 from marketing_intelligence.normalize import content_hash_for
 from marketing_intelligence.period import PANAMA_NAME, get_period_context
-from marketing_intelligence.sources import V1_SOURCES, list_v1_sources
+from marketing_intelligence.sources import (
+    V1_SOURCES,
+    catalog_names,
+    list_sources,
+    list_v1_sources,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -325,35 +330,16 @@ def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-unt
 
 
 def test_v1_sources_constant_is_all_twenty_two() -> None:
-    assert V1_SOURCES == (
-        "JCK Online",
-        "National Jeweler",
-        "Professional Jeweller",
-        "Exame",
-        "Modaes",
-        "Retail Dive",
-        "Jing Daily",
-        "Social Media Today",
-        "Consumidor Moderno",
-        "Meio & Mensagem",
-        "Marketing Dive",
-        "MarTech",
-        "MarketingDirecto",
-        "Propmark",
-        "Insider Latam",
-        "LVMH Press Releases",
-        "Richemont Media",
-        "Swarovski PR Newswire",
-        "InfoMoney",
-        "Forbes México",
-        "ig:sabrikolod",
-        "ig:jordisanildefonso",
-    )
+    # V1_SOURCES is the compat view over the curated catalog: same names, same
+    # registry order, one entry per registry row.
+    assert tuple(V1_SOURCES) == tuple(catalog_names())
+    assert len(V1_SOURCES) == len(list_sources())
+    assert set(V1_SOURCES) == {e["name"] for e in list_sources()}
 
 
 def test_list_v1_sources_resolves_registry_entries() -> None:
     entries = list_v1_sources()
-    assert [e["name"] for e in entries] == list(V1_SOURCES)
+    assert [e["name"] for e in entries] == list(catalog_names())
     # 6 RSS entries carry rss_url; 14 sitemap/hub/url-set entries keep
     # NULL rss_url with a hub_url fallback — both resolve from the registry.
     assert all(e["hub_url"] for e in entries)
@@ -365,7 +351,7 @@ def test_period_defaults_to_v1_sources() -> None:
     ctx, conn = _context()
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
-    assert len(conn.cursor_obj.last_params[2]) == 22
+    assert len(conn.cursor_obj.last_params[2]) == len(catalog_names())
     assert {a["source"] for a in ctx["recent_articles"]} <= set(V1_SOURCES)
 
 
@@ -667,8 +653,8 @@ def test_get_source_health_reports_latest_run_per_source() -> None:
         _run("MarTech", 8, 0, "fetch failed: boom"),
     ]
     report = get_source_health(conn=_RunsConnection(runs))
-    assert [r["source"] for r in report] == list(V1_SOURCES)
-    assert len(report) == 22
+    assert [r["source"] for r in report] == list(catalog_names())
+    assert len(report) == len(catalog_names())
     by_source = {r["source"]: r for r in report}
     assert by_source["Social Media Today"]["status"] == "ok"
     assert by_source["Social Media Today"]["inserted"] == 3
