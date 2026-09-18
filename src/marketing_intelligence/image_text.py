@@ -99,7 +99,7 @@ PROMPT = (
 
 #: Stanza value (ADR-0014) that opts an account into the image-text lane:
 #: `detailedData` actor runs plus the post-upsert vision stage. Any other value
-#: (`ignore`, the v1 default) leaves both off.
+#: (`ignore`, the current default) leaves both off.
 IMAGE_TEXT_EXTRACT = "extract"
 
 #: DeepInfra's OpenAI-compatible chat-completions endpoint.

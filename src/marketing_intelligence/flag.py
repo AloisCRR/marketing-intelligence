@@ -10,8 +10,8 @@ Domain contract (stable): ``flag_extraction(identifier, reason, detail,
 flagged_by, clear)`` sets (or, with ``clear=True``, NULLs) the nullable
 ``flag_reason, flag_detail, flagged_at, flagged_by`` columns on ``documents``
 and returns the updated article dict (``ARTICLE_KEYS`` + the four flag keys,
-as produced by ``marketing_intelligence.article.get_article``). Re-flag overwrites — no
-history table V1. Flags survive re-ingest (ingestion upserts are
+as produced by ``marketing_intelligence.article.get_article``). Re-flag overwrites — the
+current schema keeps no history table. Flags survive re-ingest (ingestion upserts are
 ``ON CONFLICT DO NOTHING``; no flow changes here).
 
 Error contract: this lane raises ``ValueError``/``TypeError``/``LookupError``

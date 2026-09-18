@@ -2,7 +2,7 @@
 
 One `sources` row per account (`ig:<handle>`), ingested through the
 fixed-purpose ``apify/instagram-post-scraper`` actor instead of a feed. The
-lane is deliberately narrow and deterministic:
+lane is narrow and deterministic in its current shape:
 
 - **Pointer, derived, never stored.** The high-water mark is
   ``MAX(documents.published_at)`` for the account row. Run 0 (no pointer) is a
@@ -274,7 +274,7 @@ def _image_text_opted_in(config: dict[str, Any]) -> bool:
     One decision point for both halves of the opt-in — the actor's
     `dataDetailLevel` (carousel frames need `detailedData`) and whether the
     post-upsert vision stage runs. Never raises: a stanza without the key, or
-    with any other value, is `ignore` (the v1 default).
+    with any other value, is `ignore` (the current default).
     """
     return config.get("image_text") == IMAGE_TEXT_EXTRACT
 

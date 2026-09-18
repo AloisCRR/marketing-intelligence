@@ -40,7 +40,7 @@ from marketing_intelligence.service import DEFAULT_PERIOD_LIMIT, DEFAULT_SEARCH_
 
 SERVER_INSTRUCTIONS = (
     "Marketing Intelligence is a persistent marketing/GenZ/culture/tech intelligence platform "
-    "(not a newsletter generator): deterministic ingestion feeds a Postgres system of record, "
+    "(not a newsletter generator): curated ingestion feeds a Postgres system of record, "
     "exposed here through a semantic layer for an AI digest consumer. "
     "You are a consumer of this layer — discover evidence with search_articles, read full text "
     "with get_article, and never own or re-run scraping/ingestion yourself. "
@@ -357,7 +357,7 @@ def list_sources_inventory() -> list[dict[str, Any]]:
     ingestion.
 
     Returns:
-        All 22 V1 Sources in registry order; each dict has ``name``,
+        All curated sources in registry order; each dict has ``name``,
         ``article_count`` (stored Documents), ``last_ingest_at`` (ISO-8601
         finish time of the most recent successful Ingestion Run, or None),
         and ``cadence`` (curated, or None).
@@ -565,9 +565,11 @@ def read_about() -> str:
         {
             "server": "Marketing Intelligence",
             "what": "Persistent marketing/GenZ/culture/tech intelligence platform "
-            "(not a newsletter generator): deterministic ingestion into a "
+            "(not a newsletter generator): curated ingestion into a "
             "Postgres system of record, served to AI digest consumers.",
-            "v1_sources": "22 curated V1 sources (RSS + sitemap/hub/url-set + instagram lanes).",
+            "curated_sources": "Curated source registry in registry order (RSS + "
+            "sitemap/hub/url-set + instagram lanes); registry-driven, so new "
+            "sources and lanes land without code changes.",
             "workflow": "search_articles for discovery -> get_article for full text -> "
             "get_period_context(from_date, to_date) for any period bundle "
             "(a digest is built from a caller-chosen range; filters: min_importance, "
@@ -600,7 +602,7 @@ def period_digest(period: str, focus: str | None = None) -> str:
     """Scaffold for the full digest funnel over a period evidence bundle.
 
     The funnel is recall -> score -> tag -> select -> summarize -> record. The
-    importance rubric is versioned here, in the prompt text, so a digest can
+    importance rubric is defined here, in the prompt text, so a digest can
     cite the rubric it was scored against; it is not implemented in server
     code.
 
@@ -614,7 +616,7 @@ def period_digest(period: str, focus: str | None = None) -> str:
         f"Draft a digest for {period}{scope} by running the full funnel below "
         "against the stored evidence. Never skip a step; never invent evidence.\n"
         "\n"
-        "IMPORTANCE RUBRIC v1 (cite it in the digest; the prompt owns the rubric, "
+        "IMPORTANCE RUBRIC (cite it in the digest; the prompt owns the rubric, "
         "not the server):\n"
         "  0.9-1.0 structural  — a durable shift in consumer behaviour, a major "
         "brand/market move, or proprietary data the business must act on.\n"
@@ -630,7 +632,7 @@ def period_digest(period: str, focus: str | None = None) -> str:
         f"the range behind {period} (raise limit if needed). This "
         "recent_articles list is the candidate pool — nothing else is evidence.\n"
         "2. SCORE each candidate worth considering: set_importance(identifier, "
-        "score, rationale, reporter) using RUBRIC v1 above (0.5-0.6 is a fine "
+        "score, rationale, reporter) using RUBRIC above (0.5-0.6 is a fine "
         "default for on-pillar context; do not inflate).\n"
         "3. TAG the scored candidates: list_vocabulary for the canonical slugs, "
         "then set_document_topics(identifier, [...]) with the pillar/region/"

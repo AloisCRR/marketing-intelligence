@@ -96,7 +96,7 @@ try:  # primary backend: TLS + browser impersonation (hard dep)
 except Exception:  # pragma: no cover - primary raises explicitly when absent
     _curl_cffi_requests = None  # type: ignore[assignment]
 
-try:  # the single HTML-to-Markdown converter (hard dep, deterministic, no LLM)
+try:  # the single HTML-to-Markdown converter (hard dep, deterministic, local)
     import trafilatura as _trafilatura
 except Exception:  # pragma: no cover - declared hard dep; no fallback exists
     _trafilatura = None  # type: ignore[assignment]
@@ -260,7 +260,7 @@ def clean_to_markdown(html_or_text: str, url: str = "") -> str:
 
     Single converter: trafilatura's deterministic article extractor
     (Markdown output, links kept, precision favored; scripts, styles, and
-    boilerplate dropped — no LLM features). There is no regex fallback:
+    boilerplate dropped). There is no regex fallback:
     HTML trafilatura cannot extract (stubs, lock pages, non-HTML input)
     yields ``""``, so callers keep their existing empty-body semantics
     (thin-check, keep-RSS, :class:`UnparseableBody`) instead of storing a
