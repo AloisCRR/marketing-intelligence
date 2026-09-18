@@ -653,7 +653,7 @@ def test_lane_skips_the_stage_when_not_opted_in(monkeypatch: pytest.MonkeyPatch)
     result = instagram.ingest_instagram_source(SOURCE)
 
     assert events == ["upsert", "payloads"]
-    assert result == {"inserted": 1, "skipped": 0}  # exact v1 shape, no image-text keys
+    assert result == {"inserted": 1, "skipped": 0}  # exact result shape, no image-text keys
 
 
 def test_lane_stage_failure_keeps_inserted_and_skipped(monkeypatch: pytest.MonkeyPatch) -> None:

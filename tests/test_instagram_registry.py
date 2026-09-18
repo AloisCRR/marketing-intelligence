@@ -5,12 +5,12 @@ Observable behavior (not privates):
   registry, selecting the ``instagram`` lane with the ``apify-premium`` policy
   (never the RSS/impersonated-feed fallback)
 - the four account keys survive ``_validated_extras`` and reach
-  ``get_retrieval_config`` with their declared v1 defaults
+  ``get_retrieval_config`` with their declared curated defaults
 - ``image_text: extract`` (ADR-0014) survives only on an ``instagram``
   stanza; every other stanza type drops it like an invalid value
 - enrichment is bypassed (``force_off``): captions are final
 - the deterministic uuid5 id and the ``SEED_SOURCES`` row agree, and the name
-  is in the V1 scope
+  is in the curated scope
 - no secret/token material appears in either registry copy
 """
 
@@ -27,9 +27,9 @@ import pytest
 import marketing_intelligence.db as db
 import marketing_intelligence.sources as sources
 from marketing_intelligence.sources import (
+    CURATED_SOURCES,
     RETRIEVAL_POLICIES,
     RETRIEVAL_TYPES,
-    V1_SOURCES,
     get_enrichment_policy,
     get_retrieval_config,
     get_retrieval_policy,
@@ -224,7 +224,7 @@ def test_enrichment_is_bypassed_for_the_instagram_lane() -> None:
     assert get_enrichment_policy(IG) == {"threshold": 500, "mode": "force_off"}
 
 
-# --- source row: deterministic id, seed tuple, V1 scope ------------------------
+# --- source row: deterministic id, seed tuple, curated scope -------------------
 
 
 def test_source_uuid_is_deterministic_and_stable() -> None:
@@ -242,9 +242,9 @@ def test_seed_sources_carries_the_ig_row_once() -> None:
     assert [name for name, _, _, _ in db.SEED_SOURCES].count(IG) == 1
 
 
-def test_ig_is_in_v1_scope() -> None:
-    assert IG in V1_SOURCES
-    assert [e["name"] for e in sources.list_v1_sources()].count(IG) == 1
+def test_ig_is_in_curated_scope() -> None:
+    assert IG in CURATED_SOURCES
+    assert [e["name"] for e in sources.list_curated_sources()].count(IG) == 1
 
 
 def test_jordi_stanza_is_declared_identically_in_both_registry_copies() -> None:
@@ -265,9 +265,9 @@ def test_seed_sources_carries_the_jordi_row_once() -> None:
     assert [name for name, _, _, _ in db.SEED_SOURCES].count(JORDI) == 1
 
 
-def test_jordi_is_in_v1_scope() -> None:
-    assert JORDI in V1_SOURCES
-    assert [e["name"] for e in sources.list_v1_sources()].count(JORDI) == 1
+def test_jordi_is_in_curated_scope() -> None:
+    assert JORDI in CURATED_SOURCES
+    assert [e["name"] for e in sources.list_curated_sources()].count(JORDI) == 1
 
 
 # --- secret hygiene -----------------------------------------------------------

@@ -1,7 +1,7 @@
-"""Remaining V1 sources on the 01 adapter contract (Ticket 02).
+"""Remaining curated sources on the 01 adapter contract (Ticket 02).
 
 Observable behavior (not privates):
-- registry returns all curated V1 sources (RSS + sitemap/hub/url-set lanes + the
+- registry returns all curated sources (RSS + sitemap/hub/url-set lanes + the
   two ADR-0013 Instagram accounts)
 - each RSS fixture parses to the normalized contract (incl. pt for InfoMoney)
 - rerun upsert is idempotent per source
@@ -50,7 +50,7 @@ EXPECTED_LANGUAGE = {SMT: "en", MARTECH: "en", PJ: "en", INFOMONEY: "pt"}
 # --- registry ---------------------------------------------------------------
 
 
-def test_registry_returns_rss_v1_sources_with_correct_rss_url() -> None:
+def test_registry_returns_rss_curated_sources_with_correct_rss_url() -> None:
     for name, rss in EXPECTED_RSS.items():
         src = get_source(name)
         assert src["name"] == name
@@ -275,13 +275,13 @@ def test_multi_source_flow_records_failure_without_blocking_others(
     assert "error" in results[PJ] and results[PJ]["error"]
 
 
-def test_ingest_sources_flow_covers_v1_scope_default(
+def test_ingest_sources_flow_covers_curated_scope_default(
     monkeypatch: pytest.MonkeyPatch, no_engine: None
 ) -> None:
     import marketing_intelligence.flows as flows
     from marketing_intelligence.discovery import HarvestPlan
     from marketing_intelligence.sources import (
-        V1_SOURCES,
+        CURATED_SOURCES,
         catalog_names,
         get_retrieval_config,
         get_source,
@@ -297,15 +297,15 @@ def test_ingest_sources_flow_covers_v1_scope_default(
         # payload; parsing is labeled per-source downstream. Swarovski's dead
         # PR Newswire URL never gets here: its curated stanza routes it to hub
         # discovery (covered by test_swarovski_hub.py).
-        rss_urls = {get_source(n)["rss_url"] for n in V1_SOURCES if get_source(n)["rss_url"]}
+        rss_urls = {get_source(n)["rss_url"] for n in CURATED_SOURCES if get_source(n)["rss_url"]}
         if url in rss_urls:
             return smt_bytes
-        raise AssertionError(f"V1 default must not fetch unknown url: {url}")
+        raise AssertionError(f"curated default must not fetch unknown url: {url}")
 
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch)
     # Discovery-lane sources (sitemap/hub/url-set) yield zero docs here —
     # lane behavior is covered by the dedicated discovery suites; this test
-    # locks the V1 default scope, not per-lane extraction. An empty plan
+    # locks the curated default scope, not per-lane extraction. An empty plan
     # keeps the concurrent lane (no articles, no network) without errors.
     monkeypatch.setattr(
         flows,
@@ -321,7 +321,7 @@ def test_ingest_sources_flow_covers_v1_scope_default(
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     # The ADR-0013 Instagram lane is self-contained (APIFY_API_TOKEN + the
     # payload side-table write) and covered by the Instagram lane suite; here
-    # it only needs to not break the V1 default scope. The source-row guard
+    # it only needs to not break the curated default scope. The source-row guard
     # is stubbed: the DB row exists in prod via migrations 012/015, and the
     # live-DB seam is covered by the seed suite, not this scope test.
     monkeypatch.setattr(flows, "_ensure_source_row", lambda label: None)
@@ -330,9 +330,9 @@ def test_ingest_sources_flow_covers_v1_scope_default(
     )
     _stub_enrich_identity(monkeypatch)
     results = flows.ingest_sources_flow()
-    assert set(results) == set(V1_SOURCES)
+    assert set(results) == set(CURATED_SOURCES)
     assert len(results) == len(catalog_names())
-    for name in V1_SOURCES:
+    for name in CURATED_SOURCES:
         # Expectation follows the *effective* lane (the curated registry
         # stanza), not the raw rss_url: Swarovski's stanza routes it to hub
         # discovery off its dead PR Newswire feed.
@@ -344,11 +344,11 @@ def test_ingest_sources_flow_covers_v1_scope_default(
         assert "error" not in results[name], name
 
 
-def test_no_extra_registry_sources_outside_v1() -> None:
-    """V1 covers the full curated set: every registry name is in V1 scope."""
-    from marketing_intelligence.sources import V1_SOURCES, catalog_names, list_sources
+def test_no_extra_registry_sources_outside_curated() -> None:
+    """The curated set covers the full registry: every registry name is in scope."""
+    from marketing_intelligence.sources import CURATED_SOURCES, catalog_names, list_sources
 
-    assert {e["name"] for e in list_sources()} == set(V1_SOURCES)
+    assert {e["name"] for e in list_sources()} == set(CURATED_SOURCES)
     assert {e["name"] for e in list_sources()} == set(catalog_names())
 
 

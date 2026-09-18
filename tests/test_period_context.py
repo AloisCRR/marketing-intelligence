@@ -11,7 +11,7 @@ Semantic-interface tests with fake-DB connections (no live Postgres):
 - per-source health readout from seeded run rows, independent of articles
 - run recording wired into flows without changing result shapes
 - seeded regression corpus: the fixture files ARE the corpus — re-parsing
-  the 4 V1 fixtures (+ messy) must yield stable doc counts and hashes, so
+  the 4 curated fixtures (+ messy) must yield stable doc counts and hashes, so
   future extraction/ranking changes are caught here first
 """
 
@@ -30,10 +30,10 @@ from marketing_intelligence.ingest import parse_feed, upsert_documents
 from marketing_intelligence.normalize import content_hash_for
 from marketing_intelligence.period import PANAMA_NAME, get_period_context
 from marketing_intelligence.sources import (
-    V1_SOURCES,
+    CURATED_SOURCES,
     catalog_names,
+    list_curated_sources,
     list_sources,
-    list_v1_sources,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -326,18 +326,18 @@ def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-unt
     return get_period_context(WEEK_FROM, WEEK_TO, conn=conn, **kwargs), conn
 
 
-# --- V1 scope -----------------------------------------------------------------
+# --- curated scope ------------------------------------------------------------
 
 
-def test_v1_sources_match_the_catalog() -> None:
-    # V1_SOURCES is the compat view over the curated catalog; cross-check it
-    # against the registry view (distinct code path, one entry per registry row).
-    assert len(V1_SOURCES) == len(list_sources())
-    assert set(V1_SOURCES) == {e["name"] for e in list_sources()}
+def test_curated_sources_match_the_catalog() -> None:
+    # CURATED_SOURCES is the catalog snapshot; cross-check it against the
+    # registry view (distinct code path, one entry per registry row).
+    assert len(CURATED_SOURCES) == len(list_sources())
+    assert set(CURATED_SOURCES) == {e["name"] for e in list_sources()}
 
 
-def test_list_v1_sources_resolves_registry_entries() -> None:
-    entries = list_v1_sources()
+def test_list_curated_sources_resolves_registry_entries() -> None:
+    entries = list_curated_sources()
     assert [e["name"] for e in entries] == list(catalog_names())
     # 6 RSS entries carry rss_url; 14 sitemap/hub/url-set entries keep
     # NULL rss_url with a hub_url fallback — both resolve from the registry.
@@ -346,12 +346,12 @@ def test_list_v1_sources_resolves_registry_entries() -> None:
     assert len(rss_entries) == 6
 
 
-def test_period_defaults_to_v1_sources() -> None:
+def test_period_defaults_to_curated_sources() -> None:
     ctx, conn = _context()
     assert conn.cursor_obj.last_params is not None
-    assert set(conn.cursor_obj.last_params[2]) == set(V1_SOURCES)
+    assert set(conn.cursor_obj.last_params[2]) == set(CURATED_SOURCES)
     assert len(conn.cursor_obj.last_params[2]) == len(catalog_names())
-    assert {a["source"] for a in ctx["recent_articles"]} <= set(V1_SOURCES)
+    assert {a["source"] for a in ctx["recent_articles"]} <= set(CURATED_SOURCES)
 
 
 # --- period context + provenance ----------------------------------------------
@@ -416,7 +416,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
         (a["published_at"] for a in articles), reverse=True
     )
     # Out-of-range August article and next-week boundary excluded; JCK is
-    # in V1 scope (all 21), so it is included.
+    # in the curated scope (all 21), so it is included.
     titles = {a["title"] for a in articles}
     assert "August History" not in titles
     assert "Next-week Boundary" not in titles
@@ -426,7 +426,7 @@ def test_range_filtering_newest_first_and_provenance() -> None:
     assert by_title["Signal Loss Rebuild"]["author"] is None
 
 
-def test_explicit_sources_narrow_within_v1() -> None:
+def test_explicit_sources_narrow_within_curated() -> None:
     ctx, _ = _context(sources=["JCK Online"])
     assert [a["title"] for a in ctx["recent_articles"]] == ["JCK Extra-scope Piece"]
 
@@ -780,7 +780,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
 
 
 # --- seeded regression corpus ------------------------------------------------------
-# The V1 (+ messy) fixture files ARE the regression corpus for future
+# The curated (+ messy) fixture files ARE the regression corpus for future
 # extraction/ranking changes: counts, first-doc hashes, cross-run stability,
 # and hash self-consistency are pinned here.
 

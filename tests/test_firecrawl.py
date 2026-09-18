@@ -5,8 +5,8 @@ Contract under test:
   no request at all; quoted/``Bearer ``-prefixed env values are normalized
 - a successful scrape parses both payload shapes (v2 ``data.markdown`` and
   flat ``markdown``) into Markdown bytes
-- the request carries the deterministic v2 body (Markdown only, no LLM-backed
-  options) and a millisecond server budget below the client timeout
+- the request carries the fixed v2 body (Markdown format only) and a
+  millisecond server budget below the client timeout
 - a page-level failure (HTTP 200 + ``success: true`` + ``metadata.statusCode``
   403/404) raises instead of yielding block-page bytes
 - HTTP errors carry the status plus structured API error or a truncated

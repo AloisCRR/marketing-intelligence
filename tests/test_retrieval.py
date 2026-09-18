@@ -148,9 +148,9 @@ SWAROVSKI_HUB_STANZA: dict[str, Any] = {
 # --- policy validation -------------------------------------------------------
 
 
-def test_v1_rss_policies_resolve_to_impersonated_feed() -> None:
-    # MarTech is the V1 exception (hub lane, ticket 27): its policy is asserted
-    # with the hub stanza below.
+def test_curated_rss_policies_resolve_to_impersonated_feed() -> None:
+    # MarTech is the curated exception (hub lane, ticket 27): its policy is
+    # asserted with the hub stanza below.
     for name in ("Social Media Today", "InfoMoney", "Professional Jeweller"):
         assert get_retrieval_policy(name) == {"type": "rss", "policy": "impersonated-feed"}, name
 
@@ -174,7 +174,7 @@ def test_policy_result_is_a_copy() -> None:
 # --- curated JSON stanzas ------------------------------------------------------
 
 
-def test_curated_v1_stanzas() -> None:
+def test_curated_stanzas() -> None:
     entries = {e["source_name"]: e for e in json.loads(CURATED.read_text(encoding="utf-8"))}
     assert entries["Social Media Today"]["retrieval"] == {
         "type": "rss",
