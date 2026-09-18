@@ -17,8 +17,8 @@ docker compose up -d db        # Postgres 18 + pgvector (DATABASE_URL=postgresql
 
 ## What this is
 
-Five layers (spec §Solution): Source (curated sites/feeds) → Ingestion (Prefect `@flow/@task`, RSS+HTTP V1) → Data/Knowledge (Postgres 18 + pgvector, system of record) → Semantic/Query (`marketing_intelligence.service` adapter → thin HTTP + MCP parity surfaces) → AI (digest consumer).
-V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), deterministic ingestion only (no LLM/embeddings) + agent annotation layer (importance scores, controlled topic vocabulary, digest-picks trace) over truthful recency bundles (`recent_articles` + rank); source inventory, per-source quotas, and annotation filters on both surfaces.
+Five layers (spec §Solution): Source (curated sites/feeds) → Ingestion (Prefect `@flow/@task`, RSS + sitemap/hub/url-set lanes) → Data/Knowledge (Postgres 18 + pgvector, system of record) → Semantic/Query (`marketing_intelligence.service` adapter → thin HTTP + MCP parity surfaces) → AI (digest consumer).
+Current scope (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set) plus the per-account premium lanes; deterministic-by-default ingestion (LLM/embedding lanes admissible via ADR) + agent annotation layer (importance scores, controlled topic vocabulary, digest-picks trace) over truthful recency bundles (`recent_articles` + rank); source inventory, per-source quotas, and annotation filters on both surfaces.
 
 ## How to work here
 
@@ -29,8 +29,8 @@ V1 cuts (`CONTEXT.md`): all 20 curated sources (RSS + sitemap/hub/url-set), dete
 
 ## Domain context
 
-- Source of truth: `CONTEXT.md` (glossary + V1 cuts) and `docs/adr/`. Curated sources: `.scratch/marketing-intelligence/curated-sources.json`.
-- Boundaries: agent is a **consumer** of the semantic layer, not a scraper; callers use `marketing_intelligence.service` (`MAX_LIMIT=100`, `InvalidRequest` → HTTP 422), never raw SQL as primary access; ingestion stays deterministic and observable (rerunnable `ingest_source_flow` per source, explicit partial failure).
+- Source of truth: `CONTEXT.md` (glossary + current scope) and `docs/adr/`. Curated sources: `.scratch/marketing-intelligence/curated-sources.json`.
+- Boundaries: agent is a **consumer** of the semantic layer, not a scraper; callers use `marketing_intelligence.service` (`MAX_LIMIT=100`, `InvalidRequest` → HTTP 422), never raw SQL as primary access; ingestion stays observable (rerunnable `ingest_source_flow` per source, explicit partial failure).
 
 ## Testing
 
