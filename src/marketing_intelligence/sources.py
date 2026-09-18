@@ -487,7 +487,7 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
 def list_v1_sources() -> list[dict[str, Any]]:
     """Return registry entries for the V1 scope, in V1 order.
 
-    V1 covers all 22 curated sources in registry order (RSS plus
+    V1 covers all curated sources in registry order (RSS plus
     sitemap/hub/url-set lanes, plus the ADR-0013 Instagram accounts);
     explicit ``sources=[...]`` still narrows period/flows queries to a subset.
     """

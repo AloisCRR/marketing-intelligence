@@ -30,7 +30,6 @@ from marketing_intelligence.sources import (
     RETRIEVAL_POLICIES,
     RETRIEVAL_TYPES,
     V1_SOURCES,
-    catalog_names,
     get_enrichment_policy,
     get_retrieval_config,
     get_retrieval_policy,
@@ -244,7 +243,6 @@ def test_seed_sources_carries_the_ig_row_once() -> None:
 
 
 def test_ig_is_in_v1_scope() -> None:
-    assert IG in catalog_names()
     assert IG in V1_SOURCES
     assert [e["name"] for e in sources.list_v1_sources()].count(IG) == 1
 
@@ -268,7 +266,6 @@ def test_seed_sources_carries_the_jordi_row_once() -> None:
 
 
 def test_jordi_is_in_v1_scope() -> None:
-    assert JORDI in catalog_names()
     assert JORDI in V1_SOURCES
     assert [e["name"] for e in sources.list_v1_sources()].count(JORDI) == 1
 

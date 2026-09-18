@@ -143,7 +143,7 @@ def test_source_uuid_is_deterministic_and_unique_per_name() -> None:
         assert str(db.source_uuid(name))  # stable, non-empty
 
 
-def test_seed_sources_helper_covers_all_22_curated() -> None:
+def test_seed_sources_helper_covers_all_curated() -> None:
     assert {name for name, _, _, _ in db.SEED_SOURCES} == _curated_names()
 
 

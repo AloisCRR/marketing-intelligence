@@ -619,7 +619,7 @@ def ingest_sources_flow(
     """Ingest multiple sources; one failure never blocks the others.
 
     Returns a per-source mapping of {inserted, skipped[, error]}.
-    Defaults to the full catalog (all 22 curated sources, catalog order) when
+    Defaults to the full catalog in catalog order when
     `source_names` is None; pass explicit names to narrow to a subset.
 
     Each per-source subflow is invoked with `return_state=True`: a Completed

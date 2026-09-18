@@ -139,8 +139,8 @@ def _validate_per_source_limit(value: Any) -> int | None:
 
 
 def _known_source_names() -> set[str]:
-    """Catalog names plus every registry name (the catalog covers all 22;
-    the union is kept for safety)."""
+    """Catalog names plus every registry name (the catalog covers every
+    curated source; the union is kept for safety)."""
     names = set(catalog_names())
     try:
         from marketing_intelligence.sources import list_sources
@@ -594,7 +594,7 @@ def _pair_rows(conn: Any, sql: str, params: tuple) -> dict[str, Any]:
 
 
 def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
-    """Read-only inventory of every curated Source, in catalog order (all 22).
+    """Read-only inventory of every curated Source, in catalog order (all curated sources).
 
     Each item is ``{"name", "article_count", "last_ingest_at", "cadence"}``:
     the stored Document count, the most recent *successful* Ingestion Run's
@@ -609,7 +609,7 @@ def list_sources_inventory(conn: Any | None = None) -> list[dict[str, Any]]:
             an injected connection is never closed or committed here.
 
     Returns:
-        List of 22 dicts in ``catalog_names()`` order. Read-only.
+        One dict per catalog entry, in ``catalog_names()`` order. Read-only.
     """
     names = list(catalog_names())
     owns_connection = conn is None

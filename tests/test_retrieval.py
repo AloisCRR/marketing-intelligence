@@ -2,7 +2,7 @@
 
 Observable behavior (not privates):
 - get_retrieval_policy: allowlist validation, defaults, never raises
-- curated JSON carries retrieval stanzas for all 22 sources (RSS + no-RSS +
+- curated JSON carries retrieval stanzas for all curated sources (RSS + no-RSS +
   the two ADR-0013 Instagram accounts)
 - fetch_rss runs one lane: curl_cffi Chrome impersonation under genuine
   browser headers; a failure raises and never touches a Markdown reader or
@@ -571,7 +571,7 @@ def test_batch_keeps_shape_across_rss_sources(
 # --- ticket 07: retrieval config seam (registry + fallbacks, no RSS change) ---
 
 
-def test_registry_loads_all_22_sources() -> None:
+def test_registry_loads_all_curated_sources() -> None:
     from marketing_intelligence.sources import catalog_names, list_sources
 
     names = [e["name"] for e in list_sources()]

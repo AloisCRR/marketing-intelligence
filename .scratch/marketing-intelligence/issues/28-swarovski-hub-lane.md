@@ -13,3 +13,5 @@
 - [x] Typecheck + test suite gate green before claiming done
 
 _Resolution (2026-09-12):_ routing is pinned at the lane/config seam (`_RETRIEVAL_OVERRIDES` + `apply_retrieval_override`, asserted through the effective retrieval config), *not* at `feed_candidate_urls` as the checkbox's wording suggests — a hub page is a listing, not a feed payload, so the correction switches the stanza type rather than adding a feed fallback URL.
+
+_2026-09-18: lane-seam refactor — the code-level override is deleted; Swarovski's curated stanza now declares the hub lane directly (dead rss_url kept as provenance)._

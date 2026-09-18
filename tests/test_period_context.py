@@ -329,10 +329,9 @@ def _context(rows: list[tuple] = ARTICLE_ROWS, **kwargs):  # type: ignore[no-unt
 # --- V1 scope -----------------------------------------------------------------
 
 
-def test_v1_sources_constant_is_all_twenty_two() -> None:
-    # V1_SOURCES is the compat view over the curated catalog: same names, same
-    # registry order, one entry per registry row.
-    assert tuple(V1_SOURCES) == tuple(catalog_names())
+def test_v1_sources_match_the_catalog() -> None:
+    # V1_SOURCES is the compat view over the curated catalog; cross-check it
+    # against the registry view (distinct code path, one entry per registry row).
     assert len(V1_SOURCES) == len(list_sources())
     assert set(V1_SOURCES) == {e["name"] for e in list_sources()}
 
@@ -654,7 +653,6 @@ def test_get_source_health_reports_latest_run_per_source() -> None:
     ]
     report = get_source_health(conn=_RunsConnection(runs))
     assert [r["source"] for r in report] == list(catalog_names())
-    assert len(report) == len(catalog_names())
     by_source = {r["source"]: r for r in report}
     assert by_source["Social Media Today"]["status"] == "ok"
     assert by_source["Social Media Today"]["inserted"] == 3

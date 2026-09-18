@@ -269,8 +269,8 @@ def get_period_context(
     (``from`` is a Python keyword, hence ``from_date``/``to_date``; positional
     ``get_period_context(a, b)`` reads as (from, to). Plain dates are
     day-inclusive; datetimes are half-open ``[from, to)``. Explicit
-    ``sources`` must have seed rows in the ``sources`` table (the V1 twenty
-    are seeded by migrations 001 + 006) or they match no articles.
+    ``sources`` must have seed rows in the ``sources`` table (the V1 registry
+    sources are seeded by migrations 001 + 006) or they match no articles.
     ``exclude_read`` filters out marked (read) articles via
     ``AND d.read_at IS NULL``; default False annotates without filtering.
     ``per_source_limit`` (default None) additionally caps how many items any

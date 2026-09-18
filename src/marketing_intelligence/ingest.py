@@ -9,6 +9,12 @@
   so url, canonical_url, and content_hash collisions all collapse) plus
   per-item error capture, so a repeated run inserts nothing new and one bad
    row never aborts the Ingestion Run.
+- Retrieval lanes: lane corrections live in the curated stanzas, never in
+  code. A source whose published lane is retired is moved onto the working
+  lane by editing its registry stanza — the MarTech / MarketingDirecto /
+  Swarovski precedent. The effective stanza is whatever
+  `sources.get_retrieval_config` returns, and the flow/task routing logic
+  reads that stanza and nothing else: the stanza is the single lane seam.
 """
 
 from __future__ import annotations
@@ -77,13 +83,6 @@ _FEED_FALLBACK_URLS: dict[str, tuple[str, ...]] = {
         "https://www.jckonline.com/category/news-trends/retail/feed/",
     ),
 }
-
-#: Lane corrections live in the curated stanzas, never in code. A source
-#: whose published lane is retired is moved onto the working lane by editing
-#: its registry stanza — the MarTech / MarketingDirecto / Swarovski
-#: precedent. The effective stanza is whatever
-#: `sources.get_retrieval_config` returns, and the flow/task routing logic
-#: reads that stanza and nothing else: the stanza is the single lane seam.
 
 
 class EmptyFeedError(ValueError):

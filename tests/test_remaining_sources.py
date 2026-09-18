@@ -1,7 +1,7 @@
 """Remaining V1 sources on the 01 adapter contract (Ticket 02).
 
 Observable behavior (not privates):
-- registry returns all 22 V1 sources (RSS + sitemap/hub/url-set lanes + the
+- registry returns all curated V1 sources (RSS + sitemap/hub/url-set lanes + the
   two ADR-0013 Instagram accounts)
 - each RSS fixture parses to the normalized contract (incl. pt for InfoMoney)
 - rerun upsert is idempotent per source
@@ -331,7 +331,6 @@ def test_ingest_sources_flow_covers_v1_scope_default(
     _stub_enrich_identity(monkeypatch)
     results = flows.ingest_sources_flow()
     assert set(results) == set(V1_SOURCES)
-    assert set(results) == set(catalog_names())
     assert len(results) == len(catalog_names())
     for name in V1_SOURCES:
         # Expectation follows the *effective* lane (the curated registry
@@ -351,7 +350,6 @@ def test_no_extra_registry_sources_outside_v1() -> None:
 
     assert {e["name"] for e in list_sources()} == set(V1_SOURCES)
     assert {e["name"] for e in list_sources()} == set(catalog_names())
-    assert len(V1_SOURCES) == len(catalog_names())
 
 
 def test_explicit_subset_still_ingests_by_name(
