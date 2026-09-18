@@ -280,7 +280,6 @@ def test_ingest_sources_flow_covers_v1_scope_default(
 ) -> None:
     import marketing_intelligence.flows as flows
     from marketing_intelligence.discovery import HarvestPlan
-    from marketing_intelligence.ingest import apply_retrieval_override
     from marketing_intelligence.sources import V1_SOURCES, get_retrieval_config, get_source
 
     smt_bytes = (FIXTURES / "smt_sample.xml").read_bytes()
@@ -291,7 +290,7 @@ def test_ingest_sources_flow_covers_v1_scope_default(
                 return path.read_bytes()
         # Remaining RSS entries (JCK Online) reuse a representative RSS
         # payload; parsing is labeled per-source downstream. Swarovski's dead
-        # PR Newswire URL never gets here: its lane override routes it to hub
+        # PR Newswire URL never gets here: its curated stanza routes it to hub
         # discovery (covered by test_swarovski_hub.py).
         rss_urls = {get_source(n)["rss_url"] for n in V1_SOURCES if get_source(n)["rss_url"]}
         if url in rss_urls:
@@ -329,10 +328,10 @@ def test_ingest_sources_flow_covers_v1_scope_default(
     assert set(results) == set(V1_SOURCES)
     assert len(results) == 22
     for name in V1_SOURCES:
-        # Expectation follows the *effective* lane (registry stanza + any
-        # code-level override), not the raw rss_url: Swarovski routes to hub
+        # Expectation follows the *effective* lane (the curated registry
+        # stanza), not the raw rss_url: Swarovski's stanza routes it to hub
         # discovery off its dead PR Newswire feed.
-        effective = apply_retrieval_override(name, get_retrieval_config(name))
+        effective = get_retrieval_config(name)
         if effective["type"] == "rss":
             assert results[name] == {"inserted": 3, "skipped": 0}, name
         else:

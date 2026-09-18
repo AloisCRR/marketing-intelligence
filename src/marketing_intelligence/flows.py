@@ -31,7 +31,6 @@ from marketing_intelligence.health import record_ingestion_run
 from marketing_intelligence.ingest import (
     SOURCE_ID_SQL,
     EmptyFeedError,
-    apply_retrieval_override,
     count_feed_entries,
     feed_candidate_urls,
     fetch_rss,
@@ -171,15 +170,15 @@ def discover_task(source_name: str) -> tuple[list[NormalizedDocument], int, list
     harvest exactly; per-host politeness (slot + pacing + jitter) lives in
     `discovery_fetch`.
 
-    Consumes `get_retrieval_config` (never raises), with any code-level lane
-    override applied (`apply_retrieval_override`): a source routed off its
-    dead RSS feed runs the same hub/sitemap planning as any declared
-    discovery Source. One bad sitemap/article is an explicit per-document
-    skip (counted with causes); zero discovered URLs raise DiscoveryError,
-    which propagates like a dead RSS feed so the Ingestion Run parent
-    records the explicit per-source error.
+    Consumes `get_retrieval_config` (never raises): the curated retrieval
+    stanza is the single lane seam, so a source whose stanza declares a
+    hub/sitemap lane runs this planning exactly as any other discovery
+    Source. One bad sitemap/article is an explicit per-document skip (counted
+    with causes); zero discovered URLs raise DiscoveryError, which propagates
+    like a dead RSS feed so the Ingestion Run parent records the explicit
+    per-source error.
     """
-    config = apply_retrieval_override(source_name, get_retrieval_config(source_name))
+    config = get_retrieval_config(source_name)
     source = get_source(source_name)
     language = str(source.get("language") or "en")
     policy = str(config.get("policy") or "impersonated-feed")
@@ -452,14 +451,14 @@ def ingest_source_flow(source_name: str = "Social Media Today") -> dict[str, Any
     # The ADR-0013 `instagram` lane is the third branch: a self-contained
     # fetch → map → upsert → payload-write helper (plus the ADR-0014
     # image-text stage for opted-in accounts) that bypasses enrichment.
-    # The lane is the *effective* stanza type: `apply_retrieval_override`
-    # (ticket 28) may move a source off its curated RSS lane, and it must win
-    # over the still-present (dead) `rss_url`. Every entry without a stanza
-    # resolves to type "rss" (get_retrieval_config's default), so the curated
-    # rss_url no longer needs to re-force the lane here.
-    retrieval_type = str(
-        apply_retrieval_override(source_label, get_retrieval_config(source_label))["type"]
-    )
+    # The lane is the curated stanza type: the retrieval stanza is the single
+    # lane seam, so `get_retrieval_config` is the only lane input the routing
+    # logic reads. It must win over the still-present (dead) `rss_url` when a
+    # retired feed has been replaced by a discovery stanza. Every entry
+    # without a stanza resolves to type "rss" (get_retrieval_config's
+    # default), so the curated rss_url no longer needs to re-force the lane
+    # here.
+    retrieval_type = str(get_retrieval_config(source_label)["type"])
     if retrieval_type == "instagram":
         # ADR-0013 premium lane: Apify posts → NormalizedDocument → upsert →
         # raw-payload side table, all inside `ingest_instagram_source`, which

@@ -526,8 +526,13 @@
     "access": "open",
     "extractability": "clean HTML / RSS available",
     "retrieval": {
-      "type": "rss",
-      "policy": "impersonated-feed"
+      "type": "hub",
+      "policy": "impersonated-feed",
+      "extractor": "generic",
+      "hub": "https://www.prnewswire.com/news/swarovski/",
+      "link_pattern": ".html",
+      "pacing_ms": 1000,
+      "max_urls": 50
     },
     "enrichment": {
       "threshold": 500,

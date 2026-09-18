@@ -78,55 +78,12 @@ _FEED_FALLBACK_URLS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-#: Code-level *lane* override routing (ticket 28): sources whose curated
-#: retrieval stanza is known-wrong (published feed retired) map to the
-#: replacement stanza consumed instead of the registry one. Keyed by source
-#: name — like the URL-keyed `_FEED_FALLBACK_URLS` above, this is a routing
-#: correction, never a registry edit. It is deliberately narrow: use it only
-#: for corrections that must leave the registry untouched (Swarovski's
-#: curated stanza has to stay byte-identical to the published copy), and
-#: prefer a stanza edit whenever the registry may change — ticket 29
-#: (MarketingDirecto) took the stanza route on the MarTech precedent instead
-#: of adding an entry here.
-#:
-#: `apply_retrieval_override` merges the entry onto whatever
-#: `sources.get_retrieval_config` returned, so the flow/task routing logic
-#: stays branch-free: the effective stanza is all it ever reads.
-_RETRIEVAL_OVERRIDES: dict[str, dict[str, Any]] = {
-    # Live 2026-09-12: the curated RSS URL
-    # https://www.prnewswire.com/rss/swarovski is a dead 404 (PR Newswire
-    # retired the per-company feed), while the hub listing carries the
-    # articles. Route the lane to hub discovery on the same publisher — no
-    # wasted fetch of the dead feed, no reader leg for feed XML.
-    #
-    # link_pattern ".html" (not the broader "/news-releases/"): on the live
-    # hub every release is a same-host `...<id>.html` anchor (25 of them),
-    # while "/news-releases/" also matches 260+ taxonomy/navigation listing
-    # URLs that appear earlier in the document — they would fill `max_urls`
-    # (50) before any real release and yield zero articles.
-    "Swarovski PR Newswire": {
-        "type": "hub",
-        "hub": "https://www.prnewswire.com/news/swarovski/",
-        "link_pattern": ".html",
-    },
-}
-
-
-def apply_retrieval_override(source_name: str | None, config: dict[str, Any]) -> dict[str, Any]:
-    """Overlay the code-level lane override for `source_name` on `config`.
-
-    Sources without an override get `config` back unchanged (same object), so
-    the exact registry-derived stanza contract is preserved for every
-    untouched source. The override wins over the curated `rss_url`: a source
-    routed off the RSS lane stops fetching its dead feed entirely. Never
-    raises.
-    """
-    if not source_name:
-        return config
-    override = _RETRIEVAL_OVERRIDES.get(source_name)
-    if not override:
-        return config
-    return {**config, **override}
+#: Lane corrections live in the curated stanzas, never in code. A source
+#: whose published lane is retired is moved onto the working lane by editing
+#: its registry stanza — the MarTech / MarketingDirecto / Swarovski
+#: precedent. The effective stanza is whatever
+#: `sources.get_retrieval_config` returns, and the flow/task routing logic
+#: reads that stanza and nothing else: the stanza is the single lane seam.
 
 
 class EmptyFeedError(ValueError):

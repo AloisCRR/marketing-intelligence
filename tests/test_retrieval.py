@@ -130,6 +130,20 @@ MARKETINGDIRECTO_HUB_STANZA: dict[str, Any] = {
     "max_urls": 50,
 }
 
+#: Ticket 28: Swarovski PR Newswire's curated stanza. The `/rss/swarovski`
+#: feed is a dead 404; the route is hub discovery over the reachable news hub,
+#: with `link_pattern` ".html" selecting the release slugs. The dead `rss_url`
+#: stays in the registry as provenance only and never selects the lane.
+SWAROVSKI_HUB_STANZA: dict[str, Any] = {
+    "type": "hub",
+    "policy": "impersonated-feed",
+    "extractor": "generic",
+    "hub": "https://www.prnewswire.com/news/swarovski/",
+    "link_pattern": ".html",
+    "pacing_ms": 1000,
+    "max_urls": 50,
+}
+
 
 # --- policy validation -------------------------------------------------------
 
@@ -147,7 +161,8 @@ def test_policy_never_raises_and_defaults() -> None:
     assert get_retrieval_policy(None) == default
     # Registry RSS sources resolve to the same single lane.
     assert get_retrieval_policy("JCK Online") == default
-    assert get_retrieval_policy("Swarovski PR Newswire") == default
+    # Ticket 28: Swarovski leaves the RSS default — its curated stanza is hub.
+    assert get_retrieval_policy("Swarovski PR Newswire") == SWAROVSKI_HUB_STANZA
 
 
 def test_policy_result_is_a_copy() -> None:
@@ -182,9 +197,10 @@ def test_curated_v1_stanzas() -> None:
         "Professional Jeweller",
     ):
         assert entries[name]["enrichment"] == {"threshold": 500, "mode": "auto"}
-    # RSS extras carry explicit rss stanzas on the single impersonated lane.
-    for name in ("JCK Online", "Swarovski PR Newswire"):
-        assert entries[name]["retrieval"] == {"type": "rss", "policy": "impersonated-feed"}
+    # RSS extras carry explicit rss stanzas on the single impersonated lane;
+    # ticket 28 routed Swarovski onto its own curated hub stanza instead.
+    assert entries["JCK Online"]["retrieval"] == {"type": "rss", "policy": "impersonated-feed"}
+    assert entries["Swarovski PR Newswire"]["retrieval"] == SWAROVSKI_HUB_STANZA
 
 
 def test_curated_no_rss_stanzas_declare_route_and_extractor() -> None:
@@ -699,9 +715,14 @@ def test_rss_policy_shapes_unchanged_for_existing_lanes() -> None:
         "Professional Jeweller",
         "InfoMoney",
         "JCK Online",
-        "Swarovski PR Newswire",
     ):
         assert set(get_retrieval_policy(name)) == {"type", "policy"}, name
+    # Ticket 28: Swarovski is no longer an RSS lane — its curated hub stanza
+    # carries exactly the extras it declares, and nothing beyond them.
+    swarovski = get_retrieval_policy("Swarovski PR Newswire")
+    assert swarovski["type"] == "hub"
+    assert swarovski["policy"] == "impersonated-feed"
+    assert set(swarovski) == set(SWAROVSKI_HUB_STANZA)
 
 
 def test_martech_retrieval_config_is_the_hub_lane() -> None:

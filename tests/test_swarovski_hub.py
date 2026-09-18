@@ -1,17 +1,18 @@
 """Ticket 28: Swarovski PR Newswire dead RSS feed → hub-lane routing.
 
-The curated registry keeps Swarovski's (dead, HTTP 404) RSS stanza untouched;
-the code-level lane override in :mod:`marketing_intelligence.ingest` routes
-its Ingestion Run into the *existing* ``plan_harvest`` hub path on the
-reachable PR Newswire hub — no second hub implementation, no wasted fetch of
-the dead feed, no reader leg for feed XML.
+The route lives in Swarovski's curated stanza: the registry entry declares
+``type: hub`` discovery on the reachable PR Newswire hub while carrying its
+(dead, HTTP 404) ``rss_url`` as provenance only. Its Ingestion Run therefore
+runs the *existing* ``plan_harvest`` hub path — no code-level override table,
+no second hub implementation, no wasted fetch of the dead feed, no reader leg
+for feed XML.
 
 Covered here:
-- the routing seam (dead RSS stanza resolves to a hub-lane config),
+- the routing seam (the curated stanza normalizes to a hub-lane config),
 - the discovery seam (stub PR Newswire hub HTML → real article URLs),
 - the Ingestion Run (inserts real articles, never touches the dead URL),
 - partial failure and per-source isolation (unchanged flow behavior),
-- the regression pin (every other source's stanza resolves identically).
+- the feed-lane pin (healthy RSS sources keep the single-candidate contract).
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from prefect_harness import no_engine
 
 import marketing_intelligence.flows as flows
 from marketing_intelligence.discovery import ArticleFetchError, plan_harvest
-from marketing_intelligence.ingest import apply_retrieval_override, feed_candidate_urls
-from marketing_intelligence.sources import get_retrieval_config, get_source, list_sources
+from marketing_intelligence.ingest import feed_candidate_urls
+from marketing_intelligence.sources import get_retrieval_config, get_source
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -44,7 +45,7 @@ ARTICLES = (
 
 
 def _effective_config() -> dict[str, Any]:
-    return apply_retrieval_override(SWAROVSKI, get_retrieval_config(SWAROVSKI))
+    return get_retrieval_config(SWAROVSKI)
 
 
 def _article_html(url: str, title: str) -> bytes:
@@ -115,49 +116,50 @@ def _forbid_feed_lane(monkeypatch: Any) -> None:
 
 
 def test_dead_swarovski_feed_resolves_to_hub_lane_config() -> None:
-    """The unit seam: the override swaps the dead RSS stanza for a hub stanza."""
+    """The unit seam: the curated stanza normalizes to a hub-lane config."""
     effective = _effective_config()
     assert effective["type"] == "hub"
     assert effective["hub"] == HUB
     assert effective["link_pattern"] == LINK_PATTERN
     assert effective["policy"] == "impersonated-feed"
-    # The full discovery stanza shape survives the overlay.
+    # The full discovery stanza shape is filled in from the curated entry.
     assert effective["extractor"] == "generic"
     assert effective["sitemaps"] == []
     assert effective["hub_pages"] == []
     assert effective["max_urls"] == 50
 
 
-def test_registry_stanza_still_reads_rss_while_runtime_routes_to_hub() -> None:
-    """Curated registry untouched: the shipped JSON still declares rss."""
+def test_curated_stanza_is_the_route() -> None:
+    """The shipped JSON entry *is* the route: a hub stanza plus the dead feed."""
     src = get_source(SWAROVSKI)
     assert src["rss_url"] == DEAD_RSS
-    assert get_retrieval_config(SWAROVSKI)["type"] == "rss"
     entries = json.loads(SHIPPED_REGISTRY.read_text(encoding="utf-8"))
     entry = next(e for e in entries if e["source_name"] == SWAROVSKI)
+    # The dead feed URL stays registry provenance; it no longer selects a lane.
     assert entry["rss_url"] == DEAD_RSS
     assert entry["hub_url"] == HUB
-    # The stanza is the plain dead-RSS declaration — no routing correction.
-    assert entry["retrieval"] == {"type": "rss", "policy": "impersonated-feed"}
-    # And the runtime lane (code-level) is hub, from the same registry input.
+    assert entry["retrieval"] == {
+        "type": "hub",
+        "policy": "impersonated-feed",
+        "extractor": "generic",
+        "hub": HUB,
+        "link_pattern": LINK_PATTERN,
+        "pacing_ms": 1000,
+        "max_urls": 50,
+    }
+    # No code-level correction: the runtime lane comes from that same stanza.
     assert _effective_config()["type"] == "hub"
+    assert _effective_config()["hub"] == HUB
 
 
-def test_other_sources_resolve_identically() -> None:
-    """Regression: only Swarovski is overridden; the object stays identical."""
-    for entry in list_sources():
-        name = str(entry["name"])
-        if name == SWAROVSKI:
-            continue
-        config = get_retrieval_config(name)
-        assert apply_retrieval_override(name, config) is config, name
-    # Healthy RSS sources keep the exact single-candidate contract.
+def test_feed_lane_contract_and_unknown_source_defaults() -> None:
+    """Healthy RSS sources keep the exact single-candidate contract; an
+    unregistered source resolves to the safe RSS default."""
     healthy = get_source("InfoMoney")["rss_url"]
     assert feed_candidate_urls(healthy) == (healthy,)
     unknown = get_retrieval_config("No Such Source")
     assert unknown["type"] == "rss"
-    assert apply_retrieval_override("No Such Source", unknown) is unknown
-    assert apply_retrieval_override(None, unknown) is unknown
+    assert unknown["policy"] == "impersonated-feed"
 
 
 # --- discovery seam -------------------------------------------------------------
