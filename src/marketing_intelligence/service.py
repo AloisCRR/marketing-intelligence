@@ -74,22 +74,29 @@ SEARCH_RESULT_KEYS = (
     + READERS_KEYS
 )
 
+#: Exactly the keys of one headline inside a ``recent_articles`` source group:
+#: provenance, the anyone-read summary, the per-reader list, the Extraction
+#: Flag reason, the capped effective Importance score, the canonical Topic
+#: slugs and the image-text presence flag. Ordering and the source travel as
+#: grouping, so no ordering field and no per-headline source appears here, and
+#: the bundle payload omits the flag detail and the importance
+#: rationale/reporter/updated_at extras.
 PERIOD_ARTICLE_KEYS = (
     (
         "title",
         "url",
         "canonical_url",
-        "source",
         "published_at",
-        "rank",
         "author",
     )
-    + FLAG_KEYS
     + READ_KEYS
-    + IMPORTANCE_KEYS
-    + TOPICS_KEYS
-    + ("has_image_text",)
-    + READERS_KEYS
+    + (
+        "readers",
+        "flag_reason",
+        "importance_score",
+        "topics",
+        "has_image_text",
+    )
 )
 
 ARTICLE_KEYS = (
@@ -129,13 +136,6 @@ def _validate_bounded(value: Any, *, label: str) -> int:
     if value < 1 or value > MAX_LIMIT:
         raise InvalidRequest(f"{label} must be an int in [1, {MAX_LIMIT}], got {value!r}")
     return value
-
-
-def _validate_per_source_limit(value: Any) -> int | None:
-    """Validate the optional per-source cap: None, or int within [1, MAX_LIMIT]."""
-    if value is None:
-        return None
-    return _validate_bounded(value, label="per_source_limit")
 
 
 def _known_source_names() -> set[str]:
@@ -307,7 +307,6 @@ def get_period_context(
     limit: int = DEFAULT_PERIOD_LIMIT,
     conn: Any | None = None,
     exclude_read: bool = False,
-    per_source_limit: int | None = None,
     min_importance: float | None = None,
     topics: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -315,22 +314,26 @@ def get_period_context(
 
     Bounds accept `date`, `datetime`, or ISO strings (Panama interpretation
     downstream). Explicit `sources` must all be known names. The bundle
-    contains only real data: a `recent_articles` list whose items each carry a
-    1-based `rank` ordering signal (its position in the final returned list),
-    with no empty analytics placeholders.
+    contains only real data: `period {from, to, timezone}` plus
+    `recent_articles` — a list of `{"source": str, "articles": [headline,
+    ...]}` groups. Groups keep the order of their first appearance in the
+    bundle's global order (the group holding the newest headline first, or the
+    top-scoring one when a floor is set), and each group holds at most `limit`
+    headlines in that same global order.
+    `limit` (default 50, int in [1, 100]) is therefore a cap per source, not a
+    bundle cap: every source with at least one hit appears and the bundle may
+    hold more than `limit` headlines, so one prolific source cannot monopolise
+    it.
     `exclude_read=True` filters out marked (read) articles; the default False
-    annotates every article (`read`/`read_at`/`read_by`) without filtering.
-    Every article also carries the latest Importance annotation
-    (`importance_score`/`_rationale`/`_reporter`/`_updated_at`; ``None`` when
-    unannotated), `topics` — the Document's effective canonical Topic
-    slugs (sorted, ``[]`` when unannotated) — `has_image_text` (True when
-    the Document has stored frame image text; ADR-0014) and `readers` — the
-    per-reader `readers` list (`{reader, read_at}`, sorted by reader, ``[]`` when
-    unread; Ticket 02).
-    `per_source_limit` (None default) caps how many of the bundle's items any
-    one source may contribute — `limit` still bounds the bundle overall, slots
-    a capped source cannot fill go to other sources, and both compose with
-    `sources`. It must be an int in [1, 100] or None.
+    annotates every headline (`read`/`read_at`/`read_by`) without filtering.
+    Every headline also carries `readers` — the per-reader list
+    (`{reader, read_at}`, sorted by reader, `[]` when unread; Ticket 02) — the
+    Extraction Flag reason (`flag_reason`, `None` when unflagged), the capped
+    effective `importance_score` (`None` when unannotated), `topics` — the
+    Document's effective canonical Topic slugs (sorted, `[]` when
+    unannotated) — and `has_image_text` (True when the Document has stored
+    frame image text; ADR-0014). No empty analytics placeholders are emitted,
+    and a headline carries neither an ordering field nor its source.
 
     `min_importance` (None default) keeps only Documents whose latest score is
     `>=` the floor and orders the bundle by importance (descending, ties by
@@ -339,8 +342,8 @@ def get_period_context(
     given tags (array overlap). Tags are canonicalized server-side (synonyms,
     case/whitespace variants and retired aliases resolve to the canonical
     slug); unknown tags raise `InvalidRequest` (422); an empty list adds no
-    constraint. All filters compose with `sources`, `per_source_limit` and
-    `exclude_read` in one call.
+    constraint. All filters compose with `sources` and `exclude_read` in one
+    call.
 
     Unannotated Documents (no importance row / no topics): a NULL score is
     excluded only when an importance floor is set (never silently top-ranked —
@@ -354,7 +357,6 @@ def get_period_context(
     names = _validate_sources(sources)
     bound = _validate_limit(limit, default=DEFAULT_PERIOD_LIMIT)
     hide_read = _validate_exclude_read(exclude_read)
-    per_source = _validate_per_source_limit(per_source_limit)
     floor = _validate_min_importance(min_importance)
     topic_filter = _validate_topic_filter(topics)
     try:
@@ -365,7 +367,6 @@ def get_period_context(
             limit=bound,
             conn=conn,
             exclude_read=hide_read,
-            per_source_limit=per_source,
             min_importance=floor,
             topics=topic_filter,
         )

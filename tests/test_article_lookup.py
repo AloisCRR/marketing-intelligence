@@ -134,24 +134,16 @@ PERIOD_ARTICLE_KEYS = {
     "title",
     "url",
     "canonical_url",
-    "source",
     "published_at",
-    "rank",
     "author",
-    "flag_reason",
-    "flag_detail",
-    "flagged_at",
-    "flagged_by",
     "read",
     "read_at",
     "read_by",
+    "readers",
+    "flag_reason",
     "importance_score",
-    "importance_rationale",
-    "importance_reporter",
-    "importance_updated_at",
     "topics",
     "has_image_text",
-    "readers",
 }
 
 
@@ -403,9 +395,11 @@ def test_period_shape_is_truthful_recency_bundle() -> None:
 
     ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConn())
     assert set(ctx) == {"period", "recent_articles"}
-    for article in ctx["recent_articles"]:
-        assert set(article) == PERIOD_ARTICLE_KEYS
-        assert "content" not in article
+    assert all(set(group) == {"source", "articles"} for group in ctx["recent_articles"])
+    for group in ctx["recent_articles"]:
+        for article in group["articles"]:
+            assert set(article) == PERIOD_ARTICLE_KEYS
+            assert "content" not in article
 
 
 # --- list-shape fakes (mirror tests/test_service_contract.py) ----------------
@@ -471,7 +465,16 @@ class _PeriodCursor:
         start, end, names, limit = params
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         kept.sort(key=lambda r: r[4], reverse=True)
-        self._result = kept[: int(limit)]
+        # The windowed SELECT ranks rows within each source and keeps
+        # `source_rank <= limit`; survivors stay in the global order.
+        seen: dict[str, int] = {}
+        capped: list[tuple] = []
+        for row in kept:
+            source_rank = seen.get(row[3], 0) + 1
+            seen[row[3]] = source_rank
+            if source_rank <= int(limit):
+                capped.append(row)
+        self._result = capped
         return self
 
     def fetchall(self) -> list[tuple]:

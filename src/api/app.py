@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from marketing_intelligence import service
 from marketing_intelligence.auth import require_bearer
@@ -70,12 +70,13 @@ def search(
 
 
 class PeriodRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     from_date: str
     to_date: str
     sources: list[str] | None = None
     limit: int = DEFAULT_PERIOD_LIMIT
     exclude_read: bool = False
-    per_source_limit: int | None = None
     min_importance: float | None = None
     topics: list[str] | None = None
 
@@ -85,9 +86,10 @@ def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> di
     """Evidence bundle for [from_date, to_date] (ISO dates), filtered on request.
 
     `min_importance`/`topics` select on the annotation layer (importance-first
-    ordering when a floor is set); `per_source_limit` caps how many items any
-    one source contributes (freed slots go to other sources); `limit` still
-    bounds the bundle.
+    ordering when a floor is set); `limit` caps how many headlines any one
+    source contributes to the source-grouped `recent_articles` bundle, and
+    `sources`/`exclude_read` narrow which rows are eligible. Unknown body
+    fields are rejected with 422.
     """
     return service.get_period_context(
         body.from_date,
@@ -95,7 +97,6 @@ def period_context(body: PeriodRequest, _: None = Depends(require_bearer)) -> di
         sources=body.sources,
         limit=body.limit,
         exclude_read=body.exclude_read,
-        per_source_limit=body.per_source_limit,
         min_importance=body.min_importance,
         topics=body.topics,
     )

@@ -53,6 +53,8 @@ SEARCH_PAYLOAD = [
     }
 ]
 
+#: Grouped period bundle: headlines hang off their source group, and `limit`
+#: caps headlines per group (no flat list, no per-article `source`).
 PERIOD_PAYLOAD = {
     "period": {
         "from": "2026-09-07T00:00:00-05:00",
@@ -61,16 +63,43 @@ PERIOD_PAYLOAD = {
     },
     "recent_articles": [
         {
-            "title": "TikTok Adds Voice Notes",
-            "url": "https://www.socialmediatoday.com/news/tiktok/1/",
-            "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
             "source": "Social Media Today",
-            "published_at": "2026-09-08T14:30:00+00:00",
-            "rank": 1,
-            "author": "Andrew Hutchinson",
-            "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
+            "articles": [
+                {
+                    "title": "TikTok Adds Voice Notes",
+                    "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+                    "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+                    "published_at": "2026-09-08T14:30:00+00:00",
+                    "author": "Andrew Hutchinson",
+                    "read": False,
+                    "read_at": None,
+                    "read_by": None,
+                    "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
+                    "flag_reason": None,
+                    "importance_score": None,
+                    "topics": [],
+                    "has_image_text": False,
+                }
+            ],
         }
     ],
+}
+
+PERIOD_GROUP_KEYS = {"source", "articles"}
+PERIOD_HEADLINE_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "published_at",
+    "author",
+    "read",
+    "read_at",
+    "read_by",
+    "readers",
+    "flag_reason",
+    "importance_score",
+    "topics",
+    "has_image_text",
 }
 
 FLAG_PAYLOAD = {
@@ -203,11 +232,14 @@ def test_period_api_equals_mcp_tool(stubbed_service: None) -> None:
     out = asyncio.run(MCP_SERVER.mcp.call_tool("get_period_context", dict(body, limit=50)))
     assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
     assert api_payload == _unwrap_call_tool(out)
-    # Ticket 02: period items carry the same reader log on both surfaces.
-    assert (
-        api_payload["recent_articles"][0]["readers"]
-        == (PERIOD_PAYLOAD["recent_articles"][0]["readers"])
-    )
+    # Grouped shape on both surfaces: one entry per source, headlines nested.
+    group = api_payload["recent_articles"][0]
+    assert set(group) == PERIOD_GROUP_KEYS
+    assert set(group["articles"][0]) == PERIOD_HEADLINE_KEYS
+    # Ticket 02: period headlines carry the same reader log on both surfaces.
+    assert group["articles"][0]["readers"] == [
+        {"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}
+    ]
 
 
 class _EmptyCursor:
@@ -353,13 +385,12 @@ def test_period_annotation_filters_passthrough(monkeypatch: pytest.MonkeyPatch) 
     out = asyncio.run(
         MCP_SERVER.mcp.call_tool(
             "get_period_context",
-            dict(body, min_importance=0.7, topics=["jewellery"], per_source_limit=2),
+            dict(body, min_importance=0.7, topics=["jewellery"]),
         )
     )
     assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
     assert seen["min_importance"] == 0.7
     assert seen["topics"] == ["jewellery"]
-    assert seen["per_source_limit"] == 2
 
 
 def test_period_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -384,7 +415,8 @@ def test_period_exclude_read_passthrough(monkeypatch: pytest.MonkeyPatch) -> Non
     assert seen["exclude_read"] is True
 
 
-def test_period_per_source_limit_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_period_limit_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`limit` is the per-source-group headline cap; it forwards and defaults to 50."""
     seen: dict = {}
 
     def fake(from_date: object, to_date: object, **kw: object) -> dict:
@@ -394,12 +426,10 @@ def test_period_per_source_limit_passthrough(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(service, "get_period_context", fake)
     body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
     assert MCP_SERVER.get_period_context(**body) == PERIOD_PAYLOAD
-    assert seen["per_source_limit"] is None  # default preserves current behaviour
-    out = asyncio.run(
-        MCP_SERVER.mcp.call_tool("get_period_context", dict(body, per_source_limit=4))
-    )
+    assert seen["limit"] == service.DEFAULT_PERIOD_LIMIT == 50
+    out = asyncio.run(MCP_SERVER.mcp.call_tool("get_period_context", dict(body, limit=4)))
     assert _unwrap_call_tool(out) == PERIOD_PAYLOAD
-    assert seen["per_source_limit"] == 4
+    assert seen["limit"] == 4
 
 
 def test_mark_read_api_equals_mcp_tool(stubbed_service: None) -> None:

@@ -7,12 +7,12 @@ Semantic-interface tests with fake-DB connections (no live Postgres):
 - date-range filtering, newest-first ordering, provenance keys, empty ranges,
   invalid-input validation
 - per-reader read marks (ADR-0015): the `readers` log rides alongside the
-  unchanged anyone-read summary, sorted, on both the capped and uncapped paths
+  unchanged anyone-read summary, sorted, through the source-grouped bundle
 - per-source health readout from seeded run rows, independent of articles
 - run recording wired into flows without changing result shapes
 - seeded regression corpus: the fixture files ARE the corpus — re-parsing
   the 4 curated fixtures (+ messy) must yield stable doc counts and hashes, so
-  future extraction/ranking changes are caught here first
+  future extraction/scoring changes are caught here first
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _utc(*args: int) -> datetime:
 
 
 class _PeriodCursor:
-    """Serves preset document rows with real range/source/limit semantics.
+    """Serves preset document rows with real range/source/per-group cap semantics.
 
     Rows are the full current SELECT shape (21 cols: ``readers``/``read_ats``
     at [19]/[20] when a test seeds read marks) or any shorter legacy prefix,
@@ -64,28 +64,27 @@ class _PeriodCursor:
         self.last_sql = sql
         self.last_params = params
         assert params is not None
-        # The capped lane adds a per-source cap between source names and limit.
-        if len(params) == 5:
-            start, end, names, per_source, limit = params
-        else:
-            start, end, names, limit = params
-            per_source = None
+        # Grouped lane's fixed parameter order: bounds, source names, the
+        # optional annotation filters, then `limit` — the per-source cap the
+        # SQL applies in its outer projection, with no outer LIMIT.
+        start, end, names = params[0], params[1], params[2]
+        limit = int(params[-1])
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
         if "read_at is null" in sql.lower():
             kept = [r for r in kept if not (len(r) > 10 and r[10] is not None)]
         kept.sort(key=lambda r: r[4], reverse=True)
-        if per_source is not None:
-            # Mirror ROW_NUMBER() OVER (PARTITION BY source ...) <= cap.
-            seen: dict[str, int] = {}
-            capped: list[tuple] = []
-            for row in kept:
-                rank = seen.get(row[3], 0) + 1
-                seen[row[3]] = rank
-                if rank <= int(per_source):
-                    capped.append(row)
-            kept = capped
-        self._result = kept[: int(limit)]
+        # Mirror PARTITION BY source <= limit: each source keeps its first
+        # `limit` rows in the global order, and every source with a hit keeps
+        # a group.
+        seen: dict[str, int] = {}
+        capped: list[tuple] = []
+        for row in kept:
+            count = seen.get(row[3], 0) + 1
+            seen[row[3]] = count
+            if count <= limit:
+                capped.append(row)
+        self._result = capped
         return self
 
     def fetchall(self) -> list[tuple]:
@@ -301,6 +300,30 @@ ARTICLE_ROWS = [
 WEEK_FROM = date(2026, 9, 7)
 WEEK_TO = date(2026, 9, 13)
 
+#: The 13 headline keys every grouped article carries — provenance, the
+#: anyone-read cache plus the per-reader log, and the annotations. No
+#: per-article `source` (it lives on the group) and no ordering index.
+HEADLINE_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "published_at",
+    "author",
+    "read",
+    "read_at",
+    "read_by",
+    "readers",
+    "flag_reason",
+    "importance_score",
+    "topics",
+    "has_image_text",
+}
+
+
+def _flatten(groups: list[dict]) -> list[dict]:
+    """Headlines in bundle order: groups first-seen, articles within a group."""
+    return [article for group in groups for article in group["articles"]]
+
 
 def _row_with_readers(
     base: tuple, readers: tuple[str, ...], read_ats: tuple[datetime, ...]
@@ -351,7 +374,7 @@ def test_period_defaults_to_curated_sources() -> None:
     assert conn.cursor_obj.last_params is not None
     assert set(conn.cursor_obj.last_params[2]) == set(CURATED_SOURCES)
     assert len(conn.cursor_obj.last_params[2]) == len(catalog_names())
-    assert {a["source"] for a in ctx["recent_articles"]} <= set(CURATED_SOURCES)
+    assert {g["source"] for g in ctx["recent_articles"]} <= set(CURATED_SOURCES)
 
 
 # --- period context + provenance ----------------------------------------------
@@ -359,11 +382,16 @@ def test_period_defaults_to_curated_sources() -> None:
 
 def test_response_shape_is_truthful_recency_list_only() -> None:
     ctx, _ = _context()
-    # Only real fields: period + a recency-ordered list. No empty placeholders.
+    # Only real fields: period + source-grouped headlines. No empty placeholders.
     assert set(ctx) == {"period", "recent_articles"}
     assert set(ctx["period"]) == {"from", "to", "timezone"}
-    for article in ctx["recent_articles"]:
-        assert "rank" in article
+    for group in ctx["recent_articles"]:
+        assert set(group) == {"source", "articles"}
+        assert isinstance(group["source"], str)
+        assert group["articles"]
+        for article in group["articles"]:
+            assert set(article) == HEADLINE_KEYS
+            assert "source" not in article
 
 
 def test_period_boundaries_are_panama_utc_minus_five() -> None:
@@ -376,7 +404,17 @@ def test_period_boundaries_are_panama_utc_minus_five() -> None:
 
 def test_range_filtering_newest_first_and_provenance() -> None:
     ctx, _ = _context()
-    articles = ctx["recent_articles"]
+    groups = ctx["recent_articles"]
+    # One in-range headline per source, so groups arrive in the same recency
+    # order as the headlines: each group is led by its newest headline.
+    assert [g["source"] for g in groups] == [
+        "InfoMoney",
+        "Professional Jeweller",
+        "JCK Online",
+        "MarTech",
+        "Social Media Today",
+    ]
+    articles = _flatten(groups)
     assert [a["title"] for a in articles] == [
         "Casas Bahia em crise",
         "Vicenzaoro Opens",
@@ -385,33 +423,9 @@ def test_range_filtering_newest_first_and_provenance() -> None:
         "TikTok Adds Voice Notes",
     ]
     for article in articles:
-        assert set(article) == {
-            "title",
-            "url",
-            "canonical_url",
-            "source",
-            "published_at",
-            "rank",
-            "author",
-            "flag_reason",
-            "flag_detail",
-            "flagged_at",
-            "flagged_by",
-            "read",
-            "read_at",
-            "read_by",
-            "importance_score",
-            "importance_rationale",
-            "importance_reporter",
-            "importance_updated_at",
-            "topics",
-            "has_image_text",
-            "readers",
-        }
+        assert set(article) == HEADLINE_KEYS
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
-    # rank is the 1-based position in the recency order, not a score.
-    assert [a["rank"] for a in articles] == [1, 2, 3, 4, 5]
     assert [a["published_at"] for a in articles] == sorted(
         (a["published_at"] for a in articles), reverse=True
     )
@@ -428,7 +442,8 @@ def test_range_filtering_newest_first_and_provenance() -> None:
 
 def test_explicit_sources_narrow_within_curated() -> None:
     ctx, _ = _context(sources=["JCK Online"])
-    assert [a["title"] for a in ctx["recent_articles"]] == ["JCK Extra-scope Piece"]
+    assert [g["source"] for g in ctx["recent_articles"]] == ["JCK Online"]
+    assert [a["title"] for a in _flatten(ctx["recent_articles"])] == ["JCK Extra-scope Piece"]
 
 
 def test_empty_range_returns_empty_articles_with_period() -> None:
@@ -471,17 +486,30 @@ def test_invalid_inputs_rejected() -> None:
         get_period_context(WEEK_FROM, WEEK_TO, conn=conn, limit=0)
 
 
-def test_limit_bounds_results() -> None:
-    ctx, _ = _context(limit=2)
-    assert len(ctx["recent_articles"]) == 2
+def test_limit_caps_headlines_per_source_group() -> None:
+    # Each in-range source holds one headline, so `limit=1` trims nothing but
+    # proves the cap is per group: every source still appears, once.
+    ctx, conn = _context(limit=1)
+    groups = ctx["recent_articles"]
+    assert [g["source"] for g in groups] == [
+        "InfoMoney",
+        "Professional Jeweller",
+        "JCK Online",
+        "MarTech",
+        "Social Media Today",
+    ]
+    assert all(len(g["articles"]) == 1 for g in groups)
+    # The lane carries the per-group cap as its final parameter.
+    assert conn.cursor_obj.last_params is not None
+    assert conn.cursor_obj.last_params[-1] == 1
 
 
-def test_per_source_limit_bounds_a_single_source_flood() -> None:
+def test_limit_caps_a_single_source_flood() -> None:
     """Ticket 17 flood regression: no source may monopolise the bundle.
 
-    Uncapped, the newest ``limit`` rows are all from the prolific source.
-    Capped, each source contributes at most ``per_source_limit`` and the
-    freed slots go to the next sources in recency order.
+    ``limit`` caps each source's group: the prolific source keeps only its
+    newest ``limit`` rows, and every other source still appears with its own
+    headlines in the same global recency order.
     """
 
     def row(source: str, title: str, when: datetime) -> tuple:
@@ -509,56 +537,42 @@ def test_per_source_limit_bounds_a_single_source_flood() -> None:
         row("JCK Online", "JCK A", _utc(2026, 9, 10, 17, 0)),
     ]
 
-    uncapped, _ = _context(rows, limit=6)
-    assert [a["source"] for a in uncapped["recent_articles"]] == ["Social Media Today"] * 6
-
-    capped, conn = _context(rows, limit=6, per_source_limit=2)
-    articles = capped["recent_articles"]
-    assert len(articles) == 6
-    counts: dict[str, int] = {}
-    for article in articles:
-        counts[article["source"]] = counts.get(article["source"], 0) + 1
-    assert max(counts.values()) <= 2
-    # Blocked flood slots were refilled by the next sources in recency order.
-    assert set(counts) == {"Social Media Today", "MarTech", "InfoMoney", "JCK Online"}
-    # rank stays the 1-based position in the final (capped) list, newest first.
-    assert [a["rank"] for a in articles] == [1, 2, 3, 4, 5, 6]
-    assert [a["published_at"] for a in articles] == sorted(
-        (a["published_at"] for a in articles), reverse=True
-    )
-    # The capped lane is the one that carries the cap parameter.
+    capped, conn = _context(rows, limit=2)
+    groups = capped["recent_articles"]
+    # Groups follow the first-seen order of the globally recency-ordered rows.
+    assert [g["source"] for g in groups] == [
+        "Social Media Today",
+        "MarTech",
+        "InfoMoney",
+        "JCK Online",
+    ]
+    by_source = {g["source"]: [a["title"] for a in g["articles"]] for g in groups}
+    assert by_source["Social Media Today"] == ["Flood 0", "Flood 1"]
+    assert by_source["MarTech"] == ["MarTech A", "MarTech B"]
+    assert by_source["InfoMoney"] == ["InfoMoney A"]
+    assert by_source["JCK Online"] == ["JCK A"]
+    assert max(len(g["articles"]) for g in groups) == 2
+    # Headlines inside a group keep the global recency order.
+    for group in groups:
+        published = [a["published_at"] for a in group["articles"]]
+        assert published == sorted(published, reverse=True)
+    # The lane carries the per-group cap as its final parameter.
     assert conn.cursor_obj.last_params is not None
-    assert len(conn.cursor_obj.last_params) == 5
-    assert conn.cursor_obj.last_params[3] == 2
-    assert conn.cursor_obj.last_params[4] == 6
+    assert len(conn.cursor_obj.last_params) == 4
+    assert conn.cursor_obj.last_params[-1] == 2
 
     # Composes with the sources allowlist: only allowed sources count.
-    narrowed, _ = _context(
-        rows, limit=6, per_source_limit=2, sources=["Social Media Today", "MarTech"]
-    )
-    assert [a["source"] for a in narrowed["recent_articles"]] == [
+    narrowed, _ = _context(rows, limit=2, sources=["Social Media Today", "MarTech"])
+    assert [g["source"] for g in narrowed["recent_articles"]] == [
         "Social Media Today",
-        "Social Media Today",
-        "MarTech",
         "MarTech",
     ]
-
-
-def test_per_source_limit_rejects_invalid_values() -> None:
-    conn = _PeriodConnection([])
-    for bad in (0, -1, True, "2", 2.5):
-        with pytest.raises(ValueError):
-            get_period_context(
-                WEEK_FROM,
-                WEEK_TO,
-                conn=conn,
-                per_source_limit=bad,  # type: ignore[arg-type]
-            )
+    assert [len(g["articles"]) for g in narrowed["recent_articles"]] == [2, 2]
 
 
 def test_unread_rows_annotate_read_false() -> None:
     ctx, _ = _context()
-    for article in ctx["recent_articles"]:
+    for article in _flatten(ctx["recent_articles"]):
         assert article["read"] is False
         assert article["read_at"] is None
         assert article["read_by"] is None
@@ -572,12 +586,13 @@ def test_exclude_read_filters_marked_rows() -> None:
     marked[11] = "reader-1"
     rows = [tuple(marked)] + list(ARTICLE_ROWS[1:])
     ctx, _ = _context(rows)
-    assert {a["title"] for a in ctx["recent_articles"]} >= {"TikTok Adds Voice Notes"}
-    flagged = next(a for a in ctx["recent_articles"] if a["title"] == "TikTok Adds Voice Notes")
+    articles = _flatten(ctx["recent_articles"])
+    assert {a["title"] for a in articles} >= {"TikTok Adds Voice Notes"}
+    flagged = next(a for a in articles if a["title"] == "TikTok Adds Voice Notes")
     assert flagged["read"] is True
     assert flagged["read_by"] == "reader-1"
     filtered, _ = _context(rows, exclude_read=True)
-    titles = {a["title"] for a in filtered["recent_articles"]}
+    titles = {a["title"] for a in _flatten(filtered["recent_articles"])}
     assert "TikTok Adds Voice Notes" not in titles
     assert "Signal Loss Rebuild" in titles
 
@@ -594,7 +609,7 @@ def test_period_items_carry_sorted_readers_per_mark() -> None:
         _row_with_readers(ARTICLE_ROWS[1], ("amara",), (_utc(2026, 9, 12, 11, 0),)),
     ] + list(ARTICLE_ROWS[2:])
     ctx, _ = _context(rows)
-    by_title = {a["title"]: a for a in ctx["recent_articles"]}
+    by_title = {a["title"]: a for a in _flatten(ctx["recent_articles"])}
 
     both = by_title["TikTok Adds Voice Notes"]
     assert both["readers"] == [
@@ -613,21 +628,22 @@ def test_period_items_carry_sorted_readers_per_mark() -> None:
     assert by_title["Vicenzaoro Opens"]["readers"] == []
 
 
-def test_readers_survive_the_per_source_cap() -> None:
-    """The capped lane's outer projection must forward the reader arrays."""
+def test_readers_survive_the_per_source_group_cap() -> None:
+    """The grouped lane must forward the reader arrays on every headline."""
     rows = [
         _row_with_readers(ARTICLE_ROWS[0], ("zoe",), (_utc(2026, 9, 12, 9, 0),)),
         _row_with_readers(ARTICLE_ROWS[1], ("amara",), (_utc(2026, 9, 12, 10, 0),)),
     ]
-    ctx, conn = _context(rows, limit=10, per_source_limit=1)
-    articles = ctx["recent_articles"]
-    assert [a["title"] for a in articles] == ["Signal Loss Rebuild", "TikTok Adds Voice Notes"]
-    assert [entry["reader"] for a in articles for entry in a["readers"]] == ["amara", "zoe"]
-    # Regression: the capped SELECT lists its columns explicitly, so dropping
-    # `readers, read_ats` from the outer projection would silently empty the
-    # log on the capped path only.
-    outer = (conn.cursor_obj.last_sql or "").split("FROM (")[0]
-    assert "readers, read_ats" in outer
+    ctx, conn = _context(rows, limit=1)
+    groups = ctx["recent_articles"]
+    assert [g["source"] for g in groups] == ["MarTech", "Social Media Today"]
+    assert [len(g["articles"]) for g in groups] == [1, 1]
+    by_title = {a["title"]: a for a in _flatten(groups)}
+    assert [entry["reader"] for entry in by_title["Signal Loss Rebuild"]["readers"]] == ["amara"]
+    assert [entry["reader"] for entry in by_title["TikTok Adds Voice Notes"]["readers"]] == ["zoe"]
+    # Regression: the outer SELECT lists its columns explicitly, so dropping
+    # `readers, read_ats` from the projection would silently empty the log.
+    assert "readers, read_ats" in (conn.cursor_obj.last_sql or "")
 
 
 # --- health --------------------------------------------------------------------
@@ -781,7 +797,7 @@ def test_migration_003_creates_ingestion_runs_idempotently() -> None:
 
 # --- seeded regression corpus ------------------------------------------------------
 # The curated (+ messy) fixture files ARE the regression corpus for future
-# extraction/ranking changes: counts, first-doc hashes, cross-run stability,
+# extraction/scoring changes: counts, first-doc hashes, cross-run stability,
 # and hash self-consistency are pinned here.
 
 CORPUS: dict[str, tuple[str, int, str]] = {

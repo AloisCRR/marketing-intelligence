@@ -212,6 +212,11 @@ class _RowConnection:
         pass
 
 
+def _period_headlines(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten the source-grouped bundle, preserving group then item order."""
+    return [article for group in bundle["recent_articles"] for article in group["articles"]]
+
+
 # --- vocabulary discovery ----------------------------------------------------
 
 
@@ -370,8 +375,9 @@ def test_topics_visible_on_single_read_search_and_period_bundle(
     bundle = period_lane.get_period_context(
         _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=_RowConnection([period_row])
     )
-    assert bundle["recent_articles"][0]["topics"] == ["latam", "gen-z"]
-    assert set(bundle["recent_articles"][0]) == set(service.PERIOD_ARTICLE_KEYS)
+    headline = _period_headlines(bundle)[0]
+    assert headline["topics"] == ["latam", "gen-z"]
+    assert set(headline) == set(service.PERIOD_ARTICLE_KEYS)
 
 
 # --- both caller surfaces: parity + 422 -------------------------------------
@@ -500,16 +506,16 @@ def test_live_topics_roundtrip_and_visibility(scratch_db: str) -> None:
     bundle = period_lane.get_period_context(
         _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=psycopg.connect(scratch_db)
     )
-    assert bundle["recent_articles"][0]["topics"] == ["latam"]
+    assert _period_headlines(bundle)[0]["topics"] == ["latam"]
 
-    # The per-source-capped SELECT keeps the topic array too.
+    # The per-source cap (limit) keeps the topic array too.
     capped = period_lane.get_period_context(
         _dt.date(2026, 9, 1),
         _dt.date(2026, 9, 30),
-        per_source_limit=3,
+        limit=3,
         conn=psycopg.connect(scratch_db),
     )
-    assert capped["recent_articles"][0]["topics"] == ["latam"]
+    assert _period_headlines(capped)[0]["topics"] == ["latam"]
 
     # History retained append-only: retired slugs are tombstoned, never deleted.
     with psycopg.connect(scratch_db) as conn, conn.cursor() as cur:

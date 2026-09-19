@@ -2,13 +2,14 @@
 
 Locked contract:
 - The period bundle accepts an importance floor, a Topic filter and a
-  per-source cap in one call: importance >= 0.7 + pillar filter + cap returns
-  an on-pillar, source-spread week with zero manual juggling.
+  per-source cap (`limit`, headlines per source group) in one call:
+  importance >= 0.7 + pillar filter + cap returns an on-pillar, source-spread
+  week with zero manual juggling.
 - Keyword search accepts the same Topic and importance filters so deep dives
   reuse the annotation layer.
 - Unannotated Documents (NULL score / no topics) are excluded only when the
   matching filter is set — never silently dropped from an unfiltered query and
-  never silently top-ranked.
+  never silently top-scored.
 - Both caller surfaces expose all filters identically through the Service
   Adapter with 422 on invalid input.
 - Per-reader read marks (ADR-0015) ride along on both lanes: a Document read by
@@ -59,6 +60,11 @@ MCP_SERVER = _load_mcp_server()
 
 def _utc(*args: int) -> _dt.datetime:
     return _dt.datetime(*args, tzinfo=_dt.UTC)
+
+
+def _flatten(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Headlines in bundle order: groups first-seen, articles within a group."""
+    return [article for group in groups for article in group["articles"]]
 
 
 # --- fake store ---------------------------------------------------------------
@@ -228,7 +234,11 @@ class _FakeCursor:
 
     @staticmethod
     def _ordered(
-        docs: list[dict[str, Any]], *, floor: float | None, per_source: int | None, limit: int
+        docs: list[dict[str, Any]],
+        *,
+        floor: float | None,
+        per_group: int | None,
+        limit: int | None,
     ) -> list[dict[str, Any]]:
         if floor is not None:
             # importance DESC (NULLs last), then recency DESC
@@ -237,32 +247,31 @@ class _FakeCursor:
             )
         else:
             docs.sort(key=lambda d: d["published_at"], reverse=True)
-        if per_source is not None:
+        if per_group is not None:
+            # Each source keeps its first `per_group` rows in the global order.
             seen: Counter[str] = Counter()
             kept: list[dict[str, Any]] = []
             for doc in docs:
                 seen[doc["source"]] += 1
-                if seen[doc["source"]] <= per_source:
+                if seen[doc["source"]] <= per_group:
                     kept.append(doc)
             docs = kept
-        return docs[:limit]
+        return docs if limit is None else docs[:limit]
 
     def _period(self, *, sql: str, params: tuple) -> list[dict[str, Any]]:
         start, end, names = params[0], params[1], params[2]
         index = 3
         floor: float | None = None
         topics: list[str] | None = None
-        per_source: int | None = None
         if "imp.score >= %s" in sql:
             floor = params[index]
             index += 1
         if "tps.topics && %s" in sql:
             topics = list(params[index])
             index += 1
-        if "ranked.source_rank <= %s" in sql:
-            per_source = int(params[index])
-            index += 1
-        limit = int(params[index])
+        # The grouped lane's trailing parameter caps each source group; there
+        # is no outer total limit.
+        per_group = int(params[-1])
         docs = [
             d
             for d in self._store
@@ -277,7 +286,7 @@ class _FakeCursor:
                 topics=topics,
             )
         ]
-        return self._ordered(docs, floor=floor, per_source=per_source, limit=limit)
+        return self._ordered(docs, floor=floor, per_group=per_group, limit=None)
 
     def _search(self, *, sql: str, params: tuple) -> list[dict[str, Any]]:
         keyword = str(params[0]).strip("%")
@@ -305,7 +314,7 @@ class _FakeCursor:
                 topics=topics,
             )
         ]
-        return self._ordered(docs, floor=floor, per_source=None, limit=limit)
+        return self._ordered(docs, floor=floor, per_group=None, limit=limit)
 
 
 class _FakeConnection:
@@ -352,23 +361,22 @@ def test_success_criterion_pillar_floor_and_cap_in_one_call() -> None:
         conn=_FakeConnection(list(WEEK_DOCS)),
         min_importance=0.7,
         topics=["jewelry"],
-        per_source_limit=1,
+        limit=1,
     )
-    articles = ctx["recent_articles"]
-    assert len(articles) >= 2
+    groups = ctx["recent_articles"]
+    # Source-spread: one headline per source group, the top scorer of each
+    # under importance order (Professional Jeweller -> JCK Online).
+    assert [g["source"] for g in groups] == ["Professional Jeweller", "JCK Online"]
+    assert [len(g["articles"]) for g in groups] == [1, 1]
+    assert [(g["source"], g["articles"][0]["title"]) for g in groups] == [
+        ("Professional Jeweller", "Jewellery rebound"),
+        ("JCK Online", "Luxury watch demand"),
+    ]
+    articles = _flatten(groups)
     # On-pillar only: the off-pillar 0.95 article never leaks in.
     for article in articles:
         assert "jewelry" in article["topics"]
         assert article["importance_score"] >= 0.7
-    # Source-spread: no source exceeds the cap, freed slots go to the next
-    # source under importance order (Professional Jeweller -> JCK Online).
-    counts = Counter(a["source"] for a in articles)
-    assert max(counts.values()) <= 1
-    assert set(counts) == {"Professional Jeweller", "JCK Online"}
-    # Importance-ranked with rank as the position in that final order.
-    scores = [a["importance_score"] for a in articles]
-    assert scores == sorted(scores, reverse=True)
-    assert [a["rank"] for a in articles] == list(range(1, len(articles) + 1))
     # Decoys stayed out for the right reasons.
     titles = {a["title"] for a in articles}
     assert "AI ad spend surges" not in titles  # off-pillar, high score
@@ -376,7 +384,7 @@ def test_success_criterion_pillar_floor_and_cap_in_one_call() -> None:
     assert "Unannotated jewellery note" not in titles  # NULL score, floor set
 
 
-def test_uncapped_floor_and_topic_filter_still_work() -> None:
+def test_floor_and_topic_filter_group_in_importance_order() -> None:
     ctx = service.get_period_context(
         WEEK_FROM,
         WEEK_TO,
@@ -384,10 +392,14 @@ def test_uncapped_floor_and_topic_filter_still_work() -> None:
         min_importance=0.7,
         topics=["jewelry"],
     )
-    assert [a["title"] for a in ctx["recent_articles"]] == [
+    groups = ctx["recent_articles"]
+    assert [g["source"] for g in groups] == ["Professional Jeweller", "JCK Online"]
+    assert [a["title"] for a in groups[0]["articles"]] == [
         "Jewellery rebound",
-        "Luxury watch demand",
         "Gold price squeeze",
+    ]
+    assert [a["title"] for a in groups[1]["articles"]] == [
+        "Luxury watch demand",
         "Jewellery trade show",
     ]
 
@@ -401,7 +413,7 @@ def test_topic_filter_accepts_caller_synonyms_on_service() -> None:
         topics=["jewellery"],
         limit=100,
     )
-    titles = {a["title"] for a in ctx["recent_articles"]}
+    titles = {a["title"] for a in _flatten(ctx["recent_articles"])}
     assert "Jewellery rebound" in titles
     # An unannotated Document (no topics) is excluded only because the filter is set.
     assert "Untagged launch" not in titles
@@ -417,7 +429,7 @@ def test_topic_filter_matches_any_requested_topic() -> None:
     )
     # "Luxury watch demand" carries jewelry+luxury; "Retail footfall dips"
     # carries retail — overlap semantics include both.
-    assert {a["title"] for a in ctx["recent_articles"]} == {
+    assert {a["title"] for a in _flatten(ctx["recent_articles"])} == {
         "Luxury watch demand",
         "Retail footfall dips",
     }
@@ -428,30 +440,39 @@ def test_topic_filter_matches_any_requested_topic() -> None:
 
 def test_unannotated_included_and_ordered_by_recency_not_score() -> None:
     ctx = service.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)))
-    articles = ctx["recent_articles"]
-    titles = [a["title"] for a in articles]
+    groups = ctx["recent_articles"]
+    by_source = {g["source"]: [a["title"] for a in g["articles"]] for g in groups}
     # Never silently dropped: the NULL-score, no-topic Document is present.
-    assert "Untagged launch" in titles
-    assert "Unannotated jewellery note" in titles
-    # Never top-ranked *by score*: ordering is purely recency, so the 0.95
-    # article is not first — the freshest unannotated Document is.
-    published = [a["published_at"] for a in articles]
-    assert published == sorted(published, reverse=True)
-    assert articles[0]["title"] == "Untagged launch"
-    # Ordered by recency, not by score: the 0.95 article is not first.
-    assert articles[1]["title"] == "AI ad spend surges"
-    assert articles[-1]["title"] == "Unannotated jewellery note"
-    assert articles[-1]["importance_score"] is None
+    assert "Untagged launch" in by_source["National Jeweler"]
+    assert "Unannotated jewellery note" in by_source["Professional Jeweller"]
+    # Never top-scored: ordering is purely recency, so the freshest
+    # unannotated Document leads its own group and the bundle's first group.
+    assert list(by_source) == [
+        "National Jeweler",
+        "MarTech",
+        "Professional Jeweller",
+        "JCK Online",
+        "Retail Dive",
+    ]
+    assert groups[0]["articles"][0]["title"] == "Untagged launch"
+    assert groups[1]["articles"][0]["title"] == "AI ad spend surges"
+    # Recency within every group, not score order.
+    for group in groups:
+        published = [a["published_at"] for a in group["articles"]]
+        assert published == sorted(published, reverse=True)
+    oldest = by_source["Professional Jeweller"][-1]
+    assert oldest == "Unannotated jewellery note"
+    assert groups[2]["articles"][-1]["importance_score"] is None
 
 
 def test_floor_excludes_unannotated_but_floor_none_keeps_them() -> None:
     conn = _FakeConnection(list(WEEK_DOCS))
     kept = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn)
-    assert any(a["importance_score"] is None for a in kept["recent_articles"])
+    assert any(a["importance_score"] is None for a in _flatten(kept["recent_articles"]))
     floored = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, min_importance=0.0)
     # min_importance=0 keeps annotated 0.0+ Documents and drops NULL scores.
-    assert all(a["importance_score"] is not None for a in floored["recent_articles"])
-    assert all(a["importance_score"] >= 0.0 for a in floored["recent_articles"])
+    assert all(a["importance_score"] is not None for a in _flatten(floored["recent_articles"]))
+    assert all(a["importance_score"] >= 0.0 for a in _flatten(floored["recent_articles"]))
 
 
 # --- search reuses the annotation layer ---------------------------------------
@@ -502,7 +523,7 @@ def test_search_unfiltered_stays_recency_ordered_and_includes_unannotated() -> N
     ]
     assert results[0]["title"] == "Untagged launch"
     # Recency wins over score: the 0.95 article is not first, and the NULL-score
-    # Document is present at its recency position, not top-ranked by score.
+    # Document is present at its recency position, not top-scored.
     assert results[1]["title"] == "AI ad spend surges"
     assert results[-1]["title"] == "Unannotated jewellery note"
     assert results[-1]["importance_score"] is None
@@ -536,7 +557,7 @@ def test_search_reports_every_reader_sorted_alongside_the_cache_summary() -> Non
     assert by_title["Unread note"]["read"] is False
 
 
-def test_period_reports_readers_on_both_the_capped_and_uncapped_paths() -> None:
+def test_period_reports_readers_through_the_grouped_bundle() -> None:
     docs = [
         _doc(
             90,
@@ -546,13 +567,18 @@ def test_period_reports_readers_on_both_the_capped_and_uncapped_paths() -> None:
             readers=[("amara", _utc(2026, 9, 12, 8))],
         ),
         _doc(91, "Untouched note", "JCK Online", _utc(2026, 9, 10, 9)),
+        _doc(92, "Older MarTech note", "MarTech", _utc(2026, 9, 9, 9)),
     ]
-    uncapped = period_lane.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs))
-    capped = period_lane.get_period_context(
-        WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs), per_source_limit=1, limit=10
-    )
-    for bundle in (uncapped, capped):
-        by_title = {a["title"]: a for a in bundle["recent_articles"]}
+    untrimmed = period_lane.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs))
+    capped = period_lane.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs), limit=1)
+    assert [
+        (g["source"], [a["title"] for a in g["articles"]]) for g in capped["recent_articles"]
+    ] == [
+        ("MarTech", ["Marked note"]),
+        ("JCK Online", ["Untouched note"]),
+    ]
+    for bundle in (untrimmed, capped):
+        by_title = {a["title"]: a for a in _flatten(bundle["recent_articles"])}
         assert by_title["Marked note"]["readers"] == [
             {"reader": "amara", "read_at": "2026-09-12T08:00:00+00:00"}
         ]
@@ -589,12 +615,15 @@ def test_filters_identical_over_http_and_mcp(wired: _FakeConnection) -> None:
         "to_date": "2026-09-13",
         "min_importance": 0.7,
         "topics": ["jewellery"],
-        "per_source_limit": 1,
+        "limit": 1,
     }
     http_period = http.post("/period-context", json=body).json()
     mcp_period = MCP_SERVER.get_period_context(**body)
     assert http_period == mcp_period
-    assert len(http_period["recent_articles"]) == 2
+    assert [a["title"] for a in _flatten(http_period["recent_articles"])] == [
+        "Jewellery rebound",
+        "Luxury watch demand",
+    ]
 
 
 def test_invalid_filters_422_identical_messages() -> None:
@@ -649,7 +678,7 @@ def test_empty_topic_list_adds_no_constraint() -> None:
     ctx = service.get_period_context(
         WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)), topics=[]
     )
-    assert len(ctx["recent_articles"]) == len(WEEK_DOCS)
+    assert len(_flatten(ctx["recent_articles"])) == len(WEEK_DOCS)
     assert service.search_articles("Jewellery", conn=_FakeConnection(list(WEEK_DOCS)), topics=[])
 
 
@@ -757,15 +786,12 @@ def test_live_annotation_filters_real_sql(scratch_db: str) -> None:
         "2026-09-13",
         min_importance=0.7,
         topics=["jewellery"],  # synonym -> canonical "jewelry" server-side
-        per_source_limit=1,
-        limit=10,
+        limit=1,
     )
-    assert [a["title"] for a in ctx["recent_articles"]] == [
-        "Live pillar high",
-        "Live JCK high",
-    ]
-    assert [a["importance_score"] for a in ctx["recent_articles"]] == [0.9, 0.8]
-    assert [a["rank"] for a in ctx["recent_articles"]] == [1, 2]
+    groups = ctx["recent_articles"]
+    assert [g["source"] for g in groups] == ["Professional Jeweller", "JCK Online"]
+    assert [g["articles"][0]["title"] for g in groups] == ["Live pillar high", "Live JCK high"]
+    assert [g["articles"][0]["importance_score"] for g in groups] == [0.9, 0.8]
 
     # Search reuses the same predicates.
     hits = service.search_articles("Live", limit=10, min_importance=0.7, topics=["jewellery"])
@@ -793,22 +819,21 @@ def test_live_annotation_filters_real_sql(scratch_db: str) -> None:
         {"exclude_read": True},
         {"min_importance": 0.7},
         {"topics": ["jewelry"]},
-        {"per_source_limit": 1},
-        {"min_importance": 0.7, "per_source_limit": 1},
-        {"topics": ["jewelry"], "per_source_limit": 1},
-        {"exclude_read": True, "topics": ["jewelry"], "per_source_limit": 1},
+        {"limit": 1},
+        {"min_importance": 0.7, "limit": 1},
+        {"topics": ["jewelry"], "limit": 1},
+        {"exclude_read": True, "topics": ["jewelry"], "limit": 1},
         {"min_importance": 0.7, "topics": ["jewelry"], "exclude_read": True},
-        {"min_importance": 0.7, "topics": ["jewelry"], "per_source_limit": 1},
+        {"min_importance": 0.7, "topics": ["jewelry"], "limit": 1},
     ]
     for kwargs in combinations:
-        bundle = service.get_period_context("2026-09-06", "2026-09-13", limit=10, **kwargs)
+        bundle = service.get_period_context("2026-09-06", "2026-09-13", **{"limit": 10, **kwargs})
         assert "recent_articles" in bundle
+        bundle_articles = _flatten(bundle["recent_articles"])
         if "min_importance" in kwargs:
-            assert all(
-                a["importance_score"] >= kwargs["min_importance"] for a in bundle["recent_articles"]
-            )
+            assert all(a["importance_score"] >= kwargs["min_importance"] for a in bundle_articles)
         if kwargs.get("topics"):
-            assert all(a["topics"] for a in bundle["recent_articles"])
+            assert all(a["topics"] for a in bundle_articles)
         search_kwargs = {
             key: value
             for key, value in kwargs.items()
@@ -847,9 +872,9 @@ def test_live_annotation_filters_real_sql(scratch_db: str) -> None:
     # An unmarked Document reports an empty log, not a missing key.
     assert service.search_articles("Live untagged", limit=5)[0]["readers"] == []
 
-    # The capped bundle forwards the arrays through its explicit outer SELECT.
-    capped_bundle = service.get_period_context(
-        "2026-09-06", "2026-09-13", limit=10, per_source_limit=1
+    # The grouped bundle forwards the arrays through its explicit outer SELECT.
+    capped_bundle = service.get_period_context("2026-09-06", "2026-09-13", limit=1)
+    capped_item = next(
+        a for a in _flatten(capped_bundle["recent_articles"]) if a["url"] == marked_url
     )
-    capped_item = next(a for a in capped_bundle["recent_articles"] if a["url"] == marked_url)
     assert [entry["reader"] for entry in capped_item["readers"]] == ["amara", "zoe"]

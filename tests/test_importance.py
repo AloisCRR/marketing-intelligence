@@ -292,7 +292,16 @@ class _ImportanceCursor:
             ]
             if "D.READ_AT IS NULL" in head:
                 docs = [d for d in docs if d["read_at"] is None]
-            self._result = [_period_row(c, d) for d in self._ranked(docs, floor)[:limit]]
+            # The windowed SELECT ranks rows within each source and keeps
+            # `source_rank <= limit`; survivors stay in the global order.
+            seen: dict[str, int] = {}
+            capped: list[dict[str, Any]] = []
+            for doc in self._ranked(docs, floor):
+                source_rank = seen.get(doc["source"], 0) + 1
+                seen[doc["source"]] = source_rank
+                if source_rank <= limit:
+                    capped.append(doc)
+            self._result = [_period_row(c, d) for d in capped]
             return
         if head.startswith("SELECT D.TITLE"):
             if "WHERE D.CANONICAL_URL" in head:
@@ -326,6 +335,11 @@ def _patch(monkeypatch: pytest.MonkeyPatch, conn: _ImportanceConn) -> _Importanc
     monkeypatch.setattr(importance_lane, "get_connection", lambda: conn)
     monkeypatch.setattr(article_lane, "get_connection", lambda: conn)
     return conn
+
+
+def _period_headlines(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten the source-grouped bundle, preserving group then item order."""
+    return [article for group in bundle["recent_articles"] for article in group["articles"]]
 
 
 def _docs() -> list[dict[str, Any]]:
@@ -450,7 +464,7 @@ def test_pre_flag_high_score_reads_back_capped_everywhere(
     assert hits[OTHER_CLEAN_URL]["importance_score"] == 0.8  # unflagged unaffected
 
     bundle = period_lane.get_period_context(_dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=conn)
-    by_url = {a["url"]: a for a in bundle["recent_articles"]}
+    by_url = {a["url"]: a for a in _period_headlines(bundle)}
     assert by_url[CLEAN_URL]["importance_score"] == 0.3
     assert by_url[OTHER_CLEAN_URL]["importance_score"] == 0.8
 
@@ -459,7 +473,7 @@ def test_pre_flag_high_score_reads_back_capped_everywhere(
     ranked_period = period_lane.get_period_context(
         _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), min_importance=0.5, conn=conn
     )
-    assert [a["url"] for a in ranked_period["recent_articles"]] == [OTHER_CLEAN_URL]
+    assert [a["url"] for a in _period_headlines(ranked_period)] == [OTHER_CLEAN_URL]
 
 
 def test_blank_and_unknown_identifiers_are_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -501,12 +515,13 @@ def test_period_bundle_items_carry_importance(monkeypatch: pytest.MonkeyPatch) -
     result = period_lane.get_period_context(
         _dt.date(2026, 9, 7), _dt.date(2026, 9, 13), conn=_PeriodConn()
     )
-    item = result["recent_articles"][0]
+    headlines = _period_headlines(result)
+    assert [group["source"] for group in result["recent_articles"]] == ["Social Media Today"]
+    item = headlines[0]
     assert set(item) == set(service.PERIOD_ARTICLE_KEYS)
+    # The bundle headline carries the capped effective score only: the
+    # rationale/reporter/updated_at provenance stays on the importance reads.
     assert item["importance_score"] == 0.8
-    assert item["importance_rationale"] == "why it matters"
-    assert item["importance_reporter"] == "digest-agent"
-    assert item["importance_updated_at"] == "2026-09-10T12:00:00+00:00"
 
 
 # --- HTTP + MCP parity ------------------------------------------------------
@@ -633,18 +648,17 @@ def test_live_importance_roundtrip_cap_and_visibility(scratch_db: str) -> None:
     bundle = period_lane.get_period_context(
         _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=psycopg.connect(scratch_db)
     )
-    by_url = {a["url"]: a for a in bundle["recent_articles"]}
+    by_url = {a["url"]: a for a in _period_headlines(bundle)}
     assert by_url[CLEAN_URL]["importance_score"] == 0.4
-    assert by_url[CLEAN_URL]["importance_rationale"] == "revised"
 
-    # The per-source-capped variant keeps the importance columns too.
+    # The per-source cap (limit) keeps the capped importance scores too.
     capped = period_lane.get_period_context(
         _dt.date(2026, 9, 1),
         _dt.date(2026, 9, 30),
-        per_source_limit=3,
+        limit=3,
         conn=psycopg.connect(scratch_db),
     )
-    capped_by_url = {a["url"]: a for a in capped["recent_articles"]}
+    capped_by_url = {a["url"]: a for a in _period_headlines(capped)}
     assert capped_by_url[CLEAN_URL]["importance_score"] == 0.4
     assert capped_by_url[FLAGGED_URL]["importance_score"] == 0.3
 
@@ -659,15 +673,17 @@ def test_live_importance_roundtrip_cap_and_visibility(scratch_db: str) -> None:
     flagged_bundle = period_lane.get_period_context(
         _dt.date(2026, 9, 1), _dt.date(2026, 9, 30), conn=psycopg.connect(scratch_db)
     )
-    flagged_by_url = {a["url"]: a for a in flagged_bundle["recent_articles"]}
+    flagged_by_url = {a["url"]: a for a in _period_headlines(flagged_bundle)}
     assert flagged_by_url[CLEAN_URL]["importance_score"] == 0.3
     assert all(r["url"] != CLEAN_URL for r in service.search_articles("body", min_importance=0.35))
     assert all(
         a["url"] != CLEAN_URL
-        for a in period_lane.get_period_context(
-            _dt.date(2026, 9, 1),
-            _dt.date(2026, 9, 30),
-            min_importance=0.35,
-            conn=psycopg.connect(scratch_db),
-        )["recent_articles"]
+        for a in _period_headlines(
+            period_lane.get_period_context(
+                _dt.date(2026, 9, 1),
+                _dt.date(2026, 9, 30),
+                min_importance=0.35,
+                conn=psycopg.connect(scratch_db),
+            )
+        )
     )

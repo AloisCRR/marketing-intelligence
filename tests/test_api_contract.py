@@ -35,6 +35,8 @@ SEARCH_PAYLOAD = [
     }
 ]
 
+#: Grouped period bundle: headlines hang off their source group, and `limit`
+#: caps headlines per group (no flat list, no per-article `source`).
 PERIOD_PAYLOAD = {
     "period": {
         "from": "2026-09-07T00:00:00-05:00",
@@ -43,17 +45,46 @@ PERIOD_PAYLOAD = {
     },
     "recent_articles": [
         {
-            "title": "TikTok Adds Voice Notes",
-            "url": "https://www.socialmediatoday.com/news/tiktok/1/",
-            "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
             "source": "Social Media Today",
-            "published_at": "2026-09-08T14:30:00+00:00",
-            "rank": 1,
-            "author": "Andrew Hutchinson",
-            "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
+            "articles": [
+                {
+                    "title": "TikTok Adds Voice Notes",
+                    "url": "https://www.socialmediatoday.com/news/tiktok/1/",
+                    "canonical_url": "https://www.socialmediatoday.com/news/tiktok/1/",
+                    "published_at": "2026-09-08T14:30:00+00:00",
+                    "author": "Andrew Hutchinson",
+                    "read": False,
+                    "read_at": None,
+                    "read_by": None,
+                    "readers": [{"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}],
+                    "flag_reason": None,
+                    "importance_score": None,
+                    "topics": [],
+                    "has_image_text": False,
+                }
+            ],
         }
     ],
 }
+
+PERIOD_TOP_KEYS = {"period", "recent_articles"}
+PERIOD_GROUP_KEYS = {"source", "articles"}
+PERIOD_HEADLINE_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "published_at",
+    "author",
+    "read",
+    "read_at",
+    "read_by",
+    "readers",
+    "flag_reason",
+    "importance_score",
+    "topics",
+    "has_image_text",
+}
+
 
 FLAG_PAYLOAD = {
     "title": "TikTok Adds Voice Notes",
@@ -217,38 +248,20 @@ def test_period_returns_service_payload(client: TestClient) -> None:
     )
     assert resp.status_code == 200
     assert resp.json() == PERIOD_PAYLOAD
-    # Ticket 02: period items carry the `readers` list through HTTP unchanged.
-    assert (
-        resp.json()["recent_articles"][0]["readers"]
-        == (PERIOD_PAYLOAD["recent_articles"][0]["readers"])
-    )
+    body = resp.json()
+    # Grouped shape: period + one entry per source, headlines nested.
+    assert set(body) == PERIOD_TOP_KEYS
+    group = body["recent_articles"][0]
+    assert set(group) == PERIOD_GROUP_KEYS
+    assert group["source"] == "Social Media Today"
+    assert set(group["articles"][0]) == PERIOD_HEADLINE_KEYS
+    # Ticket 02: period headlines carry the `readers` list through HTTP unchanged.
+    assert group["articles"][0]["readers"] == [
+        {"reader": "reader-1", "read_at": "2026-09-14T12:00:00+00:00"}
+    ]
 
 
 def test_period_forwards_sources_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict = {}
-
-    def fake(from_date: object, to_date: object, **kw: object) -> dict:
-        seen.update(kw)
-        seen["from_date"] = from_date
-        seen["to_date"] = to_date
-        return PERIOD_PAYLOAD
-
-    monkeypatch.setattr(service, "get_period_context", fake)
-    resp = TestClient(app).post(
-        "/period-context",
-        json={
-            "from_date": "2026-09-07",
-            "to_date": "2026-09-13",
-            "sources": ["MarTech"],
-            "limit": 5,
-        },
-    )
-    assert resp.status_code == 200
-    assert seen["sources"] == ["MarTech"]
-    assert seen["limit"] == 5
-
-
-def test_period_forwards_per_source_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
 
     def fake(from_date: object, to_date: object, **kw: object) -> dict:
@@ -257,11 +270,18 @@ def test_period_forwards_per_source_limit(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(service, "get_period_context", fake)
     http = TestClient(app)
+    # `limit` is the per-source-group headline cap and defaults to 50.
     body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
     assert http.post("/period-context", json=body).status_code == 200
-    assert seen["per_source_limit"] is None  # default preserves current behaviour
-    assert http.post("/period-context", json=dict(body, per_source_limit=3)).status_code == 200
-    assert seen["per_source_limit"] == 3
+    assert seen["sources"] is None
+    assert seen["limit"] == service.DEFAULT_PERIOD_LIMIT == 50
+    resp = http.post(
+        "/period-context",
+        json=dict(body, sources=["MarTech"], limit=5),
+    )
+    assert resp.status_code == 200
+    assert seen["sources"] == ["MarTech"]
+    assert seen["limit"] == 5
 
 
 def test_period_forwards_exclude_read(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -309,13 +329,12 @@ def test_period_forwards_annotation_filters(monkeypatch: pytest.MonkeyPatch) -> 
     assert (
         http.post(
             "/period-context",
-            json=dict(body, min_importance=0.7, topics=["jewellery"], per_source_limit=2),
+            json=dict(body, min_importance=0.7, topics=["jewellery"]),
         ).status_code
         == 200
     )
     assert seen["min_importance"] == 0.7
     assert seen["topics"] == ["jewellery"]  # canonicalization happens in the adapter
-    assert seen["per_source_limit"] == 2
 
 
 def test_period_validation_maps_to_422() -> None:
@@ -340,18 +359,20 @@ def test_period_validation_maps_to_422() -> None:
         ).status_code
         == 422
     )
-    for bad in (0, -1, 101, 2.5):
-        assert (
-            live.post(
-                "/period-context",
-                json={
-                    "from_date": "2026-09-07",
-                    "to_date": "2026-09-13",
-                    "per_source_limit": bad,
-                },
-            ).status_code
-            == 422
-        )
+    # The cutover folded the standalone per-source cap into `limit`, so the
+    # removed parameter is no longer part of the request model: PeriodRequest
+    # (extra="forbid") rejects the stale key rather than silently ignoring it.
+    assert (
+        live.post(
+            "/period-context",
+            json={
+                "from_date": "2026-09-07",
+                "to_date": "2026-09-13",
+                "per_source_limit": 2,
+            },
+        ).status_code
+        == 422
+    )
     for bad in (-0.01, 1.5, "high"):
         assert (
             live.post(

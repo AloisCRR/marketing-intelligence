@@ -3,7 +3,7 @@
 Covers the shared validated interface in `marketing_intelligence.service`:
 - validation (blank keyword, bad limits, bad dates, unknown sources)
 - 21-key search schema + provenance + tz-aware published_at
-- period bundle shape, provenance, rank + annotations, Panama tz handling
+- period bundle grouped by source: shape, provenance, annotations, Panama tz
 - string coercion for period bounds, bounded limit (101 rejected)
 - per-reader `readers` log on every Document payload (Ticket 02)
 """
@@ -58,29 +58,29 @@ SEARCH_EXPECTED_KEYS = {
     "readers",
 }
 
-PERIOD_EXPECTED_KEYS = {
+#: The 13 headline keys inside each `{source, articles}` group — provenance,
+#: the anyone-read cache plus the per-reader log, and the annotations. No
+#: per-article `source` (it lives on the group) and no ordering index.
+PERIOD_HEADLINE_KEYS = {
     "title",
     "url",
     "canonical_url",
-    "source",
     "published_at",
-    "rank",
     "author",
-    "flag_reason",
-    "flag_detail",
-    "flagged_at",
-    "flagged_by",
     "read",
     "read_at",
     "read_by",
+    "readers",
+    "flag_reason",
     "importance_score",
-    "importance_rationale",
-    "importance_reporter",
-    "importance_updated_at",
     "topics",
     "has_image_text",
-    "readers",
 }
+
+
+def _flatten(groups: list[dict]) -> list[dict]:
+    """Headlines in bundle order: groups first-seen, articles within a group."""
+    return [article for group in groups for article in group["articles"]]
 
 
 def _utc(*args: int) -> datetime:
@@ -202,7 +202,7 @@ PERIOD_ROWS = [
 
 
 class _PeriodCursor:
-    """Execute-style fake with real range/source/limit semantics."""
+    """Execute-style fake with real range/source/per-group cap semantics."""
 
     def __init__(self, rows: list[tuple]) -> None:
         self._rows = rows
@@ -214,28 +214,26 @@ class _PeriodCursor:
         assert params is not None
         self.last_sql = sql
         self.last_params = params
-        # The capped lane adds a per-source cap between source names and limit.
-        if len(params) == 5:
-            start, end, names, per_source, limit = params
-        else:
-            start, end, names, limit = params
-            per_source = None
+        # Grouped lane's fixed parameter order: bounds, source names, the
+        # optional annotation filters, then `limit` — the per-source cap, with
+        # no outer LIMIT.
+        start, end, names = params[0], params[1], params[2]
+        limit = int(params[-1])
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         # Read-aware: the exclude_read lane adds `AND d.read_at IS NULL`.
         if "read_at is null" in sql.lower():
             kept = [r for r in kept if not (len(r) > 10 and r[10] is not None)]
         kept.sort(key=lambda r: r[4], reverse=True)
-        if per_source is not None:
-            # Mirror ROW_NUMBER() OVER (PARTITION BY source ...) <= cap.
-            seen: dict[str, int] = {}
-            capped: list[tuple] = []
-            for row in kept:
-                rank = seen.get(row[3], 0) + 1
-                seen[row[3]] = rank
-                if rank <= int(per_source):
-                    capped.append(row)
-            kept = capped
-        self._result = kept[: int(limit)]
+        # Mirror PARTITION BY source <= limit: each source keeps its first
+        # `limit` rows in the global order; every source with a hit survives.
+        seen: dict[str, int] = {}
+        capped: list[tuple] = []
+        for row in kept:
+            count = seen.get(row[3], 0) + 1
+            seen[row[3]] = count
+            if count <= limit:
+                capped.append(row)
+        self._result = capped
         return self
 
     def fetchall(self) -> list[tuple]:
@@ -305,15 +303,18 @@ def test_search_injected_conn_is_not_closed() -> None:
 
 def test_period_shape_provenance_and_truthful_recency_list() -> None:
     ctx = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
-    # No empty analytics placeholders: period + recency-ordered articles only.
+    # No empty analytics placeholders: period + source-grouped headlines only.
     assert set(ctx) == {"period", "recent_articles"}
     assert set(ctx["period"]) == {"from", "to", "timezone"}
     assert ctx["period"]["timezone"] == "America/Panama"
-    articles = ctx["recent_articles"]
+    groups = ctx["recent_articles"]
+    assert all(set(group) == {"source", "articles"} for group in groups)
+    # Groups follow the first-seen order of the globally recency-ordered rows.
+    assert [g["source"] for g in groups] == ["MarTech", "Social Media Today"]
+    articles = _flatten(groups)
     assert [a["title"] for a in articles] == ["Signal Loss Rebuild", "TikTok Adds Voice Notes"]
-    assert [a["rank"] for a in articles] == [1, 2]
     for article in articles:
-        assert set(article) == PERIOD_EXPECTED_KEYS
+        assert set(article) == PERIOD_HEADLINE_KEYS
         parsed = datetime.fromisoformat(str(article["published_at"]))
         assert parsed.tzinfo is not None
 
@@ -371,7 +372,8 @@ def test_period_explicit_known_source_passes_through() -> None:
         sources=["MarTech"],
         conn=_PeriodConnection(),
     )
-    assert [a["title"] for a in ctx["recent_articles"]] == ["Signal Loss Rebuild"]
+    assert [g["source"] for g in ctx["recent_articles"]] == ["MarTech"]
+    assert [a["title"] for a in _flatten(ctx["recent_articles"])] == ["Signal Loss Rebuild"]
 
 
 def test_period_bad_bounds_and_limits_rejected() -> None:
@@ -392,7 +394,7 @@ def test_period_bad_bounds_and_limits_rejected() -> None:
     assert MAX_LIMIT == 100
 
 
-def test_period_per_source_limit_validated_and_forwarded(
+def test_period_limit_validated_and_forwarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict = {}
@@ -409,16 +411,16 @@ def test_period_per_source_limit_validated_and_forwarded(
                 date(2026, 9, 7),
                 date(2026, 9, 13),
                 conn=conn,
-                per_source_limit=bad,  # type: ignore[arg-type]
+                limit=bad,  # type: ignore[arg-type]
             )
     assert seen == {}  # rejected before the lane runs
-    get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, per_source_limit=3)
-    assert seen["per_source_limit"] == 3
+    get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn, limit=3)
+    assert seen["limit"] == 3
     get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
-    assert seen["per_source_limit"] is None
+    assert seen["limit"] == DEFAULT_PERIOD_LIMIT
 
 
-def test_period_per_source_limit_caps_and_composes_with_sources() -> None:
+def test_period_limit_caps_each_source_group_and_composes_with_sources() -> None:
     """Adapter-level flood check: one source cannot dominate the bundle."""
     rows = [
         (
@@ -452,30 +454,34 @@ def test_period_per_source_limit_caps_and_composes_with_sources() -> None:
             None,
         )
     ]
-    uncapped = get_period_context(
-        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(rows), limit=6
+    # The default limit keeps the whole flood in its own group.
+    untrimmed = get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(rows)
     )
-    assert {a["source"] for a in uncapped["recent_articles"]} == {"Social Media Today"}
+    assert {g["source"]: len(g["articles"]) for g in untrimmed["recent_articles"]} == {
+        "Social Media Today": 8,
+        "MarTech": 1,
+    }
     capped = get_period_context(
         date(2026, 9, 7),
         date(2026, 9, 13),
         conn=_PeriodConnection(rows),
-        limit=6,
-        per_source_limit=2,
+        limit=2,
     )
-    sources = [a["source"] for a in capped["recent_articles"]]
-    assert sources.count("Social Media Today") == 2
-    assert "MarTech" in sources
-    assert [a["rank"] for a in capped["recent_articles"]] == list(range(1, len(sources) + 1))
-    # Composes with the allowlist: capping still applies within the narrowed set.
+    groups = capped["recent_articles"]
+    assert [g["source"] for g in groups] == ["Social Media Today", "MarTech"]
+    assert [len(g["articles"]) for g in groups] == [2, 1]
+    assert [a["title"] for a in groups[0]["articles"]] == ["Flood 0", "Flood 1"]
+    # Composes with the allowlist: the cap still applies within the narrowed set.
     narrowed = get_period_context(
         date(2026, 9, 7),
         date(2026, 9, 13),
         conn=_PeriodConnection(rows),
         sources=["Social Media Today"],
-        per_source_limit=2,
+        limit=2,
     )
-    assert len(narrowed["recent_articles"]) == 2
+    assert [g["source"] for g in narrowed["recent_articles"]] == ["Social Media Today"]
+    assert [len(g["articles"]) for g in narrowed["recent_articles"]] == [2]
 
 
 # --- read state ---------------------------------------------------------------
@@ -589,10 +595,10 @@ def test_period_annotates_read_state_by_default() -> None:
     ctx = get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
     )
-    by_url = {a["url"]: a for a in ctx["recent_articles"]}
+    by_url = {a["url"]: a for a in _flatten(ctx["recent_articles"])}
     assert len(by_url) == 2
     marked = by_url[READ_URL]
-    assert set(marked.keys()) == PERIOD_EXPECTED_KEYS
+    assert set(marked.keys()) == PERIOD_HEADLINE_KEYS
     assert marked["read"] is True
     assert marked["read_by"] == "reader-1"
     assert _dt.datetime.fromisoformat(str(marked["read_at"])).tzinfo is not None
@@ -609,14 +615,14 @@ def test_period_exclude_read_filters_marked() -> None:
     ctx = get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
     )
-    assert len(ctx["recent_articles"]) == 2
+    assert len(_flatten(ctx["recent_articles"])) == 2
     filtered = get_period_context(
         date(2026, 9, 7),
         date(2026, 9, 13),
         exclude_read=True,
         conn=_PeriodConnection(READ_PERIOD_ROWS),
     )
-    assert [a["url"] for a in filtered["recent_articles"]] == [UNREAD_URL]
+    assert [a["url"] for a in _flatten(filtered["recent_articles"])] == [UNREAD_URL]
 
 
 def test_period_exclude_read_must_be_bool() -> None:

@@ -6,8 +6,9 @@ Covers the read side of the vision lane:
   Document, ordered by ``frame_index`` — round-tripped through the storage
   lane's own write path, while ``content`` stays the untouched caption;
 - a Document with no stored frames reports ``[]`` (never null, never missing);
-- SEARCH and PERIOD items carry ``has_image_text: bool`` only (no frame text),
-  and the frozen key sets of all three payloads grow by exactly one key each;
+- SEARCH items and the grouped PERIOD headlines carry ``has_image_text: bool``
+  only (no frame text); the frozen key sets grow by the appended vision and
+  reader keys, with the period bundle narrowed to its grouped headline set;
 - HTTP routes and the MCP tools return identical payloads — the adapters are
   pass-through, so parity holds by construction.
 
@@ -119,7 +120,28 @@ PRE_LIST_KEYS = {
     "topics",
 }
 
-PRE_PERIOD_KEYS = (PRE_LIST_KEYS - {"snippet"}) | {"rank"}
+#: Grouped period headlines: the shared annotations plus the vision presence
+#: flag, with the group key carrying the per-article `source`.
+PERIOD_HEADLINE_KEYS = {
+    "title",
+    "url",
+    "canonical_url",
+    "published_at",
+    "author",
+    "read",
+    "read_at",
+    "read_by",
+    "readers",
+    "flag_reason",
+    "importance_score",
+    "topics",
+    "has_image_text",
+}
+
+
+def _period_headlines(bundle: dict) -> list[dict]:
+    """Flatten the bundle's source groups into their headline rows, in order."""
+    return [item for group in bundle["recent_articles"] for item in group["articles"]]
 
 
 def _document() -> NormalizedDocument:
@@ -363,7 +385,7 @@ def test_no_text_sentinel_frames_are_stored_but_not_image_text() -> None:
     # ...but a post with nothing to read does not claim image text.
     assert search_lane.search_articles("MONIdero", conn=conn)[0]["has_image_text"] is False
     bundle = period_lane.get_period_context(date(2026, 9, 1), date(2026, 9, 30), conn=conn)
-    assert bundle["recent_articles"][0]["has_image_text"] is False
+    assert bundle["recent_articles"][0]["articles"][0]["has_image_text"] is False
 
 
 # --- list payloads: presence only ----------------------------------------------
@@ -381,9 +403,12 @@ def test_search_item_carries_presence_only(stored_conn: _Conn) -> None:
 
 def test_period_item_carries_presence_only(stored_conn: _Conn) -> None:
     bundle = period_lane.get_period_context(date(2026, 9, 1), date(2026, 9, 30), conn=stored_conn)
-    item = bundle["recent_articles"][0]
+    group = bundle["recent_articles"][0]
+    item = group["articles"][0]
 
-    assert set(item) == PRE_PERIOD_KEYS | {"has_image_text", "readers"}
+    assert set(group) == {"source", "articles"}
+    assert group["source"] == SOURCE
+    assert set(item) == PERIOD_HEADLINE_KEYS
     assert item["has_image_text"] is True
     assert item["readers"] == []
     assert "image_texts" not in item
@@ -392,11 +417,11 @@ def test_period_item_carries_presence_only(stored_conn: _Conn) -> None:
 def test_service_key_sets_grow_by_the_appended_vision_and_readers_keys() -> None:
     assert set(service.ARTICLE_KEYS) == PRE_ARTICLE_KEYS | {"image_texts", "readers"}
     assert set(service.SEARCH_RESULT_KEYS) == PRE_LIST_KEYS | {"has_image_text", "readers"}
-    assert set(service.PERIOD_ARTICLE_KEYS) == PRE_PERIOD_KEYS | {"has_image_text", "readers"}
+    # Period headlines are the grouped contract, not the flat list plus keys.
+    assert set(service.PERIOD_ARTICLE_KEYS) == PERIOD_HEADLINE_KEYS
     # Order is the payload order: the new keys are appended, never interleaved.
     assert service.ARTICLE_KEYS[-2:] == ("image_texts", "readers")
     assert service.SEARCH_RESULT_KEYS[-2:] == ("has_image_text", "readers")
-    assert service.PERIOD_ARTICLE_KEYS[-2:] == ("has_image_text", "readers")
     # `readers` is its own composed group (Ticket 02), never inside READ_KEYS.
     assert service.READERS_KEYS == ("readers",)
     assert "readers" not in service.READ_KEYS
@@ -451,7 +476,7 @@ def test_list_payloads_identical_over_http_and_mcp(retrieval_conns: _Conn) -> No
     ).json()
     expected_bundle = period_lane.get_period_context(date(2026, 9, 1), date(2026, 9, 30))
     assert period_payload == expected_bundle
-    assert period_payload["recent_articles"][0]["has_image_text"] is True
+    assert period_payload["recent_articles"][0]["articles"][0]["has_image_text"] is True
     assert (
         MCP_SERVER.get_period_context(from_date="2026-09-01", to_date="2026-09-30")
         == expected_bundle
@@ -638,18 +663,20 @@ def test_live_frames_and_presence_over_real_sql(image_scratch_db: str) -> None:
     recency_order = [LIVE_PLAIN_URL, LIVE_PHOTO_URL, LIVE_TEXT_URL]
     assert presence(service.search_articles("Monopoly promo")) == expected_presence
     window = (date(2026, 9, 1), date(2026, 9, 30))
-    flat = period_lane.get_period_context(*window)["recent_articles"]
+    bundle = period_lane.get_period_context(*window)
+    # All three Documents hang off one source, so they share a single group.
+    assert len(bundle["recent_articles"]) == 1
+    flat = _period_headlines(bundle)
     assert presence(flat) == expected_presence
     assert [a["url"] for a in flat] == recency_order
-    # The per-source-capped variant runs a different SELECT shape (ranked
-    # subquery + explicit outer column list): the flag survives it and the
-    # recency order is unchanged.
-    capped = period_lane.get_period_context(*window, per_source_limit=3)
-    assert presence(capped["recent_articles"]) == expected_presence
-    assert [a["url"] for a in capped["recent_articles"]] == recency_order
-    # A cap tighter than the bundle really caps: one source, one slot.
-    tight = period_lane.get_period_context(*window, per_source_limit=1)
-    assert presence(tight["recent_articles"]) == {LIVE_PLAIN_URL: False}
+    # `limit` caps headlines per source group: a loose cap keeps the whole
+    # recency order (and the flag) intact.
+    capped = _period_headlines(period_lane.get_period_context(*window, limit=3))
+    assert presence(capped) == expected_presence
+    assert [a["url"] for a in capped] == recency_order
+    # A tighter cap really trims the group: one source, one slot.
+    tight = _period_headlines(period_lane.get_period_context(*window, limit=1))
+    assert presence(tight) == {LIVE_PLAIN_URL: False}
 
     # Annotation filters still compose, and the flag rides along.
     assert service.set_importance(LIVE_TEXT_URL, 0.9)["importance_score"] == 0.9

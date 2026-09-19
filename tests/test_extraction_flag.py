@@ -95,29 +95,30 @@ SEARCH_EXPECTED_KEYS = {
     "readers",
 }
 
+#: One headline inside a `recent_articles` source group: the source travels as
+#: the group key and ordering as position, so no ordering field and no
+#: per-item `source` appears here, and the bundle omits the flag
+#: detail/flagged_* and the importance rationale/reporter/updated_at extras.
 PERIOD_EXPECTED_KEYS = {
     "title",
     "url",
     "canonical_url",
-    "source",
     "published_at",
-    "rank",
     "author",
-    "flag_reason",
-    "flag_detail",
-    "flagged_at",
-    "flagged_by",
     "read",
     "read_at",
     "read_by",
+    "readers",
+    "flag_reason",
     "importance_score",
-    "importance_rationale",
-    "importance_reporter",
-    "importance_updated_at",
     "topics",
     "has_image_text",
-    "readers",
 }
+
+
+def _period_headlines(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten the source-grouped bundle, preserving group then item order."""
+    return [article for group in bundle["recent_articles"] for article in group["articles"]]
 
 
 def _make_store() -> list[dict[str, Any]]:
@@ -317,8 +318,17 @@ class _FakeConnection:
             if d["published_at"] >= start and d["published_at"] < end and d["source"] in set(names)
         ]
         kept.sort(key=lambda d: d["published_at"], reverse=True)
+        # The windowed SELECT ranks rows within each source and keeps
+        # `source_rank <= limit`; survivors stay in the global order.
+        seen: dict[str, int] = {}
+        capped: list[dict[str, Any]] = []
+        for doc in kept:
+            source_rank = seen.get(doc["source"], 0) + 1
+            seen[doc["source"]] = source_rank
+            if source_rank <= int(limit):
+                capped.append(doc)
         cur = _FakeCursor(self.store)
-        cur._result = [tuple(d[c] for c in _PERIOD_COLS) for d in kept[: int(limit)]]
+        cur._result = [tuple(d[c] for c in _PERIOD_COLS) for d in capped]
         return cur
 
     def commit(self) -> None:
@@ -634,14 +644,18 @@ def test_period_annotates_flag_without_filtering() -> None:
     conn = _FakeConnection()
     _flagged(conn)
     ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
-    flagged = next(a for a in ctx["recent_articles"] if a["url"] == ARTICLE_URL)
+    # Grouped by source: the group carries the source, its headlines the rest.
+    assert {group["source"] for group in ctx["recent_articles"]} == {
+        "Social Media Today",
+        "MarTech",
+    }
+    assert all(set(group) == {"source", "articles"} for group in ctx["recent_articles"])
+    headlines = _period_headlines(ctx)
+    flagged = next(a for a in headlines if a["url"] == ARTICLE_URL)
     assert set(flagged.keys()) == PERIOD_EXPECTED_KEYS
     assert flagged["flag_reason"] == "thin"
-    assert flagged["flag_detail"] == "body under 200 chars, looks like RSS teaser only"
-    assert flagged["flagged_by"] == "digest-agent"
-    assert _dt.datetime.fromisoformat(str(flagged["flagged_at"])).tzinfo is not None
     # Flagged articles are still listed (annotate, not filter).
-    assert {a["title"] for a in ctx["recent_articles"]} == {
+    assert {a["title"] for a in headlines} == {
         ARTICLE_TITLE,
         "Signal Loss Rebuild",
     }

@@ -13,9 +13,8 @@ an explicit caller-supplied period interpreted in ``America/Panama``:
 The bundle currently makes no velocity, emerging-topic, entity, or convergence
 claims: those signals need accumulated history and enrichment that do not
 exist yet and would be added via an ADR. The bundle therefore carries only what
-is real — a recency-ordered ``recent_articles`` list, each item stamped with
-its 1-based ``rank`` in that order plus its provenance — and no placeholder
-analytics fields.
+is real — ``recent_articles`` grouped by source, each group holding its
+headlines in bundle order — and no placeholder analytics fields.
 
 Each item also carries the per-reader `readers` list (ADR-0015 ``document_reads``):
 ``readers`` is a list of ``{reader, read_at}`` sorted by reader, ``[]`` when
@@ -131,19 +130,26 @@ def _annotation_filters(
     return (("\n" + "\n".join(clauses)) if clauses else ""), params
 
 
-def _bundle_sql(*, where: str, importance_first: bool, per_source_limit: int | None) -> str:
-    """Bundle SQL for the composed filter clause.
+def _bundle_sql(*, where: str, importance_first: bool, limit: int) -> str:
+    """Bundle SQL for the composed filter clause and the per-source cap.
 
-    Without ``per_source_limit`` this is one flat, bounded SELECT ordered by
-    recency (or by importance when a floor is set). With a cap, a per-source
-    window rank is computed over the *filtered* rows using the same ordering,
-    only ranks within the cap survive, and the outer query takes the overall
-    ``limit`` rows — so slots a capped source cannot fill go to the next
-    sources under that ordering.
+    This is always the windowed form: rows are numbered within each source over
+    the *filtered* set using the bundle's ordering (recency, or
+    importance-first when a floor is set), only numbers within ``limit``
+    survive, and the survivors come back flat — one row per article, still
+    carrying its source — in that same global order. The single ``%s`` for the
+    per-source window predicate is the caller's ``limit`` binding; there is
+    deliberately no outer ``LIMIT``, because ``limit`` caps a group, not the
+    bundle, and every source with at least one hit must appear.
+
+    ``limit`` is validated here: this function owns the cap semantics, so it is
+    the one place that refuses a nonsensical cap. Rows are unchanged in shape
+    by the window (the outer projection repeats the inner column list), so
+    row consumers never depend on whether grouping is in play.
     """
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError(f"limit must be a positive int, got {limit!r}")
     order = _ORDER_IMPORTANCE if importance_first else _ORDER_RECENCY
-    if per_source_limit is None:
-        return f"{_PERIOD_SELECT}\n{_PERIOD_FROM}{where}\n ORDER BY {order}\n LIMIT %s"
     outer_order = (
         "ranked.importance_score DESC NULLS LAST, ranked.published_at DESC"
         if importance_first
@@ -163,8 +169,7 @@ def _bundle_sql(*, where: str, importance_first: bool, per_source_limit: int | N
         f"{_PERIOD_FROM}{where}"
         "\n       ) ranked\n"
         " WHERE ranked.source_rank <= %s\n"
-        f" ORDER BY {outer_order}\n"
-        " LIMIT %s"
+        f" ORDER BY {outer_order}"
     )
 
 
@@ -223,6 +228,76 @@ def _topics_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _bundle_row(row: Any) -> tuple[Any, dict[str, Any]]:
+    """Split one flat bundle row into ``(source, headline)``.
+
+    Mapping rows and the positional 21-column SELECT shape are both accepted;
+    short tuple rows read their missing trailing columns as ``None`` (fakes
+    predating the later columns). ``content`` and the raw score never leave
+    this function: the body feeds only the paywall cap inside the effective
+    Importance score, and the score is capped here. The headline carries
+    exactly the bundle's documented keys — provenance, the anyone-read
+    summary, the per-reader list, the flag reason, the capped score, the
+    canonical Topic slugs and the image-text presence flag. Ordering and the
+    per-source cap travel as position/grouping, never as item fields.
+    """
+    if isinstance(row, dict):
+        title = row.get("title")
+        url = row.get("url")
+        canonical_url = row.get("canonical_url")
+        source = row.get("source")
+        published_at = row.get("published_at")
+        author = row.get("author")
+        flag_reason = row.get("flag_reason")
+        read_at = row.get("read_at")
+        read_by = row.get("read_by")
+        importance_score = row.get("importance_score")
+        topics = row.get("topics")
+        content = row.get("content")
+        has_image_text = row.get("has_image_text")
+        readers = row.get("readers")
+        read_ats = row.get("read_ats")
+    else:
+        (
+            title,
+            url,
+            canonical_url,
+            source,
+            published_at,
+            author,
+            flag_reason,
+            _flag_detail,
+            _flagged_at,
+            _flagged_by,
+            read_at,
+            read_by,
+            importance_score,
+            _importance_rationale,
+            _importance_reporter,
+            _importance_updated_at,
+            topics,
+            content,
+            has_image_text,
+            readers,
+            read_ats,
+        ) = (tuple(row) + (None,) * 21)[:21]
+    return source, {
+        "title": title,
+        "url": url,
+        "canonical_url": canonical_url,
+        "published_at": _iso_tz_aware(published_at),
+        "author": author,
+        "read": read_at is not None,
+        "read_at": _iso_tz_aware(read_at),
+        "read_by": read_by,
+        "readers": _readers_list(readers, read_ats),
+        "flag_reason": flag_reason,
+        "importance_score": _importance.effective_score(importance_score, flag_reason, content),
+        "topics": _topics_list(topics),
+        "has_image_text": bool(has_image_text),
+    }
+
+
 def _validate_min_importance(value: float | None) -> float | None:
     """Validate the optional importance floor: None, or a number in [0, 1]."""
     if value is None:
@@ -261,7 +336,6 @@ def get_period_context(
     limit: int = DEFAULT_LIMIT,
     conn: Any | None = None,
     exclude_read: bool = False,
-    per_source_limit: int | None = None,
     min_importance: float | None = None,
     topics: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -275,12 +349,13 @@ def get_period_context(
     articles.
     ``exclude_read`` filters out marked (read) articles via
     ``AND d.read_at IS NULL``; default False annotates without filtering.
-    ``per_source_limit`` (default None) additionally caps how many items any
-    one source may contribute: rows are ranked within each source (recency,
-    or importance-first when ``min_importance`` is set) and only the first
-    ``per_source_limit`` survive, then the overall ``limit`` rows are taken.
-    Slots a capped source cannot fill go to other sources, so the bundle
-    stays at most ``limit`` items while no source floods it.
+    ``limit`` (default 50) caps how many headlines any one source may
+    contribute: rows are numbered within each source (recency, or
+    importance-first when ``min_importance`` is set) and only the first
+    ``limit`` per source survive. The cap is per source and there is no total
+    cap, so every source with at least one hit appears and the bundle may
+    hold more than ``limit`` headlines — a prolific source can no longer
+    monopolise it.
 
     ``min_importance`` (default None) keeps only Documents whose latest
     Importance score is ``>=`` the floor; ``topics`` (default None) keeps only
@@ -296,35 +371,37 @@ def get_period_context(
     is excluded only when a ``topics`` filter is set. Pass ``topics=[]`` to
     add no topic constraint.
 
-    Returns ``period {from, to, timezone}`` plus ``recent_articles``. With no
-    ``min_importance`` the list is purely recency-ordered (never ranked by
-    importance); with a floor it is importance-ordered (descending, ties by
-    recency). Each item carries ``rank`` (its 1-based position in that final
-    order — an ordering signal, not a score) alongside
-    ``title, url, canonical_url, source, published_at, author`` provenance,
-    the Extraction Flag annotation (``flag_reason, flag_detail, flagged_at,
-    flagged_by`` — ``None`` when unflagged), the Read State annotation
-    (``read`` bool derived from ``read_at IS NOT NULL``, plus ``read_at,
-    read_by`` — ``None`` when unread), the latest Importance annotation
-    (``importance_score, importance_rationale, importance_reporter,
-    importance_updated_at`` — ``None`` when unannotated), ``topics`` —
-    the Document's effective canonical Topic slugs (sorted, ``[]`` when
-    unannotated), and ``has_image_text`` (True when the Document has stored
-    frame image text from the vision lane, ADR-0014; frames the model found
-    no text in store the ``NO_TEXT`` sentinel and do not count), and
-    ``readers`` — every named reader with their mark time (``[{"reader":
-    str, "read_at": <iso tz-aware str>}]``, sorted by reader, ``[]`` when
-    unread; ADR-0015 ``document_reads``). ``read`` stays the anyone-read
-    summary derived from the ``documents.read_at`` cache, so a legacy
-    reader-less mark reads as ``read`` true with ``readers`` ``[]``. No empty
-    analytics placeholders are emitted.
+    Returns ``period {from, to, timezone}`` plus ``recent_articles``: the
+    matching headlines grouped by source, each group ``{"source": str,
+    "articles": [headline, ...]}``. Group order is the first-seen order of the
+    globally ordered rows — the group holding the newest (or, with a floor,
+    the top-scoring) headline first — and headlines inside a group follow that
+    same global order: recency-first with no floor (annotations never
+    re-order an unfiltered bundle), importance-first with ``NULLS LAST`` and a
+    recency tiebreak when a floor is set. Each headline carries exactly
+    ``title, url, canonical_url, published_at, author, read, read_at, read_by,
+    readers, flag_reason, importance_score, topics, has_image_text``:
+    ``published_at`` and every other timestamp are isoformat tz-aware strings;
+    ``read`` is the anyone-read summary derived from the ``documents.read_at``
+    cache (a legacy reader-less mark reads True with ``readers`` ``[]``) and
+    ``read_at``/``read_by`` are ``None`` when unread; ``readers`` lists every
+    named reader with their mark time (``[{"reader": str, "read_at": <iso
+    tz-aware str>}]``, sorted by reader, ``[]`` when unread; ADR-0015
+    ``document_reads``); ``flag_reason`` is the Extraction Flag reason (``None``
+    when unflagged); ``importance_score`` is the capped effective score
+    (``None`` when unannotated); ``topics`` is the Document's effective
+    canonical Topic slugs (sorted, ``[]`` when unannotated); and
+    ``has_image_text`` is True when the Document has stored frame image text
+    from the vision lane (ADR-0014; frames the model found no text in store
+    the ``NO_TEXT`` sentinel and do not count). Items carry neither an
+    ordering field nor a per-item source — grouping and position carry both.
+    No empty analytics placeholders are emitted.
 
     Raises:
-        ValueError: invalid ``limit``, invalid ``per_source_limit`` (non-bool
-            positive int or None), non-bool ``exclude_read``, invalid
-            ``min_importance`` (non-number or outside [0, 1]), or invalid
-            ``topics`` (not a list of non-blank strings) — alongside the
-            existing empty-period failure.
+        ValueError: invalid ``limit`` (non-bool positive int), non-bool
+            ``exclude_read``, invalid ``min_importance`` (non-number or
+            outside [0, 1]), or invalid ``topics`` (not a list of non-blank
+            strings) — alongside the existing empty-period failure.
     """
     start = _coerce_bound(from_date, is_end=False)
     end = _coerce_bound(to_date, is_end=True)
@@ -332,31 +409,17 @@ def get_period_context(
         raise ValueError(
             f"empty period: from_date {start.isoformat()} is after to_date {end.isoformat()}"
         )
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-        raise ValueError(f"limit must be a positive int, got {limit!r}")
     if not isinstance(exclude_read, bool):
         raise ValueError(f"exclude_read must be a bool, got {exclude_read!r}")
-    if per_source_limit is not None and (
-        not isinstance(per_source_limit, int)
-        or isinstance(per_source_limit, bool)
-        or per_source_limit < 1
-    ):
-        raise ValueError(
-            f"per_source_limit must be a positive int or None, got {per_source_limit!r}"
-        )
     floor = _validate_min_importance(min_importance)
     topic_filter = _validate_topics(topics)
     names = list(sources) if sources is not None else list(catalog_names())
     where, filter_params = _annotation_filters(
         exclude_read=exclude_read, min_importance=floor, topics=topic_filter
     )
-    sql = _bundle_sql(
-        where=where, importance_first=floor is not None, per_source_limit=per_source_limit
-    )
-    params: list[Any] = [start, end, names, *filter_params]
-    if per_source_limit is not None:
-        params.append(per_source_limit)
-    params.append(limit)
+    # `limit` is validated by the builder, which owns the per-source cap.
+    sql = _bundle_sql(where=where, importance_first=floor is not None, limit=limit)
+    params: list[Any] = [start, end, names, *filter_params, limit]
 
     owns_connection = False
     if conn is None:
@@ -373,94 +436,17 @@ def get_period_context(
             except Exception:
                 pass
 
-    articles: list[dict[str, Any]] = []
-    for index, row in enumerate(rows or [], start=1):
-        if isinstance(row, dict):
-            title = row.get("title")
-            url = row.get("url")
-            canonical_url = row.get("canonical_url")
-            source = row.get("source")
-            published_at = row.get("published_at")
-            author = row.get("author")
-            flag_reason = row.get("flag_reason")
-            flag_detail = row.get("flag_detail")
-            flagged_at = row.get("flagged_at")
-            flagged_by = row.get("flagged_by")
-            read_at = row.get("read_at")
-            read_by = row.get("read_by")
-            importance_score = row.get("importance_score")
-            importance_rationale = row.get("importance_rationale")
-            importance_reporter = row.get("importance_reporter")
-            importance_updated_at = row.get("importance_updated_at")
-            topics = row.get("topics")
-            content = row.get("content")
-            has_image_text = row.get("has_image_text")
-            readers = row.get("readers")
-            read_ats = row.get("read_ats")
-        else:
-            # Tuple rows predate the read annotation (10 cols); 12-col rows
-            # carry read_at/read_by; the current SELECT appends the 4
-            # importance columns at [12..15], the topic array at [16], the
-            # raw body at [17] (used only for the read-time cap), the
-            # `has_image_text` presence flag at [18] and, after it, the
-            # `document_reads` reader names + mark times at [19]/[20]. All
-            # shapes are accepted; short rows have no reader rows to report.
-            items = tuple(row)
-            (
-                title,
-                url,
-                canonical_url,
-                source,
-                published_at,
-                author,
-                flag_reason,
-                flag_detail,
-                flagged_at,
-                flagged_by,
-            ) = items[:10]
-            read_at = items[10] if len(items) > 10 else None
-            read_by = items[11] if len(items) > 11 else None
-            importance_score = items[12] if len(items) > 12 else None
-            importance_rationale = items[13] if len(items) > 13 else None
-            importance_reporter = items[14] if len(items) > 14 else None
-            importance_updated_at = items[15] if len(items) > 15 else None
-            topics = items[16] if len(items) > 16 else None
-            content = items[17] if len(items) > 17 else None
-            has_image_text = items[18] if len(items) > 18 else None
-            readers = items[19] if len(items) > 19 else None
-            read_ats = items[20] if len(items) > 20 else None
-        articles.append(
-            {
-                "title": title,
-                "url": url,
-                "canonical_url": canonical_url,
-                "source": source,
-                "published_at": _iso_tz_aware(published_at),
-                "rank": index,
-                "author": author,
-                "flag_reason": flag_reason,
-                "flag_detail": flag_detail,
-                "flagged_at": _iso_tz_aware(flagged_at),
-                "flagged_by": flagged_by,
-                "read": read_at is not None,
-                "read_at": _iso_tz_aware(read_at),
-                "read_by": read_by,
-                "importance_score": _importance.effective_score(
-                    importance_score, flag_reason, content
-                ),
-                "importance_rationale": importance_rationale,
-                "importance_reporter": importance_reporter,
-                "importance_updated_at": _iso_tz_aware(importance_updated_at),
-                "topics": _topics_list(topics),
-                "has_image_text": bool(has_image_text),
-                "readers": _readers_list(readers, read_ats),
-            }
-        )
+    grouped: dict[Any, list[dict[str, Any]]] = {}
+    for row in rows or []:
+        source, headline = _bundle_row(row)
+        grouped.setdefault(source, []).append(headline)
     return {
         "period": {
             "from": start.isoformat(),
             "to": end.isoformat(),
             "timezone": PANAMA_NAME,
         },
-        "recent_articles": articles,
+        "recent_articles": [
+            {"source": source, "articles": headlines} for source, headlines in grouped.items()
+        ],
     }

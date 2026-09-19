@@ -4,9 +4,9 @@ End-to-end verification over lanes 01/02/03, hermetic (fake conns, monkeypatched
 fetch — no live Postgres, no network, no model calls):
 
 - Period Context and search list payloads match the shared contract
-  key-for-key at the same limits (21-key search dicts; period bundle items
-  with `rank` plus the flag/read/importance annotations, the image-text
-  presence flag and the per-reader `readers` log).
+  key-for-key at the same limits (21-key search dicts; period bundles grouped
+  by source, each headline carrying the flag/read/importance annotations, the
+  image-text presence flag and the per-reader `readers` log).
 - One-item lookup returns identical payloads over HTTP (TestClient) and MCP
   (direct tool call + registered-tool path), including identical validation
   failures (unknown/blank -> 422 detail shape == MCP InvalidRequest message).
@@ -80,28 +80,28 @@ SEARCH_KEYS = {
     "readers",
 }
 
+#: Period bundle headlines are grouped per source: no per-article `source`
+#: (the group key carries it) and none of the flat-list keys the grouped
+#: shape dropped.
 PERIOD_ARTICLE_KEYS = {
     "title",
     "url",
     "canonical_url",
-    "source",
     "published_at",
-    "rank",
     "author",
-    "flag_reason",
-    "flag_detail",
-    "flagged_at",
-    "flagged_by",
     "read",
     "read_at",
     "read_by",
+    "readers",
+    "flag_reason",
     "importance_score",
-    "importance_rationale",
-    "importance_reporter",
-    "importance_updated_at",
     "topics",
     "has_image_text",
-    "readers",
+}
+
+PERIOD_GROUP_KEYS = {
+    "source",
+    "articles",
 }
 
 PERIOD_TOP_KEYS = {
@@ -182,11 +182,36 @@ class _ConnFake:
         pass
 
 
+class _PeriodCursorFake(_CursorFake):
+    """Cursor fake for the grouped period SQL.
+
+    The lane orders rows within each source and keeps only the first ``limit``
+    per source — the bundle's sole bound, since its query has no outer LIMIT.
+    Rows arrive in the lane's global order, so counting per source in that
+    order reproduces the window function the real query runs.
+    """
+
+    def fetchall(self) -> list[tuple]:
+        if not self.last_params:
+            return list(self._rows)
+        limit = self.last_params[-1]
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            return list(self._rows)
+        seen: dict[object, int] = {}
+        kept: list[tuple] = []
+        for row in self._rows:
+            source = row[3]
+            seen[source] = seen.get(source, 0) + 1
+            if seen[source] <= limit:
+                kept.append(row)
+        return kept
+
+
 class _PeriodConnFake:
     """Connection fake exposing .execute() directly (period lane style)."""
 
     def __init__(self, rows: list[tuple]) -> None:
-        self.cursor_obj = _CursorFake(rows)
+        self.cursor_obj = _PeriodCursorFake(rows)
 
     def execute(self, sql: str, params: tuple | None = None) -> _CursorFake:
         return self.cursor_obj.execute(sql, params)
@@ -272,7 +297,21 @@ SEARCH_ROWS = [
     ),
 ]
 
+#: Period rows in the lane's global order (newest first), two sharing a source
+#: so the per-source grouping and capping are both observable.
 PERIOD_ROWS = [
+    (
+        "Signal Loss Rebuild",
+        "https://martech.org/signal-loss/2/",
+        "https://martech.org/signal-loss/2/",
+        "MarTech",
+        _utc(2026, 9, 9, 13, 0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
     (
         "TikTok Adds Voice Notes",
         "https://www.socialmediatoday.com/news/tiktok/1/",
@@ -286,11 +325,11 @@ PERIOD_ROWS = [
         None,
     ),
     (
-        "Signal Loss Rebuild",
-        "https://martech.org/signal-loss/2/",
-        "https://martech.org/signal-loss/2/",
-        "MarTech",
-        _utc(2026, 9, 9, 13, 0),
+        "TikTok Shop Expands",
+        "https://www.socialmediatoday.com/news/tiktok-shop/3/",
+        "https://www.socialmediatoday.com/news/tiktok-shop/3/",
+        "Social Media Today",
+        _utc(2026, 9, 7, 10, 0),
         None,
         None,
         None,
@@ -323,22 +362,52 @@ def test_search_list_payload_is_twenty_one_keys_at_same_limits() -> None:
         service.search_articles("TikTok", limit=101, conn=_ConnFake(SEARCH_ROWS))
 
 
-def test_period_list_payload_is_recency_bundle() -> None:
+def _period_headlines(bundle: dict) -> list[dict]:
+    """Flatten the bundle's source groups into their headline rows, in order."""
+    return [item for group in bundle["recent_articles"] for item in group["articles"]]
+
+
+def test_period_list_payload_is_grouped_by_source() -> None:
     ctx = period_lane.get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnFake(PERIOD_ROWS)
     )
     assert set(ctx) == PERIOD_TOP_KEYS
     assert set(ctx["period"]) == {"from", "to", "timezone"}
-    assert len(ctx["recent_articles"]) == 2
-    for item in ctx["recent_articles"]:
-        assert set(item) == PERIOD_ARTICLE_KEYS
-        assert item["readers"] == []
-    assert [item["rank"] for item in ctx["recent_articles"]] == [1, 2]
-    # Same limits: limit=1 bounds the article list.
+    # One group per source, ordered by the first row each source contributes
+    # to the globally ordered result; headlines are nested, never flat.
+    groups = ctx["recent_articles"]
+    assert [group["source"] for group in groups] == ["MarTech", "Social Media Today"]
+    assert [len(group["articles"]) for group in groups] == [1, 2]
+    for group in groups:
+        assert set(group) == PERIOD_GROUP_KEYS
+        for item in group["articles"]:
+            assert set(item) == PERIOD_ARTICLE_KEYS
+            # Ticket 02: the per-reader log is unread -> [].
+            assert item["readers"] == []
+    # Newest first within a group, same order as the global result.
+    assert [item["url"] for item in groups[1]["articles"]] == [
+        "https://www.socialmediatoday.com/news/tiktok/1/",
+        "https://www.socialmediatoday.com/news/tiktok-shop/3/",
+    ]
+    assert [item["url"] for item in _period_headlines(ctx)] == [
+        "https://martech.org/signal-loss/2/",
+        "https://www.socialmediatoday.com/news/tiktok/1/",
+        "https://www.socialmediatoday.com/news/tiktok-shop/3/",
+    ]
+    # `limit` caps headlines per source group: every source still reports in,
+    # and the cap trims each group rather than the bundle overall.
     bounded = period_lane.get_period_context(
         date(2026, 9, 7), date(2026, 9, 13), limit=1, conn=_PeriodConnFake(PERIOD_ROWS)
     )
-    assert len(bounded["recent_articles"]) == 1
+    assert [group["source"] for group in bounded["recent_articles"]] == [
+        "MarTech",
+        "Social Media Today",
+    ]
+    assert [len(group["articles"]) for group in bounded["recent_articles"]] == [1, 1]
+    assert [item["url"] for item in _period_headlines(bounded)] == [
+        "https://martech.org/signal-loss/2/",
+        "https://www.socialmediatoday.com/news/tiktok/1/",
+    ]
 
 
 def test_http_search_and_period_match_service_shapes(
@@ -354,10 +423,12 @@ def test_http_search_and_period_match_service_shapes(
         "/period-context", json={"from_date": "2026-09-07", "to_date": "2026-09-13"}
     ).json()
     assert set(period_payload) == PERIOD_TOP_KEYS
-    assert all(set(item) == PERIOD_ARTICLE_KEYS for item in period_payload["recent_articles"])
+    groups = period_payload["recent_articles"]
+    assert all(set(group) == PERIOD_GROUP_KEYS for group in groups)
+    assert all(set(item) == PERIOD_ARTICLE_KEYS for item in _period_headlines(period_payload))
     # HTTP carries the same readers list as the service payloads (Ticket 02).
     assert all(item["readers"] == [] for item in search_payload["results"])
-    assert all(item["readers"] == [] for item in period_payload["recent_articles"])
+    assert all(item["readers"] == [] for item in _period_headlines(period_payload))
 
 
 # --- one-item lookup parity: HTTP == MCP ---------------------------------------

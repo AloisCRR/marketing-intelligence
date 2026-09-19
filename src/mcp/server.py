@@ -46,14 +46,15 @@ SERVER_INSTRUCTIONS = (
     "You are a consumer of this layer — discover evidence with search_articles, read full text "
     "with get_article, and never own or re-run scraping/ingestion yourself. "
     "For any period synthesis, call get_period_context(from_date, to_date) with "
-    "ISO dates (YYYY-MM-DD); its recent_articles list is recency-ordered by default "
-    "(each item carries its rank position, an ordering signal, not an importance "
-    "score). Pass min_importance to keep only Documents whose latest score clears "
-    "the floor (the bundle then orders importance-first) and topics to keep only "
-    "Documents carrying at least one canonical Topic; per_source_limit spreads the "
-    "result across sources, so a pillar-filtered, importance-ranked, source-balanced "
-    "week is one call. Annotated filters never touch unannotated Documents unless "
-    "you ask: a NULL score or empty Topic set is excluded only when the matching "
+    "ISO dates (YYYY-MM-DD); its recent_articles list is grouped by source "
+    "({source, articles}) and each group's headlines are recency-ordered by "
+    "default. Pass min_importance to keep only Documents whose latest score "
+    "clears the floor (the bundle then orders importance-first) and topics to "
+    "keep only Documents carrying at least one canonical Topic; limit caps how "
+    "many headlines any one source group contributes, so a pillar-filtered, "
+    "importance-ordered, source-balanced week is one call. Annotated filters "
+    "never touch unannotated Documents unless you ask: a NULL score or empty "
+    "Topic set is excluded only when the matching "
     "filter is set. Draft only from what that bundle contains — keep provenance "
     "URLs attached. "
     "A digest is just one usage of a bundle: the caller picks any range and builds "
@@ -148,7 +149,7 @@ def search_articles(
     (server-canonicalized; unknown tags are rejected). Unannotated articles
     (NULL score / no topics) are excluded only when the matching filter is
     set — never silently dropped from an unfiltered search and never silently
-    top-ranked.
+    promoted to the top.
 
     Args:
         keyword: Non-blank search term matched against titles/bodies.
@@ -184,12 +185,8 @@ def get_period_context(
     sources: Annotated[
         list[str] | None, "Optional source filter; unknown names are rejected."
     ] = None,
-    limit: Annotated[int, "Max articles in bundle, 1-100."] = DEFAULT_PERIOD_LIMIT,
+    limit: Annotated[int, "Max headlines per source group, 1-100."] = DEFAULT_PERIOD_LIMIT,
     exclude_read: Annotated[bool, "When true, hide read articles."] = False,
-    per_source_limit: Annotated[
-        int | None,
-        "Optional cap on items from any one source, 1-100; None means no per-source cap.",
-    ] = None,
     min_importance: Annotated[
         float | None,
         "Importance floor in [0,1]; unannotated articles are excluded only when set.",
@@ -202,43 +199,41 @@ def get_period_context(
     """Fetch the evidence bundle for a date range.
 
     Use for period synthesis: draft exclusively from the returned
-    recent_articles — each item carries a 1-based `rank` (its position in the
-    final returned order, not an importance score). Keep URLs/provenance
-    attached and separate observations from interpretations. A digest is just
-    the case where the caller picks a range (often a week).
+    recent_articles, a list of {source, articles} groups (one per source with
+    at least one hit) whose headlines are recency-ordered by default. Keep
+    URLs/provenance attached and separate observations from interpretations. A
+    digest is just the case where the caller picks a range (often a week).
 
     The annotation filters compose in one call: `min_importance` keeps only
     Documents whose latest score clears the floor and orders the bundle
     importance-first (ties by recency); `topics` keeps only Documents carrying
     at least one of the given tags (server-canonicalized; unknown tags are
-    rejected); `per_source_limit` spreads the result across sources. Without a
-    floor the bundle stays purely recency-ordered. Unannotated Documents (NULL
-    score / no topics) are excluded only when the matching filter is set —
-    never silently dropped or silently top-ranked.
+    rejected). Without a floor the bundle stays purely recency-ordered.
+    Unannotated Documents (NULL score / no topics) are excluded only when the
+    matching filter is set — never silently dropped or silently promoted to
+    the top.
 
     Args:
         from_date: Range start as ISO date (YYYY-MM-DD, inclusive).
         to_date: Range end as ISO date (YYYY-MM-DD, inclusive).
         sources: Optional allowlist of source names; None means all sources.
-        limit: Max articles in the bundle, 1-100 (default 50).
+        limit: Max headlines per source group, 1-100 (default 50). Every source
+            with at least one hit still appears in the bundle.
         exclude_read: When True, hide read articles (default False annotates only).
-        per_source_limit: Optional cap of 1-100 on articles any single source
-            may contribute; None (default) means no per-source cap. Slots a
-            capped source cannot fill go to other sources; composes with
-            `sources` and `limit`.
         min_importance: Optional floor in [0, 1] on the latest importance score.
         topics: Optional canonical Topic slugs or accepted synonyms; a match
             needs at least one of them.
 
     Returns:
-        Evidence-bundle dict with `period` and a `recent_articles` list
-        (recency-ordered, or importance-ordered when a floor is set); no empty
+        Evidence-bundle dict with `period` and a source-grouped
+        `recent_articles` list (one {source, articles} entry per source;
+        recency-ordered, or importance-ordered when a floor is set); no empty
         analytics placeholders.
 
     Raises:
         InvalidRequest: If dates are malformed/unordered, sources unknown,
-            limit/per_source_limit is outside 1-100, min_importance is outside
-            [0, 1], or a topic tag is unknown.
+            limit is outside 1-100, min_importance is outside [0, 1], or a
+            topic tag is unknown.
     """
     return service.get_period_context(
         from_date,
@@ -246,7 +241,6 @@ def get_period_context(
         sources=sources,
         limit=limit,
         exclude_read=exclude_read,
-        per_source_limit=per_source_limit,
         min_importance=min_importance,
         topics=topics,
     )
@@ -378,7 +372,7 @@ def set_importance(
     Use to mark evidence the digest consumer should prefer. History is
     retained append-only; flagged or paywalled articles are hard-capped at
     0.3 server-side regardless of the submitted score, so they can never
-    outrank clean evidence. This is a mutating tool (with flag_extraction,
+    displace clean evidence. This is a mutating tool (with flag_extraction,
     mark_article_read, set_document_topics, record_digest_picks and
     clear_digest_picks).
 
@@ -574,7 +568,7 @@ def read_about() -> str:
             "workflow": "search_articles for discovery -> get_article for full text -> "
             "get_period_context(from_date, to_date) for any period bundle "
             "(a digest is built from a caller-chosen range; filters: min_importance, "
-            "topics, per_source_limit) -> set_importance to record "
+            "topics, limit) -> set_importance to record "
             "why evidence matters -> list_vocabulary + set_document_topics to tag "
             "evidence canonically -> record_digest_picks(digest_date, urls) to leave "
             "the digest trace (re-record an edited set for its added/removed "
@@ -641,8 +635,9 @@ def period_digest(period: str, focus: str | None = None) -> str:
         "4. SELECT the source-balanced shortlist: re-call get_period_context "
         "for the same range with min_importance=<floor, e.g. 0.6>, "
         "topics=<canonical slugs covering the focus; omit to keep every topic> "
-        "and per_source_limit=2. The returned bundle (recent_articles, rank = "
-        "importance order) is the digest's evidence set.\n"
+        "and limit=2 (two headlines per source group). The returned bundle "
+        "(recent_articles grouped by source, importance order within each "
+        "group) is the digest's evidence set.\n"
         "5. SUMMARIZE from that shortlist only: cite every claim with its "
         "article URL/canonical_url, separate observations from interpretations, "
         "and flag (do not silently fix) badly extracted content via "
@@ -667,9 +662,9 @@ def investigate_topic(keyword: str) -> str:
         "then get_article for the hits you choose to inspect, then synthesize what the "
         "stored evidence supports with URL citations, "
         "clearly separating observations from interpretations. "
-        "For a date-bounded view, get_period_context returns a recency-ordered "
-        "recent_articles list by default (rank = position, not importance) and "
-        "accepts min_importance/topics/per_source_limit for annotation-aware pulls."
+        "For a date-bounded view, get_period_context returns recent_articles "
+        "grouped by source, recency-ordered within each group by default, and "
+        "accepts min_importance/topics/limit for annotation-aware pulls."
     )
 
 
