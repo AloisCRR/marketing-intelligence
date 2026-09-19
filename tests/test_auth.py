@@ -238,3 +238,22 @@ def test_mcp_internal_host_still_requires_auth(authed: str) -> None:
     with TestClient(http_app) as client:
         resp = client.post("/mcp", json={}, headers={"host": "marketing-intelligence-mcp:8124"})
         assert resp.status_code == 401
+
+
+def test_mcp_cors_exposes_session_id(authed: str) -> None:
+    """Browser Inspector can read mcp-session-id (preflight + exposed header)."""
+    http_app = MCP_SERVER.create_http_app()
+    with TestClient(http_app) as client:
+        preflight = client.options(
+            "/mcp",
+            headers={
+                "Origin": "https://example.test",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,mcp-session-id",
+            },
+        )
+        assert preflight.status_code == 200
+        # Actual (non-preflight) responses carry the exposed header.
+        resp = client.get("/health", headers={"Origin": "https://example.test"})
+        assert resp.status_code == 200
+        assert "mcp-session-id" in resp.headers.get("access-control-expose-headers", "")

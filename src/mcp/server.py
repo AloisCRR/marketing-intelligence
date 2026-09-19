@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -678,6 +679,25 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse(health_payload())
 
 
+def _attach_cors(app: Starlette) -> Starlette:
+    """Expose ``mcp-session-id`` so browser clients can run the handshake.
+
+    The Inspector (browser) reads the session id from the initialize response
+    header; browsers hide custom headers unless listed in
+    ``Access-Control-Expose-Headers``, so without this the next request goes
+    out bare and the transport rejects it with "Missing session ID".
+    Outermost middleware so preflight OPTIONS answers before auth runs.
+    """
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["mcp-session-id"],
+    )
+    return app
+
+
 def _attach_health_route(app: Starlette) -> Starlette:
     """Append ``GET /health`` to a streamable-HTTP app (idempotent per app)."""
     for route in app.routes:
@@ -695,12 +715,12 @@ def create_http_app() -> Starlette:
     Serve plain HTTP behind Traefik (TLS terminated at the proxy), e.g.
     `uvicorn mcp.server:http_app --port 8124`.
     """
-    return _attach_health_route(create_mcp().streamable_http_app())
+    return _attach_cors(_attach_health_route(create_mcp().streamable_http_app()))
 
 
 # ASGI entrypoint reflecting the env at process start (containers set
 # BRAIN_API_TOKEN before import, so this is the enforced app in prod).
-http_app = _attach_health_route(mcp.streamable_http_app())
+http_app = _attach_cors(_attach_health_route(mcp.streamable_http_app()))
 
 
 if __name__ == "__main__":
