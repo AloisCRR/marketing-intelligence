@@ -135,6 +135,7 @@ services:
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
       APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

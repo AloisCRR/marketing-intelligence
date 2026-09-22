@@ -12,3 +12,8 @@ deployments:
         timezone: "America/Panama"
         slug: "weekly-monday-5am-panama"
         active: true
+  - name: marketing-intelligence-annotate-backfill
+    entrypoint: marketing_intelligence.flows:annotate_sources_flow
+    parameters: {}
+    work_pool:
+      name: brain-pool

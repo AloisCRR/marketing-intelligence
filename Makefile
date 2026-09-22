@@ -9,7 +9,8 @@ help:
 	@echo "migrate  - yoyo: apply pending migrations only"
 	@echo "migrate-baseline - one-time: mark applied without executing (pre-yoyo DBs)"
 	@echo "ingest   - ingest all sources (20) (SOURCE=\"MarTech\" for one source; requires local Prefect server)"
-	@echo "prefect-up - start local Prefect server (http://127.0.0.1:4200)"
+	@echo "annotate - Jev-classify pending docs (SOURCE=\"MarTech\" for one source; requires local Prefect server)"
+	@echo "annotate-backfill - same as annotate, all sources (manual backfill entrypoint)"
 	@echo "image    - docker build deploy image (IMAGE=marketing-intelligence-app:local)"
 	@echo "up       - docker compose up -d --build (db+migrate+api+mcp)"
 	@echo "up-db    - docker compose up -d db (local DB only)"
@@ -69,6 +70,9 @@ PREFECT_API_URL ?= http://127.0.0.1:4200/api
 prefect-up:
 	prefect server start
 
-ingest:
+annotate:
 	@scripts/check-prefect.sh
-	PREFECT_API_URL="$(PREFECT_API_URL)" PYTHONPATH=src uv run --frozen python -c "from marketing_intelligence.flows import ingest_sources_flow; print(ingest_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"
+	PREFECT_API_URL="$(PREFECT_API_URL)" PYTHONPATH=src uv run --frozen python -c "from marketing_intelligence.flows import annotate_sources_flow; print(annotate_sources_flow(['$(SOURCE)'] if '$(SOURCE)' else None))"
+annotate-backfill:
+	@scripts/check-prefect.sh
+	PREFECT_API_URL="$(PREFECT_API_URL)" PYTHONPATH=src uv run --frozen python -c "from marketing_intelligence.flows import annotate_sources_flow; print(annotate_sources_flow(None))"
