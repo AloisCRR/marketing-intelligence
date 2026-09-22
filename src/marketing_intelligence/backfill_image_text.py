@@ -14,6 +14,15 @@ so `--all-frames` only matters for rows whose payload already carries
 `childPosts`. Full-carousel recovery for `basicData` rows needs a
 `detailedData` re-pull (billed) and is out of scope here.
 
+Why `--refresh` exists: stored `displayUrl`s are signed CDN URLs (the
+`oh`/`oe` query params expire). Weeks-old rows 403 on download — the first
+VPS run transcribed 8/14 with 6 `HTTP Error 403: Forbidden` causes.
+Refresh re-scrapes the exact post URLs through the Apify actor
+(`username: [<post urls>]` — URL mode, which ignores `resultsLimit` and
+`onlyPostsNewerThan` per the actor docs) at `detailedData`, rewrites
+`document_payloads` with fresh URLs, then transcribes. About $0.0027 per
+detailed post on Free; batches of 10 stay inside the $0.035 run envelope.
+
 Idempotent and rerunnable: candidates are documents of the account with
 zero `document_image_texts` rows, and the side-table upsert overwrites in
 place. This writes no `ingestion_runs` row — it is not an Ingestion Run.
@@ -23,6 +32,7 @@ Run where the secrets live (the `worker` compose service carries both keys;
 
     docker compose exec worker python -m marketing_intelligence.backfill_image_text
     docker compose exec worker python -m marketing_intelligence.backfill_image_text --dry-run
+    docker compose exec worker python -m marketing_intelligence.backfill_image_text --refresh
 """
 
 from __future__ import annotations
@@ -31,16 +41,24 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
 from marketing_intelligence.db import get_connection
 from marketing_intelligence.image_text import enumerate_frame_urls, image_texts_for_posts
+from marketing_intelligence.instagram import (
+    DETAILED_DATA_LEVEL,
+    MAX_CHARGE_USD,
+    map_post_to_document,
+    run_actor,
+)
 from marketing_intelligence.normalize import (
     NormalizedDocument,
     coerce_tz_aware,
     make_document,
 )
+from marketing_intelligence.payloads import write_document_payloads
 
 #: Account whose pre-extract rows get cover text. Override via argv.
 SOURCE_DEFAULT = "ig:sabrikolod"
@@ -48,8 +66,15 @@ SOURCE_DEFAULT = "ig:sabrikolod"
 #: Safety bound on rows transcribed per invocation (vision calls are billed).
 DEFAULT_LIMIT = 200
 
+#: Post URLs per Apify run in refresh mode: 10 detailed posts ≈ $0.027,
+#: inside the $0.035 run envelope.
+REFRESH_BATCH_SIZE = 10
+
 #: How many per-frame causes to print; the rest are counted, not dumped.
 CAUSE_PRINT_CAP = 20
+
+#: Cap (chars) on a collapsed failure detail carried into a cause.
+_CAUSE_CAP = 512
 
 #: Documents of the account with no vision rows yet, newest first
 #: (a bounded billing budget spends on the freshest posts).
@@ -65,6 +90,11 @@ SELECT d.url, d.canonical_url, d.title, d.content, d.published_at,
    )
  ORDER BY d.published_at DESC\
 """
+
+
+def _cause(exc: Exception) -> str:
+    """One collapsed, capped failure detail; never a secret or frame bytes."""
+    return " ".join(str(exc).split())[:_CAUSE_CAP]
 
 
 def _coerce_payload(value: Any) -> dict[str, Any] | None:
@@ -126,6 +156,80 @@ def _candidate_pairs(
     return pairs, no_payload, no_frames
 
 
+def build_refresh_input(urls: list[str]) -> dict[str, Any]:
+    """Actor input re-scraping exact post URLs (URL mode).
+
+    URL mode ignores `resultsLimit`/`onlyPostsNewerThan` per the actor docs,
+    so the input carries only the URL list plus `detailedData` (fresh
+    `displayUrl` + `childPosts`), `skipPinnedPosts` and the charge envelope.
+    """
+    return {
+        "username": list(urls),
+        "dataDetailLevel": DETAILED_DATA_LEVEL,
+        "skipPinnedPosts": False,
+        "maxTotalChargeUsd": MAX_CHARGE_USD,
+    }
+
+
+def _chunked(items: list[str], size: int) -> Iterator[list[str]]:
+    """Yield `items` in batches of at most `size` (one Apify run per batch)."""
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def refresh_and_transcribe(
+    source_label: str,
+    urls: list[str],
+    conn: Any | None = None,
+    *,
+    cover_only: bool = True,
+    batch_size: int = REFRESH_BATCH_SIZE,
+) -> tuple[int, int, list[str]]:
+    """Re-scrape post URLs for fresh payloads, then transcribe. Never raises.
+
+    Each batch is one billed actor run; the payload side table is rewritten
+    before the vision stage so the transcribed URLs are the fresh ones.
+    Returns `(posts_refreshed, frames, causes)`: per-batch actor failures and
+    per-post mapping failures become single `0:` causes, never a traceback.
+    """
+    refreshed = 0
+    frames = 0
+    causes: list[str] = []
+    if not urls:
+        return (0, 0, [])
+    for chunk in _chunked(list(urls), batch_size):
+        try:
+            posts = run_actor(build_refresh_input(chunk))
+        except Exception as exc:
+            causes.append(f"0: {_cause(exc)}")
+            continue
+        docs: list[NormalizedDocument] = []
+        fresh: list[dict[str, Any]] = []
+        for post in posts:
+            try:
+                docs.append(map_post_to_document(post, source_label))
+                fresh.append(post)
+            except Exception as exc:
+                causes.append(f"0: {_cause(exc)}")
+        refreshed += len(docs)
+        if not docs:
+            continue
+        try:
+            write_document_payloads(list(zip(docs, fresh, strict=True)), conn=conn)
+        except Exception as exc:
+            causes.append(f"0: {_cause(exc)}")
+            continue
+        pairs = [
+            (doc, enumerate_frame_urls(post)[:1] if cover_only else enumerate_frame_urls(post))
+            for doc, post in zip(docs, fresh, strict=True)
+            if enumerate_frame_urls(post)
+        ]
+        batch_frames, batch_causes = image_texts_for_posts(pairs, conn=conn)
+        frames += batch_frames
+        causes.extend(batch_causes)
+    return (refreshed, frames, causes)
+
+
 def _parse_argv(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Transcribe cover frames for pre-extract Instagram rows."
@@ -143,11 +247,31 @@ def _parse_argv(argv: list[str] | None) -> argparse.Namespace:
         help=f"max rows transcribed per run (default {DEFAULT_LIMIT})",
     )
     parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-scrape candidate posts via Apify for fresh frame URLs before "
+        "transcribing (fixes 403-expired CDN params; billed)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=REFRESH_BATCH_SIZE,
+        help=f"post URLs per Apify run in refresh mode (default {REFRESH_BATCH_SIZE})",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="list what would be transcribed without calling the vision lane",
     )
     return parser.parse_args(argv)
+
+
+def _print_causes(causes: list[str]) -> None:
+    """Print a capped sample of causes; the rest are counted, not dumped."""
+    for cause in causes[:CAUSE_PRINT_CAP]:
+        print(f"  {cause}")
+    if len(causes) > CAUSE_PRINT_CAP:
+        print(f"  ... and {len(causes) - CAUSE_PRINT_CAP} more")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -156,13 +280,41 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit < 1:
         print(f"limit must be a positive int, got {args.limit}", file=sys.stderr)
         return 2
+    if args.batch_size < 1:
+        print(f"batch-size must be a positive int, got {args.batch_size}", file=sys.stderr)
+        return 2
     if not args.dry_run and not os.environ.get("DEEPINFRA_API_KEY"):
         print("DEEPINFRA_API_KEY is not set; refusing to bill the vision lane", file=sys.stderr)
+        return 2
+    if args.refresh and not args.dry_run and not os.environ.get("APIFY_API_TOKEN"):
+        print("APIFY_API_TOKEN is not set; refusing to run the Instagram lane", file=sys.stderr)
         return 2
     conn = get_connection()
     try:
         cursor = conn.execute(_CANDIDATES_SQL, (args.source,))
         rows = list(cursor.fetchall()) if cursor is not None else []
+        if args.refresh:
+            urls = [str(row[0]) for row in rows][: args.limit]
+            print(
+                f"source={args.source} refresh_candidates={len(rows)} "
+                f"planned={len(urls)} cover_only={not args.all_frames}"
+            )
+            if args.dry_run:
+                for url in urls[:CAUSE_PRINT_CAP]:
+                    print(f"  would refresh {url}")
+                if len(urls) > CAUSE_PRINT_CAP:
+                    print(f"  ... and {len(urls) - CAUSE_PRINT_CAP} more")
+                return 0
+            refreshed, frames, causes = refresh_and_transcribe(
+                args.source,
+                urls,
+                conn=conn,
+                cover_only=not args.all_frames,
+                batch_size=args.batch_size,
+            )
+            print(f"refreshed={refreshed} image_text_frames={frames} causes={len(causes)}")
+            _print_causes(causes)
+            return 0
         pairs, no_payload, no_frames = _candidate_pairs(
             rows, source_label=args.source, cover_only=not args.all_frames
         )
@@ -181,10 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         frames, causes = image_texts_for_posts(todo, conn=conn)
         print(f"image_text_frames={frames} causes={len(causes)}")
-        for cause in causes[:CAUSE_PRINT_CAP]:
-            print(f"  {cause}")
-        if len(causes) > CAUSE_PRINT_CAP:
-            print(f"  ... and {len(causes) - CAUSE_PRINT_CAP} more")
+        _print_causes(causes)
         return 0
     finally:
         try:

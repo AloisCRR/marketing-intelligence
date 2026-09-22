@@ -605,7 +605,6 @@
       "type": "instagram",
       "policy": "apify-premium",
       "username": "sabrikolod",
-      "hashtag_filter": "ChismecitoMarketinero",
       "content_mode": "caption_first",
       "image_text": "ignore"
     },
