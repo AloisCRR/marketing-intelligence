@@ -221,7 +221,7 @@ def test_batch_isolates_swarovski_from_failing_neighbour(monkeypatch: Any, no_en
         raise RuntimeError(f"fetch failed for {url}: HTTP Error 404")
 
     monkeypatch.setattr(flows, "fetch_rss", failing_feed)
-    results = flows.ingest_sources_flow(source_names=[SWAROVSKI, "InfoMoney"])
+    results = flows.ingest_sources_flow(source_names=[SWAROVSKI, "InfoMoney"], annotate=False)
     assert results[SWAROVSKI] == {"inserted": 3, "skipped": 0}
     assert results["InfoMoney"]["inserted"] == 0
     assert results["InfoMoney"]["error"]

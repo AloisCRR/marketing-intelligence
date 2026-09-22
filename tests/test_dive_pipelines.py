@@ -706,7 +706,7 @@ def test_batch_ingests_both_dives_and_isolates_failure(
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     _pin_planning_clock(monkeypatch)
-    results = flows.ingest_sources_flow(source_names=LABELS)
+    results = flows.ingest_sources_flow(source_names=LABELS, annotate=False)
     assert results["Retail Dive"]["inserted"] == 4
     assert "error" not in results["Retail Dive"]
     assert results["Marketing Dive"]["inserted"] == 0

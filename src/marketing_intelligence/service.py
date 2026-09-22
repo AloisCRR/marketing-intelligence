@@ -339,18 +339,25 @@ def get_period_context(
     `>=` the floor and orders the bundle by importance (descending, ties by
     recency); without a floor the bundle stays purely recency-ordered.
     `topics` (None default) keeps only Documents carrying at least one of the
-    given tags (array overlap). Tags are canonicalized server-side (synonyms,
-    case/whitespace variants and retired aliases resolve to the canonical
-    slug); unknown tags raise `InvalidRequest` (422); an empty list adds no
-    constraint. All filters compose with `sources` and `exclude_read` in one
-    call.
+    given tags (array overlap). ``None`` is **not** "unfiltered" on this lane:
+    it means the period priority default, ``period.DEFAULT_PERIOD_TOPICS``
+    (ADR-0016 — 16 canonical slugs, the digest agent's on-theme view), which is
+    substituted here and canonicalized through the same vocabulary path as a
+    caller list, so a retired alias in a future default resolves identically.
+    An explicit list always wins: pass the slugs you want, or ``topics=[]`` for
+    a truly unfiltered bundle (the pre-ADR default). Tags are canonicalized
+    server-side (synonyms, case/whitespace variants and retired aliases resolve
+    to the canonical slug); unknown tags raise `InvalidRequest` (422); an empty
+    list adds no constraint. All filters compose with `sources` and
+    `exclude_read` in one call.
 
     Unannotated Documents (no importance row / no topics): a NULL score is
     excluded only when an importance floor is set (never silently top-ranked —
     unfiltered order is recency-first, floored order is importance-first with
     NULLS LAST), and a Document with no topics is excluded only when a
-    non-empty topic filter is set. So the annotations sharpen filtered queries
-    without ever silently dropping unannotated evidence from unfiltered ones.
+    non-empty topic filter is set. The period default is such a filter, so the
+    default view is annotated-only; ``topics=[]`` restores the unfiltered
+    bundle in which annotations never silently drop or re-rank evidence.
     """
     start = _coerce_bound(from_date, label="from_date")
     end = _coerce_bound(to_date, label="to_date")
@@ -358,7 +365,12 @@ def get_period_context(
     bound = _validate_limit(limit, default=DEFAULT_PERIOD_LIMIT)
     hide_read = _validate_exclude_read(exclude_read)
     floor = _validate_min_importance(min_importance)
-    topic_filter = _validate_topic_filter(topics)
+    # ADR-0016: `None` means the period priority default, and it goes through
+    # the same validate/canonicalize path as a caller list. Search keeps its own
+    # `None` → unfiltered semantics (`search_articles` below).
+    topic_filter = _validate_topic_filter(
+        list(_period.DEFAULT_PERIOD_TOPICS) if topics is None else topics
+    )
     try:
         return _period.get_period_context(
             start,

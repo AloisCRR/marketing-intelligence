@@ -14,6 +14,7 @@ from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NONE
 from prefect.task_runners import ThreadPoolTaskRunner
 
+from marketing_intelligence import annotate
 from marketing_intelligence.db import get_connection
 from marketing_intelligence.discovery import (
     ArticleJob,
@@ -608,6 +609,22 @@ def _ingest_one_task(source_name: str, flow_run_name: str) -> dict[str, Any]:
     return result
 
 
+def _annotate_chunk(chunk: list[str], results: dict[str, dict[str, Any]]) -> None:
+    """Chain the Jev annotate lane (ADR-0016) over one settled ingest chunk.
+
+    Only sources that actually ingested new Documents are annotated: an
+    errored or empty Ingestion Run gains no `annotate` key, so its shape
+    stays the pre-ADR-0016 `{inserted, skipped[, error]}`. The lane is called
+    directly (no task wrapper, no `return_state` isolation): it never raises,
+    so the isolation layer would only add a state nothing reads.
+    """
+    for name in chunk:
+        ingested = results[name]
+        if ingested.get("error") or ingested.get("inserted", 0) <= 0:
+            continue
+        ingested["annotate"] = annotate_source_flow(source_name=name)
+
+
 @flow(
     name="marketing-intelligence.ingestion.ingest_sources",
     flow_run_name="ingest-batch",
@@ -615,6 +632,7 @@ def _ingest_one_task(source_name: str, flow_run_name: str) -> dict[str, Any]:
 )
 def ingest_sources_flow(
     source_names: list[str] | None = None,
+    annotate: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """Ingest multiple sources; one failure never blocks the others.
 
@@ -636,6 +654,19 @@ def ingest_sources_flow(
     above), waits the chunk, then collects results in name order. A failed
     chunk task can never block its siblings: the task itself never raises,
     and an unreadable future degrades to the same explicit error shape.
+
+    `annotate=True` (default, ADR-0016) chains the Jev lane per chunk: after
+    each chunk's Ingestion Runs settle, every source that succeeded with
+    `inserted > 0` gets one nested `annotate_source_flow` run whose result
+    dict is nested under `results[name]["annotate"]`. Sources with an `error`
+    or nothing inserted keep their exact `{inserted, skipped[, error]}` shape
+    with no `annotate` key — a run that produced no new Documents has no new
+    evidence to judge, and whatever Jev never got to (earlier vendor failures)
+    belongs to the backfill pass (`annotate_sources_flow`, whose pending
+    selector is idempotent). `annotate=False` skips the pass entirely,
+    restoring the pre-ADR-0016 return shape byte for byte. The annotate lane
+    never raises (per-Document vendor failures are causes), so it can never
+    turn a clean batch into a failed one.
     """
     logger = get_run_logger()
     names = list(source_names) if source_names is not None else list(catalog_names())
@@ -669,5 +700,118 @@ def ingest_sources_flow(
                     pass
                 logger.error("ingest-batch source=%s failed: %s", name, detail)
                 results[name] = result
+        if annotate:
+            _annotate_chunk(chunk, results)
     logger.info("ingest-batch sources=%d result=%s", len(names), results)
+    return results
+
+
+@flow(
+    name="marketing-intelligence.annotate.annotate_source",
+    flow_run_name="annotate-{source_name}",
+)
+def annotate_source_flow(source_name: str) -> dict[str, Any]:
+    """Annotate every pending Document of one Source (ADR-0016 Jev lane).
+
+    Pending = Documents with no `reporter='jev'` row in `document_importance`
+    (`annotate.pending_document_ids`), so a rerun only pays the vendor for what
+    is still unannotated while topic rewrites stay diff no-ops.
+
+    Returns `{annotated, skipped, causes, input_tokens, cost_usd}` — plus an
+    explicit `error` when the Source is unknown or the lane itself could not
+    run (no DB, no vendor client). Always that key set: an error entry is a
+    zeroed result, never a different shape.
+
+    Never raises. The lane sits beside retrieval (never in front of it), every
+    per-Document vendor failure is a cause rather than an annotation, and a
+    Document whose judgments all fall below the confidence gates is left
+    unannotated with a `low-confidence` cause — never a guess (spec
+    §Knowledge #40). That containment is also what makes the
+    `ingest_sources_flow` chain safe: one broken Source can never turn a clean
+    batch run red.
+    """
+    logger = get_run_logger()
+    try:
+        source = get_source(source_name)
+    except KeyError as exc:
+        logger.error("annotate source=%s unknown: %s", source_name, exc)
+        return {
+            "annotated": 0,
+            "skipped": 0,
+            "causes": [str(exc)],
+            "input_tokens": 0,
+            "cost_usd": 0.0,
+            "error": str(exc),
+        }
+    source_label = str(source.get("name", source_name))
+    conn: Any = None
+    try:
+        conn = get_connection()
+        pending = annotate.pending_document_ids(conn, source_label)
+        result = dict(annotate.classify_and_write(ids=pending, conn=conn))
+    except Exception as exc:  # a per-source outcome, never a batch failure
+        logger.error("annotate source=%s failed: %s", source_label, exc)
+        return {
+            "annotated": 0,
+            "skipped": 0,
+            "causes": [f"{source_label}: {exc}"],
+            "input_tokens": 0,
+            "cost_usd": 0.0,
+            "error": str(exc),
+        }
+    finally:
+        if conn is not None:
+            # The annotate lane leaves commit/close to the connection owner
+            # (same convention as importance/topics): this flow owns `conn`.
+            # Each call is guarded because "Never raises" (above) outranks
+            # teardown: a connection that died mid-run would otherwise raise
+            # out of this `finally`, replacing the lane dict and aborting
+            # `ingest_sources_flow`'s annotate chain mid-loop.
+            commit = getattr(conn, "commit", None)
+            if callable(commit):
+                try:
+                    commit()
+                except Exception:  # dead connection at teardown is not a result
+                    pass
+            close_conn = getattr(conn, "close", None)
+            if callable(close_conn):
+                try:
+                    close_conn()
+                except Exception:  # dead connection at teardown is not a result
+                    pass
+    logger.info("annotate source=%s result=%s", source_label, result)
+    return result
+
+
+@flow(
+    name="marketing-intelligence.annotate.annotate_sources",
+    flow_run_name="annotate-batch",
+)
+def annotate_sources_flow(source_names: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Annotate multiple Sources; one failure never blocks the others.
+
+    Returns the per-source mapping of `annotate_source_flow` results
+    (`{annotated, skipped, causes, input_tokens, cost_usd[, error]}`).
+    Defaults to the full catalog in catalog order when `source_names` is None
+    — every Source, including the instagram lane, per ADR-0016; pass explicit
+    names to narrow to a subset (the backfill is this same flow over history).
+
+    Sequential on purpose: the lane runs beside retrieval, the vendor call is
+    the only slow step, and one Source at a time keeps the per-source cost log
+    readable and the annotation writes ordered. Each child run contains its own
+    failures, so the loop never aborts early.
+    """
+    logger = get_run_logger()
+    names = list(source_names) if source_names is not None else list(catalog_names())
+    results: dict[str, dict[str, Any]] = {}
+    for name in names:
+        results[name] = annotate_source_flow(source_name=name)
+    annotated = sum(result.get("annotated", 0) for result in results.values())
+    cost_usd = sum(float(result.get("cost_usd", 0.0)) for result in results.values())
+    logger.info(
+        "annotate-batch sources=%d annotated=%d cost_usd=%.6f",
+        len(names),
+        annotated,
+        cost_usd,
+    )
     return results

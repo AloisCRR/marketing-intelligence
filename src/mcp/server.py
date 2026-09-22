@@ -193,7 +193,7 @@ def get_period_context(
     ] = None,
     topics: Annotated[
         list[str] | None,
-        "Topic filter (canonical slugs or accepted synonyms); unannotated excluded only when set.",
+        "Topic filter (canonical slugs/synonyms); None = default, [] = all.",
     ] = None,
 ) -> dict[str, Any]:
     """Fetch the evidence bundle for a date range.
@@ -208,7 +208,8 @@ def get_period_context(
     Documents whose latest score clears the floor and orders the bundle
     importance-first (ties by recency); `topics` keeps only Documents carrying
     at least one of the given tags (server-canonicalized; unknown tags are
-    rejected). Without a floor the bundle stays purely recency-ordered.
+    rejected). `topics=None` applies the digest-priority default list (ADR-0016);
+    pass `topics=[]` or explicit slugs for unfiltered or custom views.
     Unannotated Documents (NULL score / no topics) are excluded only when the
     matching filter is set — never silently dropped or silently promoted to
     the top.
@@ -221,8 +222,8 @@ def get_period_context(
             with at least one hit still appears in the bundle.
         exclude_read: When True, hide read articles (default False annotates only).
         min_importance: Optional floor in [0, 1] on the latest importance score.
-        topics: Optional canonical Topic slugs or accepted synonyms; a match
-            needs at least one of them.
+        topics: Optional canonical Topic slugs or accepted synonyms; None =
+            digest-priority default, [] = unfiltered, explicit list wins.
 
     Returns:
         Evidence-bundle dict with `period` and a source-grouped
@@ -634,7 +635,7 @@ def period_digest(period: str, focus: str | None = None) -> str:
         "content-type tags that describe them.\n"
         "4. SELECT the source-balanced shortlist: re-call get_period_context "
         "for the same range with min_importance=<floor, e.g. 0.6>, "
-        "topics=<canonical slugs covering the focus; omit to keep every topic> "
+        "topics=<canonical slugs covering the focus; [] for the unfiltered pool> "
         "and limit=2 (two headlines per source group). The returned bundle "
         "(recent_articles grouped by source, importance order within each "
         "group) is the digest's evidence set.\n"

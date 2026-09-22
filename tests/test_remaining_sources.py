@@ -268,7 +268,7 @@ def test_multi_source_flow_records_failure_without_blocking_others(
         return upsert_documents(docs, conn=conn)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = flows.ingest_sources_flow(source_names=[SMT, PJ, INFOMONEY])
+    results = flows.ingest_sources_flow(source_names=[SMT, PJ, INFOMONEY], annotate=False)
     assert results[SMT] == {"inserted": 3, "skipped": 0}
     assert results[INFOMONEY] == {"inserted": 3, "skipped": 0}
     assert results[PJ]["inserted"] == 0
@@ -329,7 +329,7 @@ def test_ingest_sources_flow_covers_curated_scope_default(
         flows, "ingest_instagram_source", lambda name: {"inserted": 0, "skipped": 0}
     )
     _stub_enrich_identity(monkeypatch)
-    results = flows.ingest_sources_flow()
+    results = flows.ingest_sources_flow(annotate=False)
     assert set(results) == set(CURATED_SOURCES)
     assert len(results) == len(catalog_names())
     for name in CURATED_SOURCES:
@@ -365,7 +365,7 @@ def test_explicit_subset_still_ingests_by_name(
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
     _stub_enrich_identity(monkeypatch)
-    results = flows.ingest_sources_flow(source_names=["JCK Online"])
+    results = flows.ingest_sources_flow(source_names=["JCK Online"], annotate=False)
     assert set(results) == {"JCK Online"}
     assert results["JCK Online"] == {"inserted": 3, "skipped": 0}
 

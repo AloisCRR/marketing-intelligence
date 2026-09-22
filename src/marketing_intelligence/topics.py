@@ -229,6 +229,18 @@ TOPICS: dict[str, dict[str, Any]] = {
         "label": "Spain",
         "synonyms": ("españa",),
     },
+    # ADR-0016: the annotate lane judges Latin-American desks directly instead
+    # of lumping them under `latam`; additive regions only, nothing retired.
+    "colombia": {
+        "kind": "region",
+        "label": "Colombia",
+        "synonyms": ("colombia", "republic of colombia"),
+    },
+    "argentina": {
+        "kind": "region",
+        "label": "Argentina",
+        "synonyms": ("argentina", "argentine republic"),
+    },
     # --- Content types -----------------------------------------------------
     "news": {
         "kind": "content-type",

@@ -4,16 +4,17 @@ version = "0.1.0"
 description = "Marketing Intelligence — curated-source intelligence platform"
 requires-python = ">=3.12"
 dependencies = [
-  "psycopg[binary]>=3.1",
-  "prefect==3.8.5",
-  "feedparser>=6.0",
-  "python-dateutil>=2.9",
-  "fastapi>=0.115",
-  "uvicorn[standard]>=0.30",
-  "mcp==1.29.1",
-  "httpx>=0.28",
   "curl-cffi>=0.11",
+  "fastapi>=0.115",
+  "feedparser>=6.0",
+  "httpx>=0.28",
+  "mcp==1.29.1",
+  "prefect==3.8.5",
+  "psycopg[binary]>=3.1",
+  "python-dateutil>=2.9",
   "trafilatura>=2.0",
+  "typesafe-sdk>=0.7",
+  "uvicorn[standard]>=0.30",
   "yoyo-migrations>=9.0.0",
 ]
 

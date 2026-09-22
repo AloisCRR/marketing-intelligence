@@ -131,7 +131,9 @@ def test_batch_converts_empty_feed_to_explicit_error(
     monkeypatch.setattr(flows, "fetch_task", fake_fetch)
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
-    results = flows.ingest_sources_flow(source_names=["InfoMoney", "Professional Jeweller"])
+    results = flows.ingest_sources_flow(
+        source_names=["InfoMoney", "Professional Jeweller"], annotate=False
+    )
     assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
     assert results["Professional Jeweller"]["inserted"] == 0
     assert results["Professional Jeweller"]["skipped"] == 0
@@ -278,8 +280,8 @@ def test_batch_rerunnable_with_explicit_partial_failure(
     monkeypatch.setattr(flows, "enrich_document_or_keep", lambda doc, *a, **k: (doc, "rss", None))
     monkeypatch.setattr(flows, "upsert_documents", lambda docs: (len(docs), 0))
     names = ["InfoMoney", "Professional Jeweller"]
-    first = flows.ingest_sources_flow(source_names=names)
-    second = flows.ingest_sources_flow(source_names=names)
+    first = flows.ingest_sources_flow(source_names=names, annotate=False)
+    second = flows.ingest_sources_flow(source_names=names, annotate=False)
     assert first == second  # independently rerunnable: stable across reruns
     assert first["InfoMoney"] == {"inserted": 3, "skipped": 0}
     assert "error" in first["Professional Jeweller"]  # explicit partial failure

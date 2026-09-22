@@ -563,7 +563,9 @@ def test_batch_keeps_shape_across_rss_sources(
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = flows.ingest_sources_flow(source_names=["Professional Jeweller", "InfoMoney"])
+    results = flows.ingest_sources_flow(
+        source_names=["Professional Jeweller", "InfoMoney"], annotate=False
+    )
     assert results["Professional Jeweller"] == {"inserted": 3, "skipped": 0}
     assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
 

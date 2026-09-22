@@ -37,6 +37,33 @@ PANAMA_NAME = "America/Panama"
 
 DEFAULT_LIMIT = 50
 
+#: The period bundle's priority view (ADR-0016): the canonical Topic slugs the
+#: digest agent asked to see by default, because an 8-day unfiltered bundle
+#: costs ~100k tokens of mostly off-theme evidence. ``service`` substitutes this
+#: tuple for ``topics=None`` and runs it through the vocabulary lane, so a
+#: retired alias added here later resolves exactly like a caller's would; an
+#: explicit ``topics`` list (including ``[]``) always wins, and search stays
+#: unfiltered. Pillars first, then the regions the desks cover, then the
+#: content types worth digesting — order is documentation, not precedence.
+DEFAULT_PERIOD_TOPICS: tuple[str, ...] = (
+    "gen-z",
+    "consumer-behavior",
+    "jewelry",
+    "social-media",
+    "creator-economy",
+    "marketing",
+    "brand-strategy",
+    "ai",
+    "latam",
+    "mexico",
+    "brazil",
+    "colombia",
+    "argentina",
+    "report",
+    "campaign",
+    "earnings",
+)
+
 # `has_image_text` is presence only: True when the Document has at least one
 # frame whose vision-read text is real text. Frames the vision lane found no
 # text in are stored with the `image_text.NO_TEXT` sentinel (ADR-0014), so a

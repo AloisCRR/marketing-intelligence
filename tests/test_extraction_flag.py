@@ -311,7 +311,12 @@ class _FakeConnection:
             _ = language
             return cur
         assert params is not None
-        start, end, names, limit = params
+        # Lane param order: bounds, source names, then the optional annotation
+        # filters (floor / canonical Topic slugs — the service default fills
+        # `topics` in, ADR-0016), then the per-source cap last. This fake only
+        # mirrors range/source/cap, so it reads the fixed ends positionally.
+        start, end, names = params[0], params[1], params[2]
+        limit = int(params[-1])
         kept = [
             d
             for d in self.store

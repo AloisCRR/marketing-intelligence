@@ -9,7 +9,9 @@ Locked contract:
   reuse the annotation layer.
 - Unannotated Documents (NULL score / no topics) are excluded only when the
   matching filter is set — never silently dropped from an unfiltered query and
-  never silently top-scored.
+  never silently top-scored. On the period lane `topics=None` now means the
+  ADR-0016 priority default, so the unfiltered bundle is requested explicitly
+  with `topics=[]`; search keeps `None` = unfiltered.
 - Both caller surfaces expose all filters identically through the Service
   Adapter with 422 on invalid input.
 - Per-reader read marks (ADR-0015) ride along on both lanes: a Document read by
@@ -439,7 +441,11 @@ def test_topic_filter_matches_any_requested_topic() -> None:
 
 
 def test_unannotated_included_and_ordered_by_recency_not_score() -> None:
-    ctx = service.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)))
+    # `topics=[]` is the explicit unfiltered period bundle (ADR-0016: the
+    # `None` default is the 16-slug priority view, which excludes these).
+    ctx = service.get_period_context(
+        WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)), topics=[]
+    )
     groups = ctx["recent_articles"]
     by_source = {g["source"]: [a["title"] for a in g["articles"]] for g in groups}
     # Never silently dropped: the NULL-score, no-topic Document is present.

@@ -99,7 +99,11 @@ class _PlainCall:
         return _SyncFuture(self._fn, *args, **kwargs)
 
 
-_TARGETS = "fetch_task parse_task upsert_task discover_task enrich_task _article_task _enrich_one_task _ingest_one_task ingest_source_flow ingest_sources_flow".split()
+_TARGETS = (
+    "fetch_task parse_task upsert_task discover_task enrich_task _article_task _enrich_one_task "
+    "_ingest_one_task ingest_source_flow ingest_sources_flow "
+    "annotate_source_flow annotate_sources_flow"
+).split()
 
 
 def disable_engine(monkeypatch: pytest.MonkeyPatch) -> None:

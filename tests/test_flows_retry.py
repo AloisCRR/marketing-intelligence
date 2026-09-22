@@ -183,7 +183,7 @@ def test_batch_isolates_failed_subflow_and_records_it(
         "record_ingestion_run",
         lambda source, result, **kw: recorded.append((source, dict(result))),
     )
-    results = flows.ingest_sources_flow(source_names=[SMT, PJ, INFOMONEY])
+    results = flows.ingest_sources_flow(source_names=[SMT, PJ, INFOMONEY], annotate=False)
     assert results[SMT] == {"inserted": 3, "skipped": 0}
     assert results[INFOMONEY] == {"inserted": 3, "skipped": 0}
     assert results[PJ]["inserted"] == 0

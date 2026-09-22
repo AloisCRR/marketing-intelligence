@@ -1168,7 +1168,7 @@ def test_batch_isolates_hub_failure(monkeypatch: pytest.MonkeyPatch, no_engine: 
         raise AssertionError(f"unexpected RSS fetch: {url}")
 
     monkeypatch.setattr(flows, "fetch_rss", fake_fetch_rss)
-    results = flows.ingest_sources_flow(source_names=[MD, "Professional Jeweller"])
+    results = flows.ingest_sources_flow(source_names=[MD, "Professional Jeweller"], annotate=False)
     assert results[MD]["inserted"] == 0
     assert "error" in results[MD]
     assert "error" not in results["Professional Jeweller"]
@@ -1765,7 +1765,7 @@ def test_batch_isolates_jing_failure(monkeypatch: pytest.MonkeyPatch, no_engine:
         return (len(docs), 0)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = flows.ingest_sources_flow(source_names=["InfoMoney", JD])
+    results = flows.ingest_sources_flow(source_names=["InfoMoney", JD], annotate=False)
     assert results["InfoMoney"] == {"inserted": 3, "skipped": 0}
     assert results[JD]["inserted"] == 0
     assert "error" in results[JD] and results[JD]["error"]

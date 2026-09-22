@@ -462,7 +462,12 @@ class _PeriodCursor:
 
     def execute(self, sql: str, params: tuple | None = None) -> _PeriodCursor:
         assert params is not None
-        start, end, names, limit = params
+        # Lane param order: bounds, source names, then the optional annotation
+        # filters (floor / canonical Topic slugs — the service default fills
+        # `topics` in, ADR-0016), then the per-source cap last. This fake only
+        # mirrors range/source/cap, so it reads the fixed ends positionally.
+        start, end, names = params[0], params[1], params[2]
+        limit = int(params[-1])
         kept = [r for r in self._rows if r[4] >= start and r[4] < end and r[3] in set(names)]
         kept.sort(key=lambda r: r[4], reverse=True)
         # The windowed SELECT ranks rows within each source and keeps

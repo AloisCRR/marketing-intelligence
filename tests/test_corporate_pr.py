@@ -756,7 +756,7 @@ def test_batch_ingests_all_three_and_isolates_failure(
         return upsert_documents(docs, conn=conn)
 
     monkeypatch.setattr(flows, "upsert_documents", fake_upsert)
-    results = flows.ingest_sources_flow(source_names=[NJ, RI, LVMH])
+    results = flows.ingest_sources_flow(source_names=[NJ, RI, LVMH], annotate=False)
     assert results[NJ]["inserted"] == 5
     assert "error" not in results[NJ]
     assert results[RI]["inserted"] == 0
