@@ -46,7 +46,6 @@ IG_STANZA: dict[str, Any] = {
     "type": "instagram",
     "policy": "apify-premium",
     "username": "sabrikolod",
-    "hashtag_filter": "ChismecitoMarketinero",
     "content_mode": "caption_first",
     "image_text": "ignore",
 }
@@ -135,12 +134,11 @@ def test_policy_is_instagram_apify_premium_not_rss_fallback() -> None:
     assert policy == IG_STANZA
 
 
-def test_config_carries_the_four_account_extras() -> None:
+def test_config_carries_the_three_account_extras() -> None:
     config = get_retrieval_config(IG)
     assert config["type"] == "instagram"
     assert config["policy"] == "apify-premium"
     assert config["username"] == "sabrikolod"
-    assert config["hashtag_filter"] == "ChismecitoMarketinero"
     assert config["content_mode"] == "caption_first"
     assert config["image_text"] == "ignore"
     assert config["hub"] == IG_HUB
@@ -158,7 +156,6 @@ def test_invalid_extras_drop_and_config_fills_lane_defaults(
                 "type": "instagram",
                 "policy": "apify-premium",
                 "username": "",
-                "hashtag_filter": 7,
                 "content_mode": "bogus",
                 "image_text": "bogus",
             }
@@ -171,7 +168,6 @@ def test_invalid_extras_drop_and_config_fills_lane_defaults(
     }
     config = sources.get_retrieval_config(IG)
     assert config["username"] is None
-    assert config["hashtag_filter"] is None
     assert config["content_mode"] == "caption_first"
     assert config["image_text"] == "ignore"
 

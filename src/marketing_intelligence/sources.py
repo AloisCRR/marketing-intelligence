@@ -353,9 +353,6 @@ def _validated_extras(raw: dict[str, Any], rtype: str) -> dict[str, Any]:
     username = raw.get("username")
     if isinstance(username, str) and username.strip():
         extras["username"] = username.strip()
-    hashtag_filter = raw.get("hashtag_filter")
-    if isinstance(hashtag_filter, str) and hashtag_filter.strip():
-        extras["hashtag_filter"] = hashtag_filter.strip()
     content_mode = raw.get("content_mode")
     if content_mode in CONTENT_MODES:
         extras["content_mode"] = content_mode
@@ -392,7 +389,7 @@ def get_retrieval_policy(source_name: str | None) -> dict[str, Any]:
     optional discovery keys (``extractor``, ``sitemaps``,
     ``hub``, ``hub_pages``, ``link_pattern``, ``sitemap_pattern``,
     ``sitemap_exclude``, ``id_guard``, ``pacing_ms``, ``max_urls``) and the
-    Instagram stanza keys (``username``, ``hashtag_filter``, ``content_mode``,
+    Instagram stanza keys (``username``, ``content_mode``,
     ``image_text``) only when the registry stanza declares them: RSS stanzas
     keep their exact ``{"type", "policy"}`` shape, so RSS ingest behavior is
     unchanged. ``image_text`` is the one type-aware key: ``extract``
@@ -443,7 +440,7 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
     pacing yields 1000ms and backfill yields 50 URLs. ``sitemap_exclude``
     is carried only when the stanza declares it (no empty-list default),
     so stanzas without exclusions keep their exact established shape.
-    The Instagram keys (``username``, ``hashtag_filter``, ``content_mode``,
+    The Instagram keys (``username``, ``content_mode``,
     ``image_text``) are carried only for stanzas that declare any of them,
     with ``caption_first``/``ignore`` defaults for an undeclared
     ``content_mode``/``image_text`` — feed stanzas keep their exact shape.
@@ -471,13 +468,11 @@ def get_retrieval_config(source_name: str | None) -> dict[str, Any]:
         # established shape (see test_retrieval_config_fills_defaults_for_ticket_08).
         config["sitemap_exclude"] = list(policy["sitemap_exclude"])
     if policy["type"] == "instagram" or any(
-        key in policy for key in ("username", "hashtag_filter", "content_mode", "image_text")
+        key in policy for key in ("username", "content_mode", "image_text")
     ):
         # Instagram stanza (ADR-0013): declared-only, like sitemap_exclude, so
-        # every feed stanza keeps its exact shape. The account/hashtag keys
-        # default to None; the two mode keys fall back to their defaults.
+        # every feed stanza keeps its exact shape. The account key defaults to None;
         config["username"] = policy.get("username")
-        config["hashtag_filter"] = policy.get("hashtag_filter")
         config["content_mode"] = str(policy.get("content_mode", DEFAULT_CONTENT_MODE))
         config["image_text"] = str(policy.get("image_text", DEFAULT_IMAGE_TEXT))
     if config["hub"] is None and source_name is not None:

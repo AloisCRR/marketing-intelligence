@@ -16,11 +16,10 @@ lane is narrow and deterministic in its current shape:
   Firecrawl, and `ingest_source_flow` skips enrichment entirely for it: a
   short caption would otherwise read as "thin" and burn the extractor chain on
   data destruction.
-- **Raw post JSON is kept.** Every run stores the full post result beside its
-  document (``payloads.write_document_payloads``, after the upsert) so the
-  deferred comment/metric/image/hashtag work needs no re-scrape. Nothing is
-  ever dropped ingest-side: every billed post is upserted, and the
-  `hashtag_filter` stanza is a query-time hint only.
+  - **Raw post JSON is kept.** Every run stores the full post result beside its
+    document (``payloads.write_document_payloads``, after the upsert) so the
+    deferred comment/metric/image work needs no re-scrape. Nothing is
+    ever dropped ingest-side: every billed post is upserted.
 - **Image text is a separate, opted-in stage (ADR-0014).** The lane ends with
   fetch → map → upsert → payload write → image-text stage. The stage runs only
   when the stanza says ``image_text: extract`` (which also switches the actor
@@ -285,9 +284,8 @@ def fetch_instagram_posts(
     """Pointer → actor input → run → ingest-all.
 
     Every billed post is returned for upsert + payload write; nothing is
-    dropped ingest-side. The `hashtag_filter` stanza is a query-time hint
-    only (caption holds `#tag` text, payload JSONB holds `hashtags[]`), so
-    filtering costs zero extra billing. Returns ``(posts, raw_count)`` where
+    dropped ingest-side (caption holds `#tag` text, payload JSONB holds
+    `hashtags[]`), so ingest costs zero extra billing. Returns ``(posts, raw_count)`` where
     `raw_count` is the actor's result count (the billing/observability
     number) — always ``len(posts)`` since nothing is filtered. Accounts opted
     into the image-text lane (``image_text: extract``) run `detailedData`, the

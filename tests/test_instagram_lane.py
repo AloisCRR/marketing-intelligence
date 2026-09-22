@@ -12,8 +12,7 @@ Pinned observable behavior:
   on every input
 - overlap/bleed re-emits dedupe via the documents UNIQUE constraint
   (inserted/skipped), and the whole run is rerunnable
-- ingest-all: every billed post is upserted (the hashtag stanza never gates
-  ingest — it is a query-time hint); explicit failure shape; missing token raises
+- ingest-all: every billed post is upserted; explicit failure shape; missing token raises
 - the flow's instagram branch never reaches enrichment
 """
 
@@ -240,41 +239,28 @@ def test_run_actor_rejects_non_list_payload(monkeypatch: pytest.MonkeyPatch) -> 
 # --- fetch --------------------------------------------------------------------
 
 
-def test_fetch_ingests_all_posts_regardless_of_hashtag_stanza(
+def test_fetch_ingests_all_posts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Never drop billed data: even posts without the tag are returned for
-    # upsert + payload write; filtering happens at query time.
+    # Never drop billed data: every billed post is returned for upsert +
+    # payload write, regardless of hashtags.
     posts = [
         {
             "shortCode": "A1",
             "hashtags": ["ChismecitoMarketinero"],
             "caption": "resumen semanal",
         },
-        {"shortCode": "A2", "hashtags": [], "caption": "otro #chismecitomarketinero aqui"},
+        {"shortCode": "A2", "hashtags": [], "caption": "otro caption aqui"},
         {"shortCode": "A3", "hashtags": ["Marketing"], "caption": "nada que ver"},
     ]
     monkeypatch.setattr(
         instagram,
         "get_retrieval_config",
-        lambda label: {"username": "sabrikolod", "hashtag_filter": "ChismecitoMarketinero"},
+        lambda label: {"username": "sabrikolod"},
     )
     monkeypatch.setattr(instagram, "run_actor", lambda actor_input: posts)
     kept, raw_count = instagram.fetch_instagram_posts(SOURCE, conn=FakeConnection())
     assert raw_count == 3
-    assert kept == posts
-
-
-def test_fetch_passes_all_posts_without_hashtag_stanza(monkeypatch: pytest.MonkeyPatch) -> None:
-    posts = [{"shortCode": "A1"}, {"shortCode": "A2"}]
-    monkeypatch.setattr(
-        instagram,
-        "get_retrieval_config",
-        lambda label: {"username": "sabrikolod", "hashtag_filter": None},
-    )
-    monkeypatch.setattr(instagram, "run_actor", lambda actor_input: posts)
-    kept, raw_count = instagram.fetch_instagram_posts(SOURCE, conn=FakeConnection())
-    assert raw_count == 2
     assert kept == posts
 
 
@@ -295,7 +281,7 @@ def test_ingest_bootstrap_then_steady_dedupes_overlap_and_bleed(
     monkeypatch.setattr(
         instagram,
         "get_retrieval_config",
-        lambda label: {"username": "sabrikolod", "hashtag_filter": None},
+        lambda label: {"username": "sabrikolod"},
     )
 
     def fake_run_actor(actor_input: dict[str, Any]) -> list[dict[str, Any]]:
