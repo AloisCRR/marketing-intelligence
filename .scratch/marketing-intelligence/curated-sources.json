@@ -147,7 +147,8 @@
         "https://www.retaildive.com/google_news_sitemap.xml"
       ],
       "sitemap_exclude": [
-        "/archive/"
+        "/archive/",
+        "/topic/"
       ],
       "hub": "https://www.retaildive.com/topic/consumer-trends/",
       "link_pattern": "/news/",
@@ -285,7 +286,8 @@
         "https://www.marketingdive.com/google_news_sitemap.xml"
       ],
       "sitemap_exclude": [
-        "/archive/"
+        "/archive/",
+        "/topic/"
       ],
       "hub": "https://www.marketingdive.com/",
       "link_pattern": "/news/",
@@ -453,6 +455,14 @@
       "extractor": "generic",
       "sitemaps": [
         "https://insiderlatam.com/sitemap_index.xml"
+      ],
+      "sitemap_exclude": [
+        "/tag/",
+        "/category/",
+        "/archivos/",
+        "/archivo/",
+        "/author/",
+        "/page/"
       ],
       "pacing_ms": 1000,
       "max_urls": 50

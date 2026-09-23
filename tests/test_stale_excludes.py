@@ -1,12 +1,18 @@
-"""Ticket 26: stale / non-article sitemap excludes (Dive family + Meio & Mensagem).
+"""Ticket 26: stale / non-article sitemap excludes (Dive family, Meio & Mensagem,
+Insider Latam).
 
 Observable behavior (not privates), on the proven 08/09/14 path
 (sitemap -> exclude -> bounded backfill):
 
-- Retail Dive, Marketing Dive (``/archive/``) and Meio & Mensagem
-  (``/podcasts/``, ``/patrocinado/``) declare their excludes in the curated
-  stanza, and they survive normalization into :func:`get_retrieval_config`
-  without disturbing any other stanza key or the pre-existing Exame exclude
+- Retail Dive, Marketing Dive (``/archive/`` plus the ``/topic/`` section
+  fronts) and Meio & Mensagem (``/podcasts/``, ``/patrocinado/``) declare their
+  excludes in the curated stanza, and they survive normalization into
+  :func:`get_retrieval_config` without disturbing any other stanza key or the
+  pre-existing Exame exclude
+- Insider Latam declares its taxonomy/archive routes (``/tag/``,
+  ``/category/``, ``/archivos/``, ``/archivo/``, ``/author/``, ``/page/``),
+  which reach the retrieval config with the sitemap list, pacing and bound
+  untouched
 - the exclude drops matching URLs *before* the ``max_urls`` backfill
   bound: without it the stale route consumes the whole budget and the
   fresh route is never reached; with it the budget refills with genuine
@@ -20,8 +26,9 @@ so the assertions never ride the wall clock — these children stay outside
 the 60-day freshness window forever.
 
 All network is stub-backed (in-memory sitemaps); no live HTTP in tests.
-The excluded slugs (``/archive/``, ``/podcasts/``, ``/patrocinado/``) are the
-ones the live routes expose (checked 2026-09-12).
+The excluded slugs (``/archive/``, ``/topic/``, ``/podcasts/``,
+``/patrocinado/``, and the Insider Latam taxonomy routes) are the ones the
+live routes expose (checked 2026-09-12).
 """
 
 from __future__ import annotations
@@ -39,12 +46,20 @@ from marketing_intelligence.sources import get_retrieval_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-#: Declared ``sitemap_exclude`` per source: a bare string is the one-entry list
-#: ``get_retrieval_config`` returns (only Meio & Mensagem declares two entries).
+#: Declared ``sitemap_exclude`` per source: a bare string stands for the
+#: one-entry list ``get_retrieval_config`` normalizes it into.
 STANZA_EXCLUDE: dict[str, str | list[str]] = {
-    "Retail Dive": "/archive/",
-    "Marketing Dive": "/archive/",
+    "Retail Dive": ["/archive/", "/topic/"],
+    "Marketing Dive": ["/archive/", "/topic/"],
     "Meio & Mensagem": ["/podcasts/", "/patrocinado/"],
+    "Insider Latam": [
+        "/tag/",
+        "/category/",
+        "/archivos/",
+        "/archivo/",
+        "/author/",
+        "/page/",
+    ],
 }
 
 #: Per-source stub routes. ``index`` is the stanza's first declared sitemap;
@@ -213,6 +228,107 @@ def test_meio_sponsored_section_is_excluded_before_fetch() -> None:
     assert errors == []
     assert [u.loc for u in urls] == [article]
     assert MEIO_SPONSORED_URL not in fetched
+
+
+#: A Dive ``/topic/`` section front: a hub listing, not an article, so both
+#: Dive stanzas exclude it alongside the ``/archive/`` trees.
+DIVE_TOPIC_URLS = {
+    "Retail Dive": "https://www.retaildive.com/topic/consumer-trends/",
+    "Marketing Dive": "https://www.marketingdive.com/topic/social-media/",
+}
+
+
+@pytest.mark.parametrize("label", ["Retail Dive", "Marketing Dive"])
+def test_dive_topic_listing_is_excluded_before_fetch(label: str) -> None:
+    """The ``/topic/`` front is declared and applied like ``/archive/``: it
+    loses the only backfill slot to the article behind it and is never
+    fetched (the hub/tag ingestion reported by the production feedback)."""
+    exclude = get_retrieval_config(label)["sitemap_exclude"]
+    assert "/topic/" in exclude
+    # The declared order keeps the pre-existing archive entry first.
+    assert exclude == _declared_exclude(label)
+
+    listing = DIVE_TOPIC_URLS[label]
+    article = CASES[label]["genuine"][0]
+    sitemap = f"https://{urlsplit(article).netloc}/news_sitemap.xml"
+    bodies = {sitemap: _urlset((listing, article))}
+
+    # Bug premise: without the exclude the listing takes the only slot.
+    stale, errors = discover_urls([sitemap], fetch_body=bodies.__getitem__, max_urls=1)
+    assert errors == []
+    assert [u.loc for u in stale] == [listing]
+
+    fetched: list[str] = []
+
+    def fetch_body(url: str) -> bytes:
+        fetched.append(url)
+        return bodies[url]
+
+    urls, errors = discover_urls(
+        [sitemap],
+        fetch_body=fetch_body,
+        max_urls=1,
+        sitemap_exclude=exclude,
+        now=NOW,
+    )
+    assert errors == []
+    assert [u.loc for u in urls] == [article]
+    assert listing not in fetched
+
+
+#: Insider Latam taxonomy/archive routes: hub, tag and date listings, not
+#: articles.
+IL_LISTING_URLS = (
+    "https://insiderlatam.com/tag/retail-media/",
+    "https://insiderlatam.com/category/marketing/",
+    "https://insiderlatam.com/archivos/2024/",
+    "https://insiderlatam.com/archivo/2023/",
+    "https://insiderlatam.com/author/diego-salazar/",
+    "https://insiderlatam.com/page/2/",
+)
+IL_ARTICLE_URL = (
+    "https://insiderlatam.com/retail-media-se-consolida-como-tercer-gran-canal-"
+    "publicitario-de-la-region/"
+)
+
+
+def test_insider_latam_listing_routes_are_excluded_before_fetch() -> None:
+    """Every declared taxonomy/archive route is dropped before the bound, so
+    the budget refills with the article behind them, none of the listings is
+    fetched, and the rest of the stanza keeps its established shape."""
+    config = get_retrieval_config("Insider Latam")
+    assert config["sitemap_exclude"] == _declared_exclude("Insider Latam")
+    # Merge, never overwrite: sitemap list, pacing and bound are unchanged.
+    assert config["sitemaps"] == ["https://insiderlatam.com/sitemap_index.xml"]
+    assert config["pacing_ms"] == 1000
+    assert config["max_urls"] == 50
+
+    sitemap = "https://insiderlatam.com/post-sitemap.xml"
+    bodies = {sitemap: _urlset((*IL_LISTING_URLS, IL_ARTICLE_URL))}
+
+    # Bug premise: without the exclude the listings fill the whole budget.
+    stale, errors = discover_urls(
+        [sitemap], fetch_body=bodies.__getitem__, max_urls=len(IL_LISTING_URLS)
+    )
+    assert errors == []
+    assert [u.loc for u in stale] == list(IL_LISTING_URLS)
+
+    fetched: list[str] = []
+
+    def fetch_body(url: str) -> bytes:
+        fetched.append(url)
+        return bodies[url]
+
+    urls, errors = discover_urls(
+        [sitemap],
+        fetch_body=fetch_body,
+        max_urls=len(IL_LISTING_URLS),
+        sitemap_exclude=config["sitemap_exclude"],
+        now=NOW,
+    )
+    assert errors == []
+    assert [u.loc for u in urls] == [IL_ARTICLE_URL]
+    assert not set(fetched) & set(IL_LISTING_URLS)
 
 
 def test_stanza_excludes_leave_other_stanzas_untouched() -> None:
