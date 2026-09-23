@@ -713,9 +713,11 @@ def ingest_sources_flow(
 def annotate_source_flow(source_name: str) -> dict[str, Any]:
     """Annotate every pending Document of one Source (ADR-0016 Jev lane).
 
-    Pending = Documents with no `reporter='jev'` row in `document_importance`
+    Pending = Documents with no `document_importance` row and no human
+    (`reporter IS DISTINCT FROM 'jev'`) `document_topics` row
     (`annotate.pending_document_ids`), so a rerun only pays the vendor for what
-    is still unannotated while topic rewrites stay diff no-ops.
+    is still unannotated while topic rewrites stay diff no-ops — and a human
+    annotation is never overwritten.
 
     Returns `{annotated, skipped, causes, input_tokens, cost_usd}` — plus an
     explicit `error` when the Source is unknown or the lane itself could not

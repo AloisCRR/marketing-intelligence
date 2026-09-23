@@ -195,6 +195,15 @@ class _FakeConn:
         self.closed = True
 
 
+class _UnreadableHumanGuardConn(_FakeConn):
+    """Fake connection whose human-annotated guard query fails."""
+
+    def rows_for(self, sql: str) -> list[Any]:
+        if _HUMAN_MARKER in sql:
+            raise RuntimeError("guard query exploded")
+        return super().rows_for(sql)
+
+
 @pytest.fixture()
 def writers(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
     """Record annotation-lane writes instead of touching the database."""
@@ -231,9 +240,12 @@ def writers(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
 DOCUMENT_URL = "https://www.socialmediatoday.com/news/genz/1/"
 DOCUMENT_ROW = (DOCUMENT_URL, DOCUMENT_URL, "Gen Z jewellery", "Social Media Today", "body text")
 
-#: SQL markers that route a fake-connection query to its queued rows.
-_PENDING_MARKER = "document_importance i"
+#: SQL markers that route a fake-connection query to its queued rows. Each is a
+#: fragment only its own query carries (the human guard shares the table names
+#: with the other two, so those would collide).
+_PENDING_MARKER = "d.published_at"
 _DOCUMENT_MARKER = "d.url, d.title"
+_HUMAN_MARKER = "OR EXISTS"
 
 
 def _live_slugs(kind: str) -> list[str]:
@@ -493,7 +505,11 @@ def test_pending_document_ids_selects_documents_jev_has_not_touched() -> None:
 
     assert annotate.pending_document_ids(conn) == [DOCUMENT_URL, "https://example.com/b"]
     sql, params = conn.statements[0]
-    assert "NOT EXISTS" in sql and "reporter = %s" in sql
+    # Zero importance rows at all (a human judgment settles the Document) and no
+    # human topics row; Jev's own topics never settle it.
+    assert "document_importance i" in sql
+    assert "i.reporter = %s" not in sql
+    assert "document_topics t" in sql and "t.reporter IS DISTINCT FROM %s" in sql
     assert params == (annotate.REPORTER, None, None)
 
     assert annotate.pending_document_ids(conn, "Source B") == [
@@ -501,6 +517,63 @@ def test_pending_document_ids_selects_documents_jev_has_not_touched() -> None:
         "https://example.com/b",
     ]
     assert conn.statements[-1][1] == (annotate.REPORTER, "Source B", "Source B")
+
+
+def test_classify_and_write_skips_human_annotated_document_of_a_source(
+    stub_sdk: Any, writers: dict[str, list[dict[str, Any]]]
+) -> None:
+    client = _StubClient(_clean_response())
+    stub_sdk(client)
+    conn = _FakeConn(
+        {
+            _PENDING_MARKER: [(DOCUMENT_URL,)],
+            _DOCUMENT_MARKER: [DOCUMENT_ROW],
+            _HUMAN_MARKER: [(DOCUMENT_URL, DOCUMENT_URL)],
+        }
+    )
+
+    result = annotate.classify_and_write(source="Social Media Today", conn=conn)
+
+    assert (result["annotated"], result["skipped"]) == (0, 1)
+    assert result["causes"] == [f"{DOCUMENT_URL}: human-annotated; skipped"]
+    assert (result["input_tokens"], result["cost_usd"]) == (0, 0.0)
+    assert client.calls == []
+    assert writers == {"topics": [], "importance": []}
+
+
+def test_classify_and_write_skips_explicit_human_annotated_identifier(
+    stub_sdk: Any, writers: dict[str, list[dict[str, Any]]]
+) -> None:
+    # The caller names the Document by its non-canonical url; the guard reports
+    # both spellings, so the explicit id still matches and is still skipped.
+    short_url = "https://socialmediatoday.com/genz/1"
+    row = (DOCUMENT_URL, short_url, "Gen Z jewellery", "Social Media Today", "body")
+    client = _StubClient(_clean_response())
+    stub_sdk(client)
+    conn = _FakeConn({_DOCUMENT_MARKER: [row], _HUMAN_MARKER: [(DOCUMENT_URL, short_url)]})
+
+    result = annotate.classify_and_write(ids=[short_url], conn=conn)
+
+    assert (result["annotated"], result["skipped"]) == (0, 1)
+    assert result["causes"] == [f"{short_url}: human-annotated; skipped"]
+    assert (result["input_tokens"], result["cost_usd"]) == (0, 0.0)
+    assert client.calls == []
+    assert writers == {"topics": [], "importance": []}
+
+
+def test_classify_and_write_annotates_when_the_human_guard_query_fails(
+    stub_sdk: Any, writers: dict[str, list[dict[str, Any]]]
+) -> None:
+    client = _StubClient(_clean_response())
+    stub_sdk(client)
+    conn = _UnreadableHumanGuardConn({_DOCUMENT_MARKER: [DOCUMENT_ROW]})
+
+    result = annotate.classify_and_write(ids=[DOCUMENT_URL], conn=conn)
+
+    assert (result["annotated"], result["skipped"]) == (1, 0)
+    assert result["causes"] == []
+    assert len(client.calls) == 1
+    assert [call["identifier"] for call in writers["importance"]] == [DOCUMENT_URL]
 
 
 def test_classify_and_write_writes_through_both_lanes(

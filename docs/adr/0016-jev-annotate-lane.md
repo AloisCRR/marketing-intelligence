@@ -64,10 +64,14 @@ Smoke evidence (2026-09-21, live `jev-1.13.0`, 8 stratified local docs,
   records score + confidence. Zero writes → `low-confidence` cause, retry
   next run. Vendor error → cause, never a guess (spec §Knowledge #40).
 - **Lane placement: `annotate_source_flow`, chained post-ingest.**
-  Separate flow (never blocks retrieval on vendor latency), same
-  `_BATCH_CHUNK` pattern, idempotency = "no `reporter='jev'` row in
-  `document_importance` yet" (topics rewrites are diff no-ops, so a retry
-  is safe). Covers all 22 Sources including the instagram lane.
+  Separate flow (never blocks retrieval on vendor latency), same `_BATCH_CHUNK` pattern, idempotency = "no `document_importance` row at
+  all and no human (`reporter IS DISTINCT FROM 'jev'`) `document_topics`
+  row yet" — any importance row (jev or human) or any human topics row
+  settles the Document, so jev never overwrites a human judgment or human
+  tags (explicit `ids=` included; skipped as `human-annotated` with no
+  vendor call). Jev-only topics never settle it (topics rewrites are diff
+  no-ops, so a retry is safe). Covers all 22 Sources including the
+  instagram lane.
   `ingest_sources_flow` gains `annotate: bool = True`; backfill = the same
   flow over history (bounded, cost-logged). Failures are per-doc causes,
   never an Ingestion Run error.

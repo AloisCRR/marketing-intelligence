@@ -111,19 +111,49 @@ DIGEST_RUBRIC: tuple[str, ...] = (
 #: Top of the rubric (the divisor that normalises a digest score onto 0–1).
 DIGEST_MAX_SCORE = len(DIGEST_RUBRIC) - 1
 
-#: Documents with no ``reporter='jev'`` importance row yet (idempotency
-#: selector: one call per Document per lane run, topics rewrites are diff
-#: no-ops). ``%s::text`` keeps the NULL source filter bindable.
+#: Documents Jev may still annotate (idempotency selector: one call per
+#: Document per lane run, topics rewrites are diff no-ops): no
+#: ``document_importance`` row at all, and no human topics row. Any importance
+#: row — Jev's or a human's — settles the Document, and any topics row written
+#: by someone other than :data:`REPORTER` means a human already tagged it, so
+#: Jev must not overwrite either. Jev-only topics never settle a Document: the
+#: importance judgment may have been suppressed, so the retry is safe (a topics
+#: rewrite is a diff no-op). ``%s::text`` keeps the NULL source filter bindable.
 _PENDING_SQL = """\
 SELECT d.canonical_url
   FROM documents d
   JOIN sources s ON s.id = d.source_id
  WHERE NOT EXISTS (
        SELECT 1 FROM document_importance i
-        WHERE i.document_id = d.id AND i.reporter = %s
+        WHERE i.document_id = d.id
+ )
+   AND NOT EXISTS (
+       SELECT 1 FROM document_topics t
+        WHERE t.document_id = d.id AND t.reporter IS DISTINCT FROM %s
  )
    AND (%s::text IS NULL OR s.name = %s)
  ORDER BY d.published_at, d.id\
+"""
+
+#: Identifiers among the caller's selection that a human already annotated:
+#: any ``document_importance`` or ``document_topics`` row whose reporter is not
+#: :data:`REPORTER`. A NULL reporter counts as human — ``IS DISTINCT FROM`` is
+#: true for NULL — so an untagged legacy row is never overwritten either. Both
+#: url spellings are selected so the caller's own spelling always matches.
+_HUMAN_SQL = """\
+SELECT d.canonical_url, d.url
+  FROM documents d
+ WHERE (d.canonical_url = ANY(%s) OR d.url = ANY(%s))
+   AND (
+        EXISTS (
+            SELECT 1 FROM document_importance i
+             WHERE i.document_id = d.id AND i.reporter IS DISTINCT FROM %s
+        )
+        OR EXISTS (
+            SELECT 1 FROM document_topics t
+             WHERE t.document_id = d.id AND t.reporter IS DISTINCT FROM %s
+        )
+   )\
 """
 
 #: State rows for the requested identifiers, keyed by url and canonical url so
@@ -452,12 +482,15 @@ def _column(row: Any, *names: str) -> list[Any]:
 
 
 def pending_document_ids(conn: Any, source_name: str | None = None) -> list[str]:
-    """Canonical urls of Documents Jev has not annotated yet, in publish order.
+    """Canonical urls of Documents Jev may still annotate, in publish order.
 
-    "Annotated" means the Document has at least one ``reporter='jev'`` row in
-    ``document_importance``: topics alone do not settle it, so a Document whose
-    importance judgment was suppressed stays pending for the next run. Topics
-    rewrites are diff no-ops, which is what makes that retry safe.
+    A Document is settled — and therefore not pending — as soon as it has *any*
+    ``document_importance`` row, whoever wrote it, or *any* ``document_topics``
+    row written by someone other than :data:`REPORTER` (a human judgment or
+    human tags must never be overwritten). Jev-only topics do not settle it, so
+    a Document whose importance judgment was suppressed stays pending for the
+    next run; topics rewrites are diff no-ops, which is what makes that retry
+    safe.
 
     Args:
         conn: DB-API connection (the caller owns transaction and lifetime).
@@ -479,7 +512,8 @@ def pending_document_ids(conn: Any, source_name: str | None = None) -> list[str]
 def _target_identifiers(conn: Any, ids: Any, source: Any) -> list[str]:
     """Resolve the caller's ``ids``/``source`` selection to document identifiers.
 
-    ``ids`` are used as given (explicit work, even if already annotated),
+    ``ids`` are used as given (explicit work, even if Jev already annotated the
+    Document; human-annotated Documents are still skipped downstream),
     ``source`` adds that Source's pending Documents, and neither means every
     pending Document. Order is preserved and blank/duplicate entries dropped.
     """
@@ -514,17 +548,50 @@ def _document_rows(conn: Any, identifiers: list[str]) -> dict[str, tuple[Any, An
     return found
 
 
+def _human_annotated_ids(conn: Any, identifiers: list[str]) -> set[str]:
+    """Identifiers from ``identifiers`` that a human has already annotated.
+
+    Human-annotated means the Document carries any ``document_importance`` or
+    ``document_topics`` row whose reporter is not this lane's :data:`REPORTER`.
+    A NULL reporter counts as human (``IS DISTINCT FROM 'jev'`` is true for
+    NULL), matching the pending selector: an untagged legacy row is a human
+    judgment too, never something Jev may overwrite.
+
+    Both url spellings (canonical url and url) of every hit are returned, so an
+    identifier spelled by the caller in either form always matches.
+
+    Fail-open: a failed guard query yields an empty set, so the lane still
+    annotates instead of aborting the run. This helper never raises.
+    """
+    if not identifiers:
+        return set()
+    keys = list(identifiers)
+    try:
+        rows = _fetch_all(conn, _HUMAN_SQL, (keys, keys, REPORTER, REPORTER))
+        found: set[str] = set()
+        for row in rows:
+            canonical, url = _column(row, "canonical_url", "url")
+            for key in (canonical, url):
+                if key is not None:
+                    found.add(str(key))
+        return found
+    except Exception:  # a guard that cannot be read must never break the lane
+        return set()
+
+
 def classify_and_write(ids: Any = None, source: Any = None, conn: Any = None) -> dict[str, Any]:
     """Annotate Documents with Jev and write through the annotation lanes.
 
     Selection: ``ids`` are annotated as given, ``source`` adds that Source's
     pending Documents (see :func:`pending_document_ids`), and neither means
-    every pending Document. Each Document costs one vendor call; unknown
-    identifiers and zero-write judgments become causes and are counted as
-    skipped, and no per-Document failure ever raises out of this function. Each
-    Document's writes run inside their own savepoint, so a failed write rolls
-    back that Document alone and leaves the earlier Documents of the call
-    valid for the caller to commit.
+    every pending Document. Human-annotated Documents are always skipped, even
+    when named explicitly in ``ids``: Jev never overwrites a human judgment or
+    human tags, and such an identifier costs no vendor call. Each Document
+    costs one vendor call; unknown identifiers and zero-write judgments become
+    causes and are counted as skipped, and no per-Document failure ever raises
+    out of this function. Each Document's writes run inside their own
+    savepoint, so a failed write rolls back that Document alone and leaves the
+    earlier Documents of the call valid for the caller to commit.
 
     Args:
         ids: optional identifier or list of identifiers (url or canonical url).
@@ -551,11 +618,16 @@ def classify_and_write(ids: Any = None, source: Any = None, conn: Any = None) ->
     try:
         identifiers = _target_identifiers(conn, ids, source)
         rows = _document_rows(conn, identifiers)
+        human = _human_annotated_ids(conn, identifiers)
         annotated = 0
         skipped = 0
         causes: list[str] = []
         input_tokens = 0
         for identifier in identifiers:
+            if identifier in human:
+                causes.append(f"{identifier}: human-annotated; skipped")
+                skipped += 1
+                continue
             record = rows.get(identifier)
             if record is None:
                 causes.append(f"{identifier}: unknown article")
