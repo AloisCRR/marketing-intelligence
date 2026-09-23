@@ -393,7 +393,9 @@ def test_search_shape_unchanged() -> None:
 def test_period_shape_is_truthful_recency_bundle() -> None:
     from datetime import date
 
-    ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConn())
+    ctx = service.get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConn(), min_importance=None, topics=[]
+    )
     assert set(ctx) == {"period", "recent_articles"}
     assert all(set(group) == {"source", "articles"} for group in ctx["recent_articles"])
     for group in ctx["recent_articles"]:

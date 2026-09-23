@@ -37,6 +37,14 @@ PANAMA_NAME = "America/Panama"
 
 DEFAULT_LIMIT = 50
 
+#: The period bundle's default importance floor (agreed 2026-09-22): callers
+#: that omit ``min_importance`` get ``0.5`` — the Jev ``digest_relevance``
+#: midpoint (``1.5/3``), which keeps on-pillar context while dropping the
+#: ``~0.31`` off-theme tail and the ``0.3`` flagged/paywalled cap. The lane
+#: itself keeps ``None`` (unfiltered); the service adapter substitutes this
+#: default, so explicit ``min_importance=None`` still means "no floor".
+DEFAULT_MIN_IMPORTANCE = 0.5
+
 #: The period bundle's priority view (ADR-0016): the canonical Topic slugs the
 #: digest agent asked to see by default, because an 8-day unfiltered bundle
 #: costs ~100k tokens of mostly off-theme evidence. ``service`` substitutes this

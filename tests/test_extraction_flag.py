@@ -648,7 +648,9 @@ def test_search_unflagged_rows_carry_none_flags() -> None:
 def test_period_annotates_flag_without_filtering() -> None:
     conn = _FakeConnection()
     _flagged(conn)
-    ctx = service.get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=conn)
+    ctx = service.get_period_context(
+        date(2026, 9, 7), date(2026, 9, 13), conn=conn, min_importance=None, topics=[]
+    )
     # Grouped by source: the group carries the source, its headlines the rest.
     assert {group["source"] for group in ctx["recent_articles"]} == {
         "Social Media Today",

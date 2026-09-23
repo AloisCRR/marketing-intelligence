@@ -10,8 +10,13 @@ Locked contract:
   through the same vocabulary path as a caller list, so the lane always receives
   canonical slugs; `topics=[]` is the explicit unfiltered bundle and an explicit
   list wins exactly (no merge with the default).
-- Search keeps `topics=None` = unfiltered; unknown tags still 422 on both
-  caller surfaces, before any query.
+- `service.get_period_context()` without `min_importance` applies the default
+  floor `period.DEFAULT_MIN_IMPORTANCE` (0.5): the default view is annotated
+  and importance-ordered; explicit `min_importance=None` removes the floor and
+  `topics=[]` removes the topic constraint — both together restore the
+  unfiltered recency-ordered bundle.
+- Search keeps `topics=None`/`min_importance=None` = unfiltered; unknown tags
+  still 422 on both caller surfaces, before any query.
 - The frozen key sets are byte-identical: SEARCH 21, period headline 13, period
   bundle {period, recent_articles}.
 
@@ -218,11 +223,16 @@ class _BundleCursor:
         self.last_sql = ""
         self.last_params: tuple[Any, ...] = ()
         self.topics_param: list[str] | None = None
+        self.floor_param: float | None = None
         self._rows: list[dict[str, Any]] = []
 
     @property
     def has_topic_predicate(self) -> bool:
         return "tps.topics && %s::text[]" in self.last_sql
+
+    @property
+    def has_floor_predicate(self) -> bool:
+        return "imp.score >= %s" in self.last_sql
 
     def execute(self, sql: str, params: tuple | None = None) -> _BundleCursor:
         self.last_sql = " ".join(sql.split())
@@ -230,9 +240,10 @@ class _BundleCursor:
         index = 3  # bounds, source names, then the optional annotation filters
         floor: float | None = None
         self.topics_param = None
-        if "imp.score >= %s" in self.last_sql:
+        if self.has_floor_predicate:
             floor = self.last_params[index]
             index += 1
+        self.floor_param = floor
         if self.has_topic_predicate:
             self.topics_param = list(self.last_params[index])
         per_source = int(self.last_params[-1])
@@ -327,20 +338,68 @@ def test_default_period_topics_is_the_pinned_canonical_view() -> None:
         entry = topics_lane.TOPICS[slug]
         assert entry.get("retired_alias_of") is None
         assert topics_lane.canonicalize_topic(slug) == slug
+    assert period_lane.DEFAULT_MIN_IMPORTANCE == 0.5
+    assert service.DEFAULT_PERIOD_MIN_IMPORTANCE == 0.5
 
 
 def test_default_is_filtered_before_the_lane_runs() -> None:
-    """`topics=None` means the priority view, handed over as canonical slugs."""
+    """Omitted filters mean the priority view: default topics + 0.5 floor."""
     conn = _BundleConnection(list(DOCS))
     bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn)
     cursor = conn.cursors[-1]
 
     assert cursor.has_topic_predicate
     assert cursor.topics_param == list(period_lane.DEFAULT_PERIOD_TOPICS)
+    assert cursor.has_floor_predicate
+    assert cursor.floor_param == 0.5
     assert _titles(bundle) == ON_DEFAULT_TITLES
     # The two Documents the prior unfiltered default would have paid tokens for.
     assert "Retail footfall dips" not in _titles(bundle)  # annotated, off the view
     assert "Untagged launch" not in _titles(bundle)  # never annotated
+
+
+def test_default_floor_drops_low_scores_and_unannotated() -> None:
+    """The 0.5 floor composes with the default topics on the same call."""
+    docs = [
+        _doc(1, "Jewelry rebound", "JCK Online", ["jewelry"], score=0.9),
+        _doc(2, "Jewelry footnote", "MarTech", ["jewelry"], score=0.4),
+        _doc(3, "Jewelry teaser", "Exame", ["jewelry"]),
+    ]
+    conn = _BundleConnection(docs)
+    bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn)
+    assert conn.cursors[-1].floor_param == 0.5
+    assert _titles(bundle) == {"Jewelry rebound"}
+
+
+def test_explicit_floor_none_removes_only_the_floor() -> None:
+    """Explicit `min_importance=None` clears the floor, not the topics."""
+    docs = [
+        _doc(1, "Jewelry rebound", "JCK Online", ["jewelry"], score=0.9),
+        _doc(2, "Jewelry footnote", "MarTech", ["jewelry"], score=0.4),
+        _doc(3, "Retail footfall dips", "Retail Dive", ["retail"], score=0.95),
+    ]
+    conn = _BundleConnection(docs)
+    bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, min_importance=None)
+    cursor = conn.cursors[-1]
+
+    assert not cursor.has_floor_predicate
+    assert cursor.has_topic_predicate
+    # The low scorer returns (floor gone); the off-view high scorer stays out.
+    assert _titles(bundle) == {"Jewelry rebound", "Jewelry footnote"}
+
+
+def test_unfiltered_bundle_clears_both_defaults() -> None:
+    """`topics=[]` + `min_importance=None` is the unfiltered recency bundle."""
+    conn = _BundleConnection(list(DOCS))
+    bundle = service.get_period_context(
+        WEEK_FROM, WEEK_TO, conn=conn, topics=[], min_importance=None
+    )
+    cursor = conn.cursors[-1]
+
+    assert not cursor.has_topic_predicate
+    assert not cursor.has_floor_predicate
+    assert len(cursor.last_params) == 4  # bounds, sources, limit
+    assert _titles(bundle) == ALL_TITLES
 
 
 def test_default_runs_through_the_vocabulary_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,19 +416,37 @@ def test_default_runs_through_the_vocabulary_path(monkeypatch: pytest.MonkeyPatc
     assert _titles(bundle) == {"Loyalty shift", "Jewelry rebound"}
 
 
-def test_empty_topics_is_the_unfiltered_bundle() -> None:
+def test_empty_topics_removes_only_the_topic_constraint() -> None:
+    """`topics=[]` clears topics only — the 0.5 floor still applies."""
     conn = _BundleConnection(list(DOCS))
     bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, topics=[])
     cursor = conn.cursors[-1]
 
     assert not cursor.has_topic_predicate  # no predicate, and no filter param
-    assert len(cursor.last_params) == 4  # bounds, sources, limit
+    assert cursor.has_floor_predicate
+    assert cursor.floor_param == 0.5
+    # Every fixture Document scores >= 0.5, so all return once topics clear —
+    # including the untagged (but scored) launch and the off-view high scorer.
     assert _titles(bundle) == ALL_TITLES
+
+
+def test_empty_topics_still_drops_null_scores() -> None:
+    """A NULL score never satisfies the default floor, even with `topics=[]`."""
+    docs = [
+        _doc(1, "Jewelry rebound", "JCK Online", ["jewelry"], score=0.9),
+        _doc(2, "Jewelry teaser", "Exame", ["jewelry"]),
+    ]
+    conn = _BundleConnection(docs)
+    bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, topics=[])
+    assert conn.cursors[-1].floor_param == 0.5
+    assert _titles(bundle) == {"Jewelry rebound"}
 
 
 def test_explicit_topics_win_exactly() -> None:
     conn = _BundleConnection(list(DOCS))
-    bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, topics=["retail"])
+    bundle = service.get_period_context(
+        WEEK_FROM, WEEK_TO, conn=conn, topics=["retail"], min_importance=None
+    )
     assert conn.cursors[-1].topics_param == ["retail"]  # never merged with default
     assert _titles(bundle) == {"Retail footfall dips"}
 
@@ -378,6 +455,23 @@ def test_explicit_topics_win_exactly() -> None:
     bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=synonym_conn, topics=["jewellery"])
     assert synonym_conn.cursors[-1].topics_param == ["jewelry"]
     assert _titles(bundle) == {"Jewelry rebound"}
+
+
+def test_explicit_topics_compose_with_the_default_floor() -> None:
+    """An explicit topic list keeps the 0.5 floor unless cleared."""
+    conn = _BundleConnection(list(DOCS))
+    bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, topics=["retail"])
+    assert conn.cursors[-1].floor_param == 0.5
+    assert _titles(bundle) == {"Retail footfall dips"}
+
+    low_conn = _BundleConnection(
+        [
+            _doc(1, "Retail footnote", "Retail Dive", ["retail"], score=0.4),
+            _doc(2, "Retail rebound", "MarTech", ["retail"], score=0.9),
+        ]
+    )
+    low_bundle = service.get_period_context(WEEK_FROM, WEEK_TO, conn=low_conn, topics=["retail"])
+    assert _titles(low_bundle) == {"Retail rebound"}
 
 
 def test_unknown_region_tag_still_rejected_before_the_lane(http: TestClient) -> None:
@@ -424,10 +518,10 @@ def test_search_keeps_none_unfiltered(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_http_and_mcp_apply_the_same_period_default(
     http: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    received: list[list[str] | None] = []
+    received: list[tuple] = []
 
     def fake_lane(from_date: object, to_date: object, **kwargs: Any) -> dict[str, Any]:
-        received.append(kwargs["topics"])
+        received.append((kwargs["topics"], kwargs["min_importance"]))
         return {"period": {}, "recent_articles": []}
 
     monkeypatch.setattr(period_lane, "get_period_context", fake_lane)
@@ -436,7 +530,7 @@ def test_http_and_mcp_apply_the_same_period_default(
 
     assert http.post("/period-context", json=body).json() == expected
     assert MCP_SERVER.get_period_context(**body) == expected
-    assert received == [list(period_lane.DEFAULT_PERIOD_TOPICS)] * 2
+    assert received == [(list(period_lane.DEFAULT_PERIOD_TOPICS), 0.5)] * 2
 
 
 # --- frozen key sets -----------------------------------------------------------

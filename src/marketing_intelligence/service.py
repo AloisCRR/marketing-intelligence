@@ -27,6 +27,7 @@ from marketing_intelligence.sources import catalog_names, get_cadence
 MAX_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
 DEFAULT_PERIOD_LIMIT = _period.DEFAULT_LIMIT
+DEFAULT_PERIOD_MIN_IMPORTANCE = _period.DEFAULT_MIN_IMPORTANCE
 
 FLAG_KEYS = (
     "flag_reason",
@@ -307,7 +308,7 @@ def get_period_context(
     limit: int = DEFAULT_PERIOD_LIMIT,
     conn: Any | None = None,
     exclude_read: bool = False,
-    min_importance: float | None = None,
+    min_importance: float | None = DEFAULT_PERIOD_MIN_IMPORTANCE,
     topics: list[str] | None = None,
 ) -> dict[str, Any]:
     """Validated period evidence bundle for [from_date, to_date].
@@ -335,28 +336,32 @@ def get_period_context(
     frame image text; ADR-0014). No empty analytics placeholders are emitted,
     and a headline carries neither an ordering field nor its source.
 
-    `min_importance` (None default) keeps only Documents whose latest score is
-    `>=` the floor and orders the bundle by importance (descending, ties by
-    recency); without a floor the bundle stays purely recency-ordered.
-    `topics` (None default) keeps only Documents carrying at least one of the
-    given tags (array overlap). ``None`` is **not** "unfiltered" on this lane:
-    it means the period priority default, ``period.DEFAULT_PERIOD_TOPICS``
-    (ADR-0016 — 16 canonical slugs, the digest agent's on-theme view), which is
+    `min_importance` (default 0.5, `DEFAULT_PERIOD_MIN_IMPORTANCE`) keeps only
+    Documents whose latest score is `>=` the floor and orders the bundle by
+    importance (descending, ties by recency); explicit `None` removes the floor
+    and the bundle stays purely recency-ordered. `topics` (None default) keeps
+    only Documents carrying at least one of the given tags (array overlap).
+    ``None`` is **not** "unfiltered" on this lane: it means the period priority
+    defaults — ``period.DEFAULT_PERIOD_TOPICS`` (ADR-0016 — 16 canonical slugs,
+    the digest agent's on-theme view) plus the ``0.5`` floor — which are
     substituted here and canonicalized through the same vocabulary path as a
     caller list, so a retired alias in a future default resolves identically.
     An explicit list always wins: pass the slugs you want, or ``topics=[]`` for
-    a truly unfiltered bundle (the pre-ADR default). Tags are canonicalized
-    server-side (synonyms, case/whitespace variants and retired aliases resolve
-    to the canonical slug); unknown tags raise `InvalidRequest` (422); an empty
-    list adds no constraint. All filters compose with `sources` and
-    `exclude_read` in one call.
+    no topic constraint (the pre-ADR default); pass an explicit number for a
+    custom floor, or explicit ``min_importance=None`` for no floor. The two
+    filters are independent: `topics=[]` clears only the topic constraint.
+    Tags are canonicalized server-side (synonyms, case/whitespace variants and
+    retired aliases resolve to the canonical slug); unknown tags raise
+    `InvalidRequest` (422); an empty list adds no constraint. All filters
+    compose with `sources` and `exclude_read` in one call.
 
     Unannotated Documents (no importance row / no topics): a NULL score is
     excluded only when an importance floor is set (never silently top-ranked —
     unfiltered order is recency-first, floored order is importance-first with
     NULLS LAST), and a Document with no topics is excluded only when a
-    non-empty topic filter is set. The period default is such a filter, so the
-    default view is annotated-only; ``topics=[]`` restores the unfiltered
+    non-empty topic filter is set. The period defaults are both such filters,
+    so the default view is annotated-only and importance-ordered;
+    ``topics=[]`` + explicit ``min_importance=None`` restores the unfiltered
     bundle in which annotations never silently drop or re-rank evidence.
     """
     start = _coerce_bound(from_date, label="from_date")

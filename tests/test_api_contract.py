@@ -324,7 +324,7 @@ def test_period_forwards_annotation_filters(monkeypatch: pytest.MonkeyPatch) -> 
     http = TestClient(app)
     body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
     assert http.post("/period-context", json=body).status_code == 200
-    assert seen["min_importance"] is None
+    assert seen["min_importance"] == service.DEFAULT_PERIOD_MIN_IMPORTANCE == 0.5
     assert seen["topics"] is None
     assert (
         http.post(
@@ -335,6 +335,14 @@ def test_period_forwards_annotation_filters(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert seen["min_importance"] == 0.7
     assert seen["topics"] == ["jewellery"]  # canonicalization happens in the adapter
+    assert (
+        http.post(
+            "/period-context",
+            json=dict(body, min_importance=None),
+        ).status_code
+        == 200
+    )
+    assert seen["min_importance"] is None
 
 
 def test_period_validation_maps_to_422() -> None:

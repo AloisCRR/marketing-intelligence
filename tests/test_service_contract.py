@@ -302,7 +302,13 @@ def test_search_injected_conn_is_not_closed() -> None:
 
 
 def test_period_shape_provenance_and_truthful_recency_list() -> None:
-    ctx = get_period_context(date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection())
+    ctx = get_period_context(
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        conn=_PeriodConnection(),
+        min_importance=None,
+        topics=[],
+    )
     # No empty analytics placeholders: period + source-grouped headlines only.
     assert set(ctx) == {"period", "recent_articles"}
     assert set(ctx["period"]) == {"from", "to", "timezone"}
@@ -371,6 +377,8 @@ def test_period_explicit_known_source_passes_through() -> None:
         date(2026, 9, 13),
         sources=["MarTech"],
         conn=_PeriodConnection(),
+        min_importance=None,
+        topics=[],
     )
     assert [g["source"] for g in ctx["recent_articles"]] == ["MarTech"]
     assert [a["title"] for a in _flatten(ctx["recent_articles"])] == ["Signal Loss Rebuild"]
@@ -456,7 +464,11 @@ def test_period_limit_caps_each_source_group_and_composes_with_sources() -> None
     ]
     # The default limit keeps the whole flood in its own group.
     untrimmed = get_period_context(
-        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(rows)
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        conn=_PeriodConnection(rows),
+        min_importance=None,
+        topics=[],
     )
     assert {g["source"]: len(g["articles"]) for g in untrimmed["recent_articles"]} == {
         "Social Media Today": 8,
@@ -467,6 +479,8 @@ def test_period_limit_caps_each_source_group_and_composes_with_sources() -> None
         date(2026, 9, 13),
         conn=_PeriodConnection(rows),
         limit=2,
+        min_importance=None,
+        topics=[],
     )
     groups = capped["recent_articles"]
     assert [g["source"] for g in groups] == ["Social Media Today", "MarTech"]
@@ -479,6 +493,8 @@ def test_period_limit_caps_each_source_group_and_composes_with_sources() -> None
         conn=_PeriodConnection(rows),
         sources=["Social Media Today"],
         limit=2,
+        min_importance=None,
+        topics=[],
     )
     assert [g["source"] for g in narrowed["recent_articles"]] == ["Social Media Today"]
     assert [len(g["articles"]) for g in narrowed["recent_articles"]] == [2]
@@ -593,7 +609,11 @@ def test_search_exclude_read_must_be_bool() -> None:
 
 def test_period_annotates_read_state_by_default() -> None:
     ctx = get_period_context(
-        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        conn=_PeriodConnection(READ_PERIOD_ROWS),
+        min_importance=None,
+        topics=[],
     )
     by_url = {a["url"]: a for a in _flatten(ctx["recent_articles"])}
     assert len(by_url) == 2
@@ -613,7 +633,11 @@ def test_period_annotates_read_state_by_default() -> None:
 
 def test_period_exclude_read_filters_marked() -> None:
     ctx = get_period_context(
-        date(2026, 9, 7), date(2026, 9, 13), conn=_PeriodConnection(READ_PERIOD_ROWS)
+        date(2026, 9, 7),
+        date(2026, 9, 13),
+        conn=_PeriodConnection(READ_PERIOD_ROWS),
+        min_importance=None,
+        topics=[],
     )
     assert len(_flatten(ctx["recent_articles"])) == 2
     filtered = get_period_context(
@@ -621,6 +645,8 @@ def test_period_exclude_read_filters_marked() -> None:
         date(2026, 9, 13),
         exclude_read=True,
         conn=_PeriodConnection(READ_PERIOD_ROWS),
+        min_importance=None,
+        topics=[],
     )
     assert [a["url"] for a in _flatten(filtered["recent_articles"])] == [UNREAD_URL]
 

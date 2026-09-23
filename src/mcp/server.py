@@ -37,7 +37,11 @@ from marketing_intelligence.auth import StaticTokenVerifier, is_auth_configured,
 from marketing_intelligence.healthcheck import (
     health_payload,  # noqa: F401  (installs access-log filter)
 )
-from marketing_intelligence.service import DEFAULT_PERIOD_LIMIT, DEFAULT_SEARCH_LIMIT
+from marketing_intelligence.service import (
+    DEFAULT_PERIOD_LIMIT,
+    DEFAULT_PERIOD_MIN_IMPORTANCE,
+    DEFAULT_SEARCH_LIMIT,
+)
 
 SERVER_INSTRUCTIONS = (
     "Marketing Intelligence is a persistent marketing/GenZ/culture/tech intelligence platform "
@@ -190,7 +194,7 @@ def get_period_context(
     min_importance: Annotated[
         float | None,
         "Importance floor in [0,1]; unannotated articles are excluded only when set.",
-    ] = None,
+    ] = DEFAULT_PERIOD_MIN_IMPORTANCE,
     topics: Annotated[
         list[str] | None,
         "Topic filter (canonical slugs/synonyms); None = default, [] = all.",
@@ -200,19 +204,22 @@ def get_period_context(
 
     Use for period synthesis: draft exclusively from the returned
     recent_articles, a list of {source, articles} groups (one per source with
-    at least one hit) whose headlines are recency-ordered by default. Keep
-    URLs/provenance attached and separate observations from interpretations. A
-    digest is just the case where the caller picks a range (often a week).
+    at least one hit) whose headlines are importance-ordered by default (the
+    0.5 default floor flips the bundle to importance-first, ties by recency).
+    Keep URLs/provenance attached and separate observations from
+    interpretations. A digest is just the case where the caller picks a range
+    (often a week).
 
     The annotation filters compose in one call: `min_importance` keeps only
     Documents whose latest score clears the floor and orders the bundle
     importance-first (ties by recency); `topics` keeps only Documents carrying
     at least one of the given tags (server-canonicalized; unknown tags are
-    rejected). `topics=None` applies the digest-priority default list (ADR-0016);
-    pass `topics=[]` or explicit slugs for unfiltered or custom views.
-    Unannotated Documents (NULL score / no topics) are excluded only when the
-    matching filter is set — never silently dropped or silently promoted to
-    the top.
+    rejected). `topics=None` applies the digest-priority default list (ADR-0016)
+    and `min_importance` defaults to 0.5; pass `topics=[]` for no topic
+    constraint or explicit `min_importance=None` for no floor (both together
+    restore the unfiltered recency-ordered bundle). Unannotated Documents (NULL
+    score / no topics) are excluded only when the matching filter is set —
+    never silently dropped or silently promoted to the top.
 
     Args:
         from_date: Range start as ISO date (YYYY-MM-DD, inclusive).
@@ -221,15 +228,15 @@ def get_period_context(
         limit: Max headlines per source group, 1-100 (default 50). Every source
             with at least one hit still appears in the bundle.
         exclude_read: When True, hide read articles (default False annotates only).
-        min_importance: Optional floor in [0, 1] on the latest importance score.
+        min_importance: Floor in [0, 1] on the latest importance score (default 0.5).
         topics: Optional canonical Topic slugs or accepted synonyms; None =
             digest-priority default, [] = unfiltered, explicit list wins.
 
     Returns:
         Evidence-bundle dict with `period` and a source-grouped
         `recent_articles` list (one {source, articles} entry per source;
-        recency-ordered, or importance-ordered when a floor is set); no empty
-        analytics placeholders.
+        importance-ordered by default, recency-ordered when the floor is
+        cleared); no empty analytics placeholders.
 
     Raises:
         InvalidRequest: If dates are malformed/unordered, sources unknown,

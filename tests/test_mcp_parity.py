@@ -380,7 +380,7 @@ def test_period_annotation_filters_passthrough(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(service, "get_period_context", fake)
     body = {"from_date": "2026-09-07", "to_date": "2026-09-13"}
     assert MCP_SERVER.get_period_context(**body) == PERIOD_PAYLOAD
-    assert seen["min_importance"] is None
+    assert seen["min_importance"] == service.DEFAULT_PERIOD_MIN_IMPORTANCE == 0.5
     assert seen["topics"] is None
     out = asyncio.run(
         MCP_SERVER.mcp.call_tool(

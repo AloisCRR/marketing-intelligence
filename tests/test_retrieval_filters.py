@@ -10,8 +10,9 @@ Locked contract:
 - Unannotated Documents (NULL score / no topics) are excluded only when the
   matching filter is set — never silently dropped from an unfiltered query and
   never silently top-scored. On the period lane `topics=None` now means the
-  ADR-0016 priority default, so the unfiltered bundle is requested explicitly
-  with `topics=[]`; search keeps `None` = unfiltered.
+  ADR-0016 priority default and an omitted `min_importance` means the 0.5
+  default floor, so the fully unfiltered bundle is requested explicitly
+  with `topics=[]` + `min_importance=None`; search keeps `None` = unfiltered.
 - Both caller surfaces expose all filters identically through the Service
   Adapter with 422 on invalid input.
 - Per-reader read marks (ADR-0015) ride along on both lanes: a Document read by
@@ -427,6 +428,7 @@ def test_topic_filter_matches_any_requested_topic() -> None:
         WEEK_TO,
         conn=_FakeConnection(list(WEEK_DOCS)),
         topics=["luxury", "retail"],
+        min_importance=None,
         limit=100,
     )
     # "Luxury watch demand" carries jewelry+luxury; "Retail footfall dips"
@@ -437,14 +439,32 @@ def test_topic_filter_matches_any_requested_topic() -> None:
     }
 
 
+def test_explicit_topics_keep_the_default_floor() -> None:
+    """An explicit topic list keeps the 0.5 floor unless cleared."""
+    ctx = service.get_period_context(
+        WEEK_FROM,
+        WEEK_TO,
+        conn=_FakeConnection(list(WEEK_DOCS)),
+        topics=["luxury", "retail"],
+        limit=100,
+    )
+    # "Retail footfall dips" scores 0.4 — on-topic but below the default floor.
+    assert {a["title"] for a in _flatten(ctx["recent_articles"])} == {"Luxury watch demand"}
+
+
 # --- unannotated behavior -----------------------------------------------------
 
 
 def test_unannotated_included_and_ordered_by_recency_not_score() -> None:
-    # `topics=[]` is the explicit unfiltered period bundle (ADR-0016: the
-    # `None` default is the 16-slug priority view, which excludes these).
+    # `topics=[]` + `min_importance=None` is the explicit unfiltered period
+    # bundle (the `None` default is the 16-slug priority view + 0.5 floor,
+    # which excludes these).
     ctx = service.get_period_context(
-        WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)), topics=[]
+        WEEK_FROM,
+        WEEK_TO,
+        conn=_FakeConnection(list(WEEK_DOCS)),
+        topics=[],
+        min_importance=None,
     )
     groups = ctx["recent_articles"]
     by_source = {g["source"]: [a["title"] for a in g["articles"]] for g in groups}
@@ -471,9 +491,38 @@ def test_unannotated_included_and_ordered_by_recency_not_score() -> None:
     assert groups[2]["articles"][-1]["importance_score"] is None
 
 
+def test_default_applies_both_priority_filters() -> None:
+    """Omitted period filters = default topics + 0.5 floor, importance-ordered."""
+    ctx = service.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)))
+    titles = {a["title"] for a in _flatten(ctx["recent_articles"])}
+    # On-view and on-floor only: the off-view high scorer, the low scorer and
+    # every unannotated Document stay out of the default bundle.
+    assert titles == {
+        "Jewellery rebound",
+        "Luxury watch demand",
+        "Gold price squeeze",
+        "Jewellery trade show",
+        "AI ad spend surges",
+    }
+
+
+def test_default_orders_importance_first_with_recency_tiebreak() -> None:
+    docs = [
+        _doc(1, "Older high scorer", "MarTech", _utc(2026, 9, 8, 9), score=0.9, topics=["ai"]),
+        _doc(2, "Newer high scorer", "MarTech", _utc(2026, 9, 10, 9), score=0.9, topics=["ai"]),
+        _doc(3, "Mid scorer", "JCK Online", _utc(2026, 9, 11, 9), score=0.7, topics=["jewelry"]),
+    ]
+    ctx = service.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection(docs))
+    assert [a["title"] for a in _flatten(ctx["recent_articles"])] == [
+        "Newer high scorer",
+        "Older high scorer",
+        "Mid scorer",
+    ]
+
+
 def test_floor_excludes_unannotated_but_floor_none_keeps_them() -> None:
     conn = _FakeConnection(list(WEEK_DOCS))
-    kept = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn)
+    kept = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, min_importance=None)
     assert any(a["importance_score"] is None for a in _flatten(kept["recent_articles"]))
     floored = service.get_period_context(WEEK_FROM, WEEK_TO, conn=conn, min_importance=0.0)
     # min_importance=0 keeps annotated 0.0+ Documents and drops NULL scores.
@@ -655,21 +704,22 @@ def test_invalid_filters_422_identical_messages() -> None:
     assert resp.json() == {"detail": str(excinfo.value)}
 
 
-@pytest.mark.parametrize("bad", [-0.01, 1.01, 2, True, "high", None])
+@pytest.mark.parametrize("bad", [-0.01, 1.01, 2, True, "high"])
 def test_min_importance_validation(bad: Any) -> None:
-    if bad is None:
-        assert (
-            service.get_period_context(
-                WEEK_FROM, WEEK_TO, conn=_FakeConnection([]), min_importance=bad
-            )["recent_articles"]
-            == []
-        )
-        assert service.search_articles("x", conn=_FakeConnection([]), min_importance=bad) == []
-        return
     with pytest.raises(service.InvalidRequest):
         service.get_period_context(WEEK_FROM, WEEK_TO, conn=_FakeConnection([]), min_importance=bad)
     with pytest.raises(service.InvalidRequest):
         service.search_articles("x", conn=_FakeConnection([]), min_importance=bad)
+
+
+def test_explicit_floor_none_is_accepted_as_no_floor() -> None:
+    assert (
+        service.get_period_context(
+            WEEK_FROM, WEEK_TO, conn=_FakeConnection([]), min_importance=None
+        )["recent_articles"]
+        == []
+    )
+    assert service.search_articles("x", conn=_FakeConnection([]), min_importance=None) == []
 
 
 def test_topic_filter_validation_rejects_non_lists_and_blank_tags() -> None:
@@ -682,10 +732,30 @@ def test_topic_filter_validation_rejects_non_lists_and_blank_tags() -> None:
 
 def test_empty_topic_list_adds_no_constraint() -> None:
     ctx = service.get_period_context(
-        WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)), topics=[]
+        WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)), topics=[], min_importance=None
     )
     assert len(_flatten(ctx["recent_articles"])) == len(WEEK_DOCS)
-    assert service.search_articles("Jewellery", conn=_FakeConnection(list(WEEK_DOCS)), topics=[])
+
+
+def test_empty_topics_keeps_the_default_floor() -> None:
+    """`topics=[]` clears topics only — NULL scores stay out by default."""
+    ctx = service.get_period_context(
+        WEEK_FROM, WEEK_TO, conn=_FakeConnection(list(WEEK_DOCS)), topics=[]
+    )
+    titles = {a["title"] for a in _flatten(ctx["recent_articles"])}
+    # The 0.4 retail scorer and the NULL-score jewellery note stay out (below
+    # the 0.5 default floor / NULL); the scored-but-untagged launch returns —
+    # `topics=[]` removed the only constraint that excluded it.
+    assert "Retail footfall dips" not in titles
+    assert "Unannotated jewellery note" not in titles
+    assert titles == {
+        "Jewellery rebound",
+        "Luxury watch demand",
+        "Gold price squeeze",
+        "Jewellery trade show",
+        "AI ad spend surges",
+        "Untagged launch",
+    }
 
 
 # --- live Postgres: the real SQL predicates + parameter order -----------------

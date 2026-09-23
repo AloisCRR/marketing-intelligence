@@ -20,6 +20,7 @@ from marketing_intelligence.healthcheck import (
 )
 from marketing_intelligence.service import (
     DEFAULT_PERIOD_LIMIT,
+    DEFAULT_PERIOD_MIN_IMPORTANCE,
     DEFAULT_SEARCH_LIMIT,
     InvalidRequest,
 )
@@ -77,7 +78,7 @@ class PeriodRequest(BaseModel):
     sources: list[str] | None = None
     limit: int = DEFAULT_PERIOD_LIMIT
     exclude_read: bool = False
-    min_importance: float | None = None
+    min_importance: float | None = DEFAULT_PERIOD_MIN_IMPORTANCE
     topics: list[str] | None = None
 
 
