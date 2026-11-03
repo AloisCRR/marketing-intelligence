@@ -18,15 +18,15 @@ local `src/mcp/` dir intentionally has no `__init__.py`, so plain
 imports our `server.py` as top-level `server`. (`python src/mcp/server.py
 --http` is local-only — FastMCP defaults bind `127.0.0.1:8000`.)
 
-Startup order is wired in `compose.yml`: `api`/`mcp` wait for
+Startup order is wired in `compose.prod.yml`: `api`/`mcp` wait for
 `migrate: service_completed_successfully` and `db: service_healthy`.
 `migrate` is also runnable standalone: `make migrate-compose`
-(`docker compose run --rm migrate`).
+(`docker compose run --rm migrate` against the dev file locally).
 
 ## Dokploy mapping
 
 - **App type**: Compose (point Dokploy at this repo; compose file
-  `compose.yml`, build context repo root). Alternatively use the Dockerfile
+  `compose.prod.yml`, build context repo root). Alternatively use the Dockerfile
   provider twice (two services, same repo/image, one CMD each from the table).
 - **Image**: built by Dokploy from `Dockerfile` (multi-stage,
   `python:3.12-slim`, frozen `uv.lock` install, non-root `appuser`,
@@ -43,9 +43,9 @@ Startup order is wired in `compose.yml`: `api`/`mcp` wait for
     prod; when unset the API/MCP are open (local-dev mode only).
   - `BRAIN_PUBLIC_URL` — `https://mcp.<domain>` (public MCP base URL; used
     for OAuth resource metadata only — static bearer has no OAuth issuer).
-  - Optional: `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (must match
-    between `db` and `DATABASE_URL`), `API_PORT`/`MCP_PORT` (host publish
-    ports, local compose only — Traefik uses container ports).
+- Optional: `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` (must match
+    between `db` and `DATABASE_URL`). No published ports in prod — Traefik
+    uses container ports; `API_PORT`/`MCP_PORT` exist only in dev `compose.yml`.
 - **Pre-deploy / migrate hook**: Dokploy deploys compose in dependency order,
   so the `migrate` one-shot runs before `api`/`mcp` start. If your Dokploy
   setup skips one-shot services, run as a pre-deploy command instead:

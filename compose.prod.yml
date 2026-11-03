@@ -1,0 +1,139 @@
+# Prod stack — Marketing Intelligence (Dokploy Compose app: point it at this file).
+#
+# No `ports:` anywhere on purpose: Traefik routes to the container ports over
+# `dokploy-network`, and Postgres is reachable only via service DNS
+# (`db:5432`) from containers on the compose network. Nothing here listens on
+# a host interface, so there is nothing to firewall per-service.
+# Plain HTTP only — Traefik terminates TLS outside the containers.
+#
+# Single image (Dockerfile at repo root), three services sharing it —
+#   migrate  one-shot: runs marketing_intelligence.db.apply_migrations() (idempotent), then exits
+#   api      FastAPI on internal 8123 (default image CMD)
+#   mcp      MCP streamable-HTTP on internal 8124 (CMD override, see NOTE below)
+#   worker   Prefect worker on pool `brain-pool` (always on in prod)
+#
+# Local dev equivalent: compose.yml (`docker compose up -d db`).
+
+# Shared build definition (top-level extension field — ignored as a service).
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
+services:
+  db:
+    # Pinned PG18 + pgvector image (verified to exist; trixie variant).
+    # Fallback if trixie is ever pulled: pgvector/pgvector:0.8.6-pg18-bookworm.
+    image: pgvector/pgvector:0.8.6-pg18-trixie
+    container_name: marketing-intelligence-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-brain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brain}
+      POSTGRES_DB: ${POSTGRES_DB:-brain}
+    volumes:
+      # Named volume at the PG18 parent path. No anonymous volumes.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-brain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Shared build definition anchor: api/mcp/migrate all run this image.
+  migrate:
+    build: *app-build
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-migrate
+    command: ["python", "-c", "from marketing_intelligence.db import apply_migrations; apply_migrations()"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: *app-build
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-api
+    command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8123"]
+    environment:
+      PORT: "8123"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
+      BRAIN_API_TOKEN: ${BRAIN_API_TOKEN:-}
+      BRAIN_PUBLIC_URL: ${BRAIN_PUBLIC_URL:-http://localhost:8124}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
+    restart: unless-stopped
+
+  mcp:
+    build: *app-build
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-mcp
+    # NOTE: NOT `mcp.server:http_app` — local src/mcp/ has no __init__.py, so
+    # plain `import mcp` resolves to the installed distribution. `--app-dir`
+    # imports our server.py as top-level `server` instead.
+    command:
+      [
+        "uvicorn",
+        "--app-dir",
+        "src/mcp",
+        "server:http_app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8124",
+      ]
+    environment:
+      PORT: "8124"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
+      BRAIN_API_TOKEN: ${BRAIN_API_TOKEN:-}
+      BRAIN_PUBLIC_URL: ${BRAIN_PUBLIC_URL:-http://localhost:8124}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
+    restart: unless-stopped
+
+  # Worker (always on in prod; local: `docker compose up -d worker` in compose.yml).
+  # Runs against the VPS Prefect server (see PREFECT_API_URL) on pool `brain-pool`.
+  # Shares the app image (prefect is a main dependency). `db` resolves via the
+  # default compose network; `prefect-server` resolves via `dokploy-network`.
+  worker:
+    build: *app-build
+    image: marketing-intelligence-app:local
+    container_name: marketing-intelligence-worker
+    command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-brain-pool}"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://brain:brain@db:5432/brain}
+      PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
+      PREFECT_API_AUTH_STRING: ${PREFECT_API_AUTH_STRING:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
+      DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  dokploy-network:
+    external: true

@@ -1,4 +1,4 @@
-# Local dev stack — Marketing Intelligence (Ticket 01).
+# Local dev stack — Marketing Intelligence.
 #
 # Bring up the DB:
 #   docker compose up -d db        # start Postgres 18 + pgvector
@@ -15,13 +15,9 @@
 # App connection (see .env.example):
 #   DATABASE_URL=postgresql://brain:brain@localhost:5433/brain
 #
-# Deploy stack (Dokploy + local `docker compose up -d --build`): single image
-# (Dockerfile at repo root), three services sharing it —
-#   migrate  one-shot: runs marketing_intelligence.db.apply_migrations() (idempotent), then exits
-#   api      FastAPI on internal 8123 (default image CMD)
-#   mcp      MCP streamable-HTTP on internal 8124 (CMD override, see NOTE below)
-# Plain HTTP only — Traefik terminates TLS outside the containers.
-# Local-only DB flow is unchanged: `docker compose up -d db` still works.
+# Full local stack: `docker compose up -d --build` (db+migrate+api+mcp).
+# All publishes are loopback-only: reachable via localhost, not the network.
+# Prod is compose.prod.yml (no published ports; Traefik fronts api/mcp).
 
 # Shared build definition (top-level extension field — ignored as a service).
 x-app-build: &app-build
@@ -40,7 +36,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brain}
       POSTGRES_DB: ${POSTGRES_DB:-brain}
     ports:
-      # Loopback-only: local dev reaches localhost:5433, internet cannot.
+      # Loopback-only: local dev reaches localhost:5433, the network cannot.
       - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       # Named volume at the PG18 parent path. No anonymous volumes.
@@ -74,15 +70,12 @@ services:
       BRAIN_API_TOKEN: ${BRAIN_API_TOKEN:-}
       BRAIN_PUBLIC_URL: ${BRAIN_PUBLIC_URL:-http://localhost:8124}
     ports:
-      - "${API_PORT:-8123}:8123"
+      - "127.0.0.1:${API_PORT:-8123}:8123"
     depends_on:
       migrate:
         condition: service_completed_successfully
       db:
         condition: service_healthy
-    networks:
-      - default
-      - dokploy-network
     restart: unless-stopped
 
   mcp:
@@ -109,21 +102,18 @@ services:
       BRAIN_API_TOKEN: ${BRAIN_API_TOKEN:-}
       BRAIN_PUBLIC_URL: ${BRAIN_PUBLIC_URL:-http://localhost:8124}
     ports:
-      - "${MCP_PORT:-8124}:8124"
+      - "127.0.0.1:${MCP_PORT:-8124}:8124"
     depends_on:
       migrate:
         condition: service_completed_successfully
       db:
         condition: service_healthy
-    networks:
-      - default
-      - dokploy-network
     restart: unless-stopped
 
-  # Worker (Dokploy: always on; local: `docker compose up -d worker`).
+  # Worker (local: `docker compose up -d worker`; prod: always on).
   # Runs against the VPS Prefect server (see PREFECT_API_URL) on pool `brain-pool`.
   # Shares the app image (prefect is a main dependency). `db` resolves via the
-  # default compose network; `prefect-server` resolves via `dokploy-network`.
+  # default compose network; `prefect-server` must share a network to resolve.
   worker:
     build: *app-build
     image: marketing-intelligence-app:local
@@ -142,14 +132,7 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
-    networks:
-      - default
-      - dokploy-network
     restart: unless-stopped
 
 volumes:
   pgdata:
-
-networks:
-  dokploy-network:
-    external: true

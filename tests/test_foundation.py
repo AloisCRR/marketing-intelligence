@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "compose.yml"
+COMPOSE_PROD = ROOT / "compose.prod.yml"
 MIGRATION = ROOT / "migrations" / "001_init.sql"
 
 
@@ -26,35 +27,45 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-# --- compose.yml -----------------------------------------------------------
+# --- compose.yml / compose.prod.yml ------------------------------------------
 
 
-def test_compose_uses_named_volume_pgdata_at_pg18_path():
+def test_compose_dev_and_prod_share_db_contract():
+    # Both files keep the same Postgres service contract: service `db`,
+    # named volume pgdata at the PG18 path, no anonymous volumes.
+    for path in (COMPOSE, COMPOSE_PROD):
+        text = _read(path)
+        assert "pgdata:/var/lib/postgresql" in text.replace(" ", ""), (
+            f"{path.name} must mount named volume pgdata at /var/lib/postgresql"
+        )
+        code_lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        code = "\n".join(code_lines)
+        assert "/var/lib/postgresql/data" not in code, (
+            f"{path.name}: PG18 data path is /var/lib/postgresql, not /var/lib/postgresql/data"
+        )
+        assert re.search(r"(?m)^volumes:\s*$", text), f"{path.name} needs top-level volumes:"
+        assert re.search(r"(?m)^\s{2}pgdata:\s*(#.*)?$", text), (
+            f"{path.name} needs a top-level named volume 'pgdata:'"
+        )
+        assert re.search(r"(?m)^\s{2}db:\s*$", text), f"{path.name} needs a service named 'db'"
+        anonymous = [ln for ln in text.splitlines() if re.match(r"\s*-\s*[\"']?/", ln)]
+        assert not anonymous, f"{path.name}: anonymous short-syntax volumes found: {anonymous}"
+
+
+def test_compose_dev_publishes_loopback_only():
     text = _read(COMPOSE)
-    # Named volume pgdata mounted at the PG18 path (NOT the old /data subpath).
-    assert "pgdata:/var/lib/postgresql" in text.replace(" ", ""), (
-        "compose.yml must mount named volume pgdata at /var/lib/postgresql"
-    )
+    assert '"127.0.0.1:${POSTGRES_PORT:-5433}:5432"' in text
+    assert '"127.0.0.1:${API_PORT:-8123}:8123"' in text
+    assert '"127.0.0.1:${MCP_PORT:-8124}:8124"' in text
+
+
+def test_compose_prod_publishes_no_ports():
+    # Prod sits behind Traefik on dokploy-network: no host publishes at all.
+    text = _read(COMPOSE_PROD)
     code_lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
-    code = "\n".join(code_lines)
-    assert "/var/lib/postgresql/data" not in code, (
-        "PG18 data path is /var/lib/postgresql, not /var/lib/postgresql/data"
+    assert not re.search(r"(?m)^\s{4}ports:\s*$", "\n".join(code_lines)), (
+        "compose.prod.yml must not publish any ports"
     )
-    # Top-level named volume declaration.
-    assert re.search(r"(?m)^volumes:\s*$", text), "compose.yml needs top-level volumes:"
-    assert re.search(r"(?m)^\s{2}pgdata:\s*(#.*)?$", text), (
-        "compose.yml needs a top-level named volume 'pgdata:'"
-    )
-    # Postgres service must be named `db`.
-    assert re.search(r"(?m)^\s{2}db:\s*$", text), "compose.yml needs a service named 'db'"
-
-
-def test_compose_has_no_anonymous_volumes():
-    text = _read(COMPOSE)
-    # Short-syntax anonymous volumes look like `- /container/path` or
-    # `- /container/path:ro` (leading `/` = host path missing = anonymous).
-    anonymous = [line for line in text.splitlines() if re.match(r"\s*-\s*[\"']?/", line)]
-    assert not anonymous, f"anonymous short-syntax volumes found: {anonymous}"
 
 
 # --- migrations/001_init.sql -----------------------------------------------
